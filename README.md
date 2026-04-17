@@ -279,7 +279,8 @@ MIT — úsalo como quieras.
 
 ## Créditos
 
-Este proyecto está siendo construido con ayuda de [Claude](https://claude.ai) de Anthropic — desde el diseño de la arquitectura hasta la escritura de los scripts. No es un secreto ni algo de lo que haya que disculparse: es simplemente cómo se desarrolla software hoy.
+Este proyecto está siendo construido con ayuda de [Claude](https://claude.ai) de Anthropic — desde el diseño de la arquitectura hasta la escritura de los scripts.yo simplemente verifico.
+asi es la forma mas rápido y cómo se desarrolla software hoy.
 
 A medida que el proyecto crezca, Claude Code se usará directamente en el repo para escribir y modificar código. En ese punto aparecerá como contribuidor — lo cual es completamente justo.
 
