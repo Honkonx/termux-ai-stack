@@ -32,7 +32,7 @@
 Abre Termux y pega este comando:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Honkonx/termux-ai-stack/main/instalar.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Honkonx/termux-ai-stack/main/instalar.sh -o instalar.sh && bash instalar.sh
 ```
 
 Eso es todo. El script se encarga del resto.
