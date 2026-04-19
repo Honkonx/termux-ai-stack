@@ -290,7 +290,7 @@ bash ~/stop_servidor.sh     # detiene todo
 bash ~/ver_url.sh           # URL pública
 
 # Configurar webhook (dominio fijo):
-echo "N8N_WEBHOOK_URL=https://bot.honkon.shop" >> ~/.env_n8n
+echo "N8N_WEBHOOK_URL=https://tu.ejemplo.com" >> ~/.env_n8n
 
 # Python:
 python3                     # REPL
