@@ -74,7 +74,7 @@ Sin `N8N_PROTOCOL=https`, aunque `WEBHOOK_URL` sea correcto, n8n genera internam
 
 ### 3.4 Token cloudflared por tunnel
 
-El token de cloudflared es específico por tunnel. Si se usa el mismo dominio (`bot.honkon.shop`) en múltiples dispositivos, todos deben usar el **mismo token** del tunnel `honkon`. Un token de otro tunnel produce `Unauthorized: Tunnel not found`.
+El token de cloudflared es específico por tunnel. Si se usa el mismo dominio (`tu.ejemplo`) en múltiples dispositivos, todos deben usar el **mismo token** del tunnel `tu.ejemplo`. Un token de otro tunnel produce `Unauthorized: Tunnel not found`.
 
 ### 3.5 Detección de IP
 
@@ -160,14 +160,14 @@ PC (PowerShell/Terminal)
 ```
 Telegram API
   │
-  HTTPS POST → bot.honkon.shop (Cloudflare DNS)
+  HTTPS POST → tu.ejemplo.com (Cloudflare DNS)
   │
   cloudflared tunnel (proot Debian)
   │
   localhost:5678 con cabecera X-Forwarded-For
   │
   n8n 2.8.4 (proot Debian)
-  ├─ WEBHOOK_URL=https://bot.honkon.shop
+  ├─ WEBHOOK_URL=https://tu.ejemplo.com
   ├─ N8N_PROTOCOL=https
   └─ N8N_PROXY_HOPS=1
   │
