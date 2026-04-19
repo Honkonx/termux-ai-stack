@@ -1,0 +1,602 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>termux-ai-stack · Dashboard</title>
+<style>
+:root {
+  --bg:     #0d1117;
+  --bg2:    #161b22;
+  --bg3:    #1c2330;
+  --border: #30363d;
+  --green:  #3fb950;
+  --green2: #56d364;
+  --cyan:   #79c0ff;
+  --yellow: #e3b341;
+  --red:    #f85149;
+  --purple: #bc8cff;
+  --orange: #f0883e;
+  --text:   #e6edf3;
+  --dim:    #7d8590;
+  --muted:  #484f58;
+}
+
+* { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color: transparent; }
+
+body {
+  background: var(--bg);
+  font-family: 'JetBrains Mono', 'Courier New', monospace;
+  min-height: 100vh;
+  color: var(--text);
+  padding-bottom: 80px;
+}
+
+/* ── Topbar ─────────────────────────────────────────── */
+.topbar {
+  background: var(--bg2);
+  border-bottom: 1px solid var(--border);
+  padding: 14px 18px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
+.logo {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--cyan);
+  letter-spacing: .25em;
+}
+.logo span { color: var(--dim); font-weight: 400; }
+.topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.refresh-btn {
+  font-family: inherit;
+  font-size: 10px;
+  letter-spacing: .1em;
+  padding: 5px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg3);
+  color: var(--dim);
+  cursor: pointer;
+  transition: all .15s;
+}
+.refresh-btn:hover, .refresh-btn:active {
+  border-color: var(--cyan);
+  color: var(--cyan);
+}
+.refresh-btn.spinning { animation: spin .6s linear; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+#last-update {
+  font-size: 9px;
+  color: var(--muted);
+}
+
+/* ── Banner ─────────────────────────────────────────── */
+.banner {
+  margin: 16px;
+  padding: 14px 16px;
+  border: 1px solid rgba(121,192,255,.2);
+  border-radius: 10px;
+  background: rgba(121,192,255,.03);
+}
+.banner-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.banner-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--cyan);
+  letter-spacing: .25em;
+}
+.banner-device {
+  font-size: 10px;
+  color: var(--muted);
+}
+.banner-stats {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+.stat {
+  font-size: 10px;
+  color: var(--dim);
+}
+.stat .val { font-weight: 600; }
+.stat .val.g { color: var(--green); }
+.stat .val.c { color: var(--cyan); }
+.stat .val.y { color: var(--yellow); }
+
+/* RAM bar */
+.ram-bar-wrap {
+  margin-top: 10px;
+}
+.ram-label {
+  display: flex;
+  justify-content: space-between;
+  font-size: 9px;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+.ram-bar {
+  height: 4px;
+  background: var(--bg3);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.ram-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width .5s ease;
+  background: var(--green);
+}
+.ram-fill.warn  { background: var(--yellow); }
+.ram-fill.crit  { background: var(--red); }
+
+/* ── Sección ────────────────────────────────────────── */
+.sec-label {
+  font-size: 9px;
+  letter-spacing: .25em;
+  text-transform: uppercase;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 16px 16px 8px;
+}
+.sec-label::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+/* ── Módulo card ────────────────────────────────────── */
+.module-card {
+  margin: 0 16px 8px;
+  padding: 14px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  transition: border-color .2s;
+}
+.module-card:active { border-color: var(--cyan); }
+
+.mod-top {
+  display: grid;
+  grid-template-columns: 26px 1fr auto auto;
+  align-items: center;
+  gap: 0 10px;
+}
+.mod-icon {
+  font-size: 16px;
+  text-align: center;
+}
+.mod-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.mod-detail {
+  font-size: 10px;
+  color: var(--dim);
+  margin-top: 3px;
+  min-height: 14px;
+}
+.mod-ver { color: var(--cyan); }
+
+/* Status badge */
+.badge {
+  font-size: 9px;
+  padding: 4px 9px;
+  border-radius: 20px;
+  border: 1px solid;
+  white-space: nowrap;
+  font-weight: 500;
+}
+.badge-on   { color: var(--green);  border-color: rgba(63,185,80,.35);  background: rgba(63,185,80,.08); }
+.badge-off  { color: var(--red);    border-color: rgba(248,81,73,.35);  background: rgba(248,81,73,.06); }
+.badge-na   { color: var(--yellow); border-color: rgba(227,179,65,.35); background: rgba(227,179,65,.06); }
+.badge-idle { color: var(--dim);    border-color: var(--border);        background: var(--bg3); }
+
+/* Action button */
+.action-btn {
+  font-family: inherit;
+  font-size: 10px;
+  padding: 5px 10px;
+  border-radius: 6px;
+  border: 1px solid;
+  background: transparent;
+  cursor: pointer;
+  transition: all .15s;
+  white-space: nowrap;
+}
+.action-btn:active { opacity: .7; }
+.btn-start   { color: var(--green);  border-color: rgba(63,185,80,.35); }
+.btn-stop    { color: var(--red);    border-color: rgba(248,81,73,.35); }
+.btn-open    { color: var(--cyan);   border-color: rgba(121,192,255,.35); }
+.btn-install { color: var(--yellow); border-color: rgba(227,179,65,.35); }
+.btn-na      { color: var(--muted);  border-color: var(--border); pointer-events: none; }
+
+/* Pulse dot */
+.pulse {
+  display: inline-block;
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--green);
+  margin-right: 4px;
+  vertical-align: middle;
+  animation: pulse-anim 1.8s ease-in-out infinite;
+}
+.pulse.y { background: var(--yellow); }
+@keyframes pulse-anim { 0%,100%{opacity:1} 50%{opacity:.2} }
+
+/* Expandido: detalle URL */
+.mod-url {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(48,54,61,.6);
+  display: none;
+  font-size: 10px;
+}
+.mod-url.show { display: block; }
+.url-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.url-val {
+  color: var(--cyan);
+  word-break: break-all;
+}
+.copy-btn {
+  font-family: inherit;
+  font-size: 9px;
+  padding: 3px 8px;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  background: var(--bg3);
+  color: var(--dim);
+  cursor: pointer;
+}
+.copy-btn:active { color: var(--green); border-color: var(--green); }
+
+/* ── Toast ──────────────────────────────────────────── */
+#toast {
+  position: fixed;
+  bottom: 90px;
+  left: 50%;
+  transform: translateX(-50%) translateY(20px);
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 18px;
+  font-size: 11px;
+  color: var(--text);
+  opacity: 0;
+  transition: all .25s;
+  pointer-events: none;
+  white-space: nowrap;
+  z-index: 200;
+}
+#toast.show {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+/* ── Botón flotante refresh ─────────────────────────── */
+.fab {
+  position: fixed;
+  bottom: 24px;
+  right: 20px;
+  width: 52px; height: 52px;
+  border-radius: 50%;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  font-size: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 4px 20px rgba(0,0,0,.5);
+  transition: all .15s;
+  z-index: 150;
+}
+.fab:active { transform: scale(.92); }
+
+/* ── Estado cargando ────────────────────────────────── */
+.loading-overlay {
+  text-align: center;
+  padding: 60px 20px;
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: .15em;
+}
+.loading-dots::after {
+  content: '...';
+  animation: dots 1.2s steps(3, end) infinite;
+}
+@keyframes dots {
+  0%  { content: '.'; }
+  33% { content: '..'; }
+  66% { content: '...'; }
+}
+
+/* ── Error banner ───────────────────────────────────── */
+.error-banner {
+  margin: 16px;
+  padding: 12px 16px;
+  border: 1px solid rgba(248,81,73,.3);
+  border-radius: 8px;
+  background: rgba(248,81,73,.05);
+  font-size: 11px;
+  color: var(--red);
+  display: none;
+}
+.error-banner.show { display: block; }
+</style>
+</head>
+<body>
+
+<!-- Topbar -->
+<div class="topbar">
+  <div class="logo">⬡ <span>termux-ai-stack</span></div>
+  <div class="topbar-right">
+    <span id="last-update">--</span>
+    <button class="refresh-btn" id="refresh-btn" onclick="fetchStatus()">↻ refresh</button>
+  </div>
+</div>
+
+<!-- Error -->
+<div class="error-banner" id="error-banner">
+  ✗ No se puede conectar al servidor. ¿Está corriendo <code>dashboard_start.sh</code>?
+</div>
+
+<!-- Contenedor principal -->
+<div id="main-content">
+  <div class="loading-overlay">
+    <div>cargando<span class="loading-dots"></span></div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div id="toast"></div>
+
+<!-- FAB refresh -->
+<div class="fab" onclick="fetchStatus()" title="Actualizar">↻</div>
+
+<script>
+// ── Estado global ──────────────────────────────────────────────────────────
+let lastData = null;
+let autoRefreshInterval = null;
+
+// ── Fetch status ───────────────────────────────────────────────────────────
+async function fetchStatus() {
+  const btn = document.getElementById('refresh-btn');
+  btn.classList.add('spinning');
+  try {
+    const res = await fetch('/api/status', { cache: 'no-store' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    lastData = data;
+    renderDashboard(data);
+    hideError();
+  } catch (e) {
+    showError();
+  } finally {
+    btn.classList.remove('spinning');
+    document.getElementById('last-update').textContent = nowStr();
+  }
+}
+
+// ── Render ─────────────────────────────────────────────────────────────────
+function renderDashboard(data) {
+  const el = document.getElementById('main-content');
+
+  const ram = data.ram || {};
+  const ramPct = ram.total_mb ? Math.round((ram.used_mb / ram.total_mb) * 100) : 0;
+  const ramFreeGB = ram.available_mb ? (ram.available_mb / 1024).toFixed(1) : '?';
+  const ramFillClass = ramPct > 85 ? 'crit' : ramPct > 65 ? 'warn' : '';
+
+  let html = `
+    <div class="banner">
+      <div class="banner-row">
+        <div>
+          <div class="banner-title">⬡ ANDROID·SERVER</div>
+          <div class="banner-device" style="margin-top:3px">${esc(data.device || 'Android')}</div>
+        </div>
+      </div>
+      <div class="banner-stats">
+        <div class="stat">IP <span class="val c">${esc(data.ip || '127.0.0.1')}</span></div>
+        <div class="stat">RAM libre <span class="val ${ramFreeGB > 3 ? 'g' : 'y'}">${ramFreeGB} GB</span></div>
+        <div class="stat">Uso <span class="val ${ramPct > 80 ? 'red' : 'g'}">${ramPct}%</span></div>
+      </div>
+      <div class="ram-bar-wrap">
+        <div class="ram-label">
+          <span>memoria</span>
+          <span>${ram.used_mb || 0} / ${ram.total_mb || 0} MB</span>
+        </div>
+        <div class="ram-bar">
+          <div class="ram-fill ${ramFillClass}" style="width:${ramPct}%"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="sec-label">módulos</div>
+  `;
+
+  for (const mod of (data.modules || [])) {
+    html += renderModule(mod);
+  }
+
+  el.innerHTML = html;
+}
+
+function renderModule(mod) {
+  // Badge status
+  let badgeClass, badgeText;
+  if (!mod.installed) {
+    badgeClass = 'badge-na'; badgeText = '○ falta';
+  } else if (mod.running) {
+    badgeClass = 'badge-on'; badgeText = '● activo';
+  } else {
+    badgeClass = 'badge-idle'; badgeText = '◌ listo';
+  }
+
+  // Action button
+  let btnClass, btnText, btnAction;
+  if (!mod.installed) {
+    btnClass = 'btn-install'; btnText = 'instalar'; btnAction = `installModule('${mod.id}')`;
+  } else if (mod.running) {
+    btnClass = 'btn-stop'; btnText = 'detener'; btnAction = `doAction('stop','${mod.id}')`;
+  } else if (mod.url) {
+    btnClass = 'btn-start'; btnText = 'iniciar'; btnAction = `doAction('start','${mod.id}')`;
+  } else {
+    btnClass = 'btn-na'; btnText = '—'; btnAction = '';
+  }
+
+  // Detail line con pulse si está corriendo
+  let detailHtml = '';
+  if (mod.running) {
+    detailHtml = `<span class="pulse"></span>${esc(mod.detail || '')}`;
+  } else if (mod.version) {
+    detailHtml = `<span class="mod-ver">v${esc(mod.version)}</span>${mod.detail ? ' · ' + esc(mod.detail) : ''}`;
+  } else if (mod.detail) {
+    detailHtml = esc(mod.detail);
+  }
+
+  // URL expandible (solo si tiene URL)
+  let urlSection = '';
+  if (mod.url || (mod.id === 'n8n' && lastData)) {
+    const url = mod.url || '';
+    if (url) {
+      urlSection = `
+        <div class="mod-url" id="url-${mod.id}">
+          <div class="url-row">
+            <span class="url-val">${esc(url)}</span>
+            <button class="copy-btn" onclick="copyText('${esc(url)}')">copiar</button>
+          </div>
+        </div>
+      `;
+    }
+  }
+
+  return `
+    <div class="module-card" onclick="toggleUrl('${mod.id}')" id="card-${mod.id}">
+      <div class="mod-top">
+        <div class="mod-icon">${mod.icon || '▪'}</div>
+        <div class="mod-info">
+          <div class="mod-name">${esc(mod.name)}</div>
+          <div class="mod-detail">${detailHtml}</div>
+        </div>
+        <div class="badge ${badgeClass}">${badgeText}</div>
+        <button class="action-btn ${btnClass}" onclick="event.stopPropagation();${btnAction}">${btnText}</button>
+      </div>
+      ${urlSection}
+    </div>
+  `;
+}
+
+// ── Acciones ───────────────────────────────────────────────────────────────
+async function doAction(action, module) {
+  showToast(`${module} ${action}...`);
+  try {
+    const res = await fetch('/api/action', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action, module })
+    });
+    const data = await res.json();
+    showToast(data.ok ? `✓ ${data.msg}` : `✗ ${data.msg}`);
+    // Refrescar estado después de 2s (tiempo para que el proceso arranque)
+    setTimeout(fetchStatus, 2000);
+  } catch(e) {
+    showToast('✗ Error de conexión');
+  }
+}
+
+function installModule(id) {
+  showToast(`Para instalar ${id}: ejecuta install_${id}.sh en Termux`);
+}
+
+// ── Toggle URL ─────────────────────────────────────────────────────────────
+function toggleUrl(id) {
+  const el = document.getElementById(`url-${id}`);
+  if (el) el.classList.toggle('show');
+}
+
+// ── Copy ───────────────────────────────────────────────────────────────────
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    showToast('✓ Copiado');
+  } catch(e) {
+    showToast('Copia manual: ' + text);
+  }
+}
+
+// ── Toast ──────────────────────────────────────────────────────────────────
+let toastTimer = null;
+function showToast(msg) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('show'), 2800);
+}
+
+// ── Error ──────────────────────────────────────────────────────────────────
+function showError() {
+  document.getElementById('error-banner').classList.add('show');
+  document.getElementById('main-content').innerHTML = `
+    <div class="loading-overlay" style="color:var(--red)">
+      sin conexión al servidor
+    </div>
+  `;
+}
+function hideError() {
+  document.getElementById('error-banner').classList.remove('show');
+}
+
+// ── Utils ──────────────────────────────────────────────────────────────────
+function esc(s) {
+  return String(s)
+    .replace(/&/g,'&amp;')
+    .replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;');
+}
+function nowStr() {
+  const d = new Date();
+  return d.getHours().toString().padStart(2,'0') + ':' +
+         d.getMinutes().toString().padStart(2,'0') + ':' +
+         d.getSeconds().toString().padStart(2,'0');
+}
+
+// ── Auto-refresh cada 10s ──────────────────────────────────────────────────
+function startAutoRefresh() {
+  if (autoRefreshInterval) clearInterval(autoRefreshInterval);
+  autoRefreshInterval = setInterval(fetchStatus, 10000);
+}
+
+// ── Init ───────────────────────────────────────────────────────────────────
+fetchStatus();
+startAutoRefresh();
+</script>
+</body>
+</html>
