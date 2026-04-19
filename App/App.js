@@ -3,109 +3,125 @@ import {
   StyleSheet,
   View,
   Text,
-  Switch,
   TouchableOpacity,
-  ScrollView,
-  RefreshControl,
-  Platform,
-  Linking,
+  FlatList,
   ActivityIndicator,
+  SafeAreaView,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
-import * as FileSystem from 'expo-file-system';
-import * as IntentLauncher from 'expo-intent-launcher';
 
-const REGISTRY = 'file:///sdcard/termux_stack/registry';
-const CMD_FILE = 'file:///sdcard/termux_stack/cmd';
-const POLL_MS  = 3000;
-const PKG      = 'com.honkonx.termuxaistack';
+const API = 'http://localhost:8080';
+const POLL_MS = 5000;
 
-const MODULES = [
-  { id: 'n8n',       label: 'n8n',       sub: 'Automatización · proot Debian · :5678' },
-  { id: 'ollama',    label: 'Ollama',     sub: 'Modelos LLM · Termux nativo'           },
-  { id: 'dashboard', label: 'Dashboard',  sub: 'Web UI · Python HTTP · :8080'          },
-];
+// Módulos con acciones start/stop habilitadas
+const CONTROLLABLE = new Set(['n8n', 'ollama', 'ssh']);
 
-function parseRegistry(text) {
-  const out = {};
-  for (const line of text.split('\n')) {
-    const eq = line.indexOf('=');
-    if (eq < 0) continue;
-    const key = line.slice(0, eq).trim();
-    const val = line.slice(eq + 1).trim();
-    out[key] = val;
-  }
-  return out;
+// ── API calls ───────────────────────────────────────────────────
+
+async function fetchStatus() {
+  const res = await fetch(`${API}/api/status`, {
+    method: 'GET',
+    headers: { Accept: 'application/json' },
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
 }
 
-async function readRegistry() {
-  const info = await FileSystem.getInfoAsync(REGISTRY);
-  if (!info.exists) return null;
-  return FileSystem.readAsStringAsync(REGISTRY);
+async function postAction(module, action) {
+  const res = await fetch(`${API}/api/action`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action, module }),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
 }
 
-async function sendCommand(cmd) {
-  await FileSystem.writeAsStringAsync(CMD_FILE, cmd, { encoding: FileSystem.EncodingType.UTF8 });
+// ── Helpers ─────────────────────────────────────────────────────
+
+function badge(installed, running) {
+  if (running)    return { label: 'activo',        color: C.green  };
+  if (installed)  return { label: 'listo',         color: C.yellow };
+  return            { label: 'no instalado',  color: C.muted  };
 }
 
-async function openAllFilesSettings() {
-  try {
-    await IntentLauncher.startActivityAsync(
-      'android.settings.MANAGE_APP_ALL_FILES_ACCESS_PERMISSION',
-      { data: `package:${PKG}` }
-    );
-  } catch {
-    Linking.openSettings();
-  }
+function fmtRam(ram) {
+  if (!ram || ram.error) return '— MB libre';
+  return `${ram.available_mb ?? ram.free_mb} MB libre`;
 }
 
-// ── Sub-components ─────────────────────────────────────────────
+// ── Sub-components ──────────────────────────────────────────────
 
-function ModuleCard({ module, running, installing, onToggle }) {
-  const isOn = running === true;
+function Banner({ ip, ram, lastSync }) {
   return (
-    <View style={styles.card}>
-      <View style={styles.cardLeft}>
-        <View style={[styles.dot, isOn ? styles.dotOn : styles.dotOff]} />
-        <View>
-          <Text style={styles.cardTitle}>{module.label}</Text>
-          <Text style={styles.cardSub}>{module.sub}</Text>
-          <Text style={[styles.cardStatus, isOn ? styles.statusOn : styles.statusOff]}>
-            {running === null ? 'desconocido' : isOn ? 'activo' : 'detenido'}
-          </Text>
-        </View>
+    <View style={styles.banner}>
+      <View style={styles.bannerRow}>
+        <Text style={styles.bannerLabel}>IP</Text>
+        <Text style={styles.bannerValue}>{ip || '—'}</Text>
+        <Text style={styles.bannerSep}>·</Text>
+        <Text style={styles.bannerLabel}>RAM</Text>
+        <Text style={styles.bannerValue}>{fmtRam(ram)}</Text>
       </View>
-      {installing
-        ? <ActivityIndicator size="small" color="#79c0ff" />
-        : (
-          <Switch
-            value={isOn}
-            onValueChange={onToggle}
-            trackColor={{ false: '#30363d', true: '#1f6feb' }}
-            thumbColor={isOn ? '#79c0ff' : '#8b949e'}
-          />
-        )
-      }
+      {lastSync && (
+        <Text style={styles.syncText}>
+          sync {lastSync.toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+        </Text>
+      )}
     </View>
   );
 }
 
-function PermissionScreen({ onGrant }) {
+function ModuleRow({ item, onAction, pending }) {
+  const b = badge(item.installed, item.running);
+  const canControl = CONTROLLABLE.has(item.id);
+  const isBusy = pending === item.id;
+
+  return (
+    <View style={styles.row}>
+      <View style={styles.rowLeft}>
+        <Text style={styles.rowIcon}>{item.icon}</Text>
+        <View style={styles.rowInfo}>
+          <View style={styles.rowNameLine}>
+            <Text style={styles.rowName}>{item.name}</Text>
+            <View style={[styles.badge, { borderColor: b.color }]}>
+              <Text style={[styles.badgeText, { color: b.color }]}>{b.label}</Text>
+            </View>
+          </View>
+          {item.version ? (
+            <Text style={styles.rowSub}>v{item.version}{item.detail ? `  ${item.detail}` : ''}</Text>
+          ) : item.detail ? (
+            <Text style={styles.rowSub}>{item.detail}</Text>
+          ) : null}
+        </View>
+      </View>
+
+      {canControl && (
+        isBusy ? (
+          <ActivityIndicator size="small" color={C.blue} style={styles.rowAction} />
+        ) : (
+          <TouchableOpacity
+            style={[styles.btn, item.running ? styles.btnStop : styles.btnStart]}
+            onPress={() => onAction(item.id, item.running ? 'stop' : 'start')}
+            activeOpacity={0.7}
+          >
+            <Text style={styles.btnText}>{item.running ? 'stop' : 'start'}</Text>
+          </TouchableOpacity>
+        )
+      )}
+    </View>
+  );
+}
+
+function ErrorScreen() {
   return (
     <View style={styles.center}>
-      <Text style={styles.permIcon}>⬡</Text>
-      <Text style={styles.permTitle}>Acceso al almacenamiento</Text>
-      <Text style={styles.permBody}>
-        La app necesita acceso a todos los archivos para leer el estado del stack
-        desde{'\n'}
-        <Text style={styles.mono}>/sdcard/termux_stack/</Text>
-      </Text>
-      <TouchableOpacity style={styles.btn} onPress={onGrant}>
-        <Text style={styles.btnText}>Conceder acceso</Text>
-      </TouchableOpacity>
-      <Text style={styles.permHint}>
-        Ajustes → Aplicaciones → termux-ai-stack → Archivos y medios → Todos los archivos
-      </Text>
+      <Text style={styles.errIcon}>⬡</Text>
+      <Text style={styles.errTitle}>Dashboard no responde</Text>
+      <Text style={styles.errBody}>Abre Termux y ejecuta:</Text>
+      <View style={styles.codeBox}>
+        <Text style={styles.code}>bash ~/dashboard_start.sh</Text>
+      </View>
+      <Text style={styles.errHint}>Luego regresa a esta app — se reconecta automáticamente.</Text>
     </View>
   );
 }
@@ -113,157 +129,125 @@ function PermissionScreen({ onGrant }) {
 // ── Main ────────────────────────────────────────────────────────
 
 export default function App() {
-  const [status, setStatus]       = useState({});   // moduleId → true/false/null
-  const [pending, setPending]     = useState({});   // moduleId → bool (waiting for change)
-  const [permOk, setPermOk]       = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [lastSync, setLastSync]   = useState(null);
-  const intervalRef = useRef(null);
+  const [data, setData]       = useState(null);   // respuesta completa de /api/status
+  const [error, setError]     = useState(false);
+  const [pending, setPending] = useState(null);   // id del módulo con acción en vuelo
+  const [lastSync, setLastSync] = useState(null);
+  const timerRef = useRef(null);
 
-  const syncStatus = useCallback(async () => {
+  const poll = useCallback(async () => {
     try {
-      const text = await readRegistry();
-      if (text === null) {
-        setStatus({});
-        return;
-      }
-      const reg = parseRegistry(text);
-      setStatus(prev => {
-        const next = {};
-        for (const m of MODULES) {
-          const raw = reg[`${m.id}.running`];
-          next[m.id] = raw === 'true' ? true : raw === 'false' ? false : null;
-        }
-        // Clear pending if state changed
-        const newPending = { ...pending };
-        let changed = false;
-        for (const m of MODULES) {
-          if (newPending[m.id] !== undefined && next[m.id] !== prev[m.id]) {
-            delete newPending[m.id];
-            changed = true;
-          }
-        }
-        if (changed) setPending(newPending);
-        return next;
-      });
-      setPermOk(true);
+      const res = await fetchStatus();
+      setData(res);
+      setError(false);
       setLastSync(new Date());
-    } catch (e) {
-      if (e.message?.includes('Permission') || e.message?.includes('EPERM')) {
-        setPermOk(false);
-      }
-    }
-  }, [pending]);
-
-  useEffect(() => {
-    syncStatus();
-    intervalRef.current = setInterval(syncStatus, POLL_MS);
-    return () => clearInterval(intervalRef.current);
-  }, [syncStatus]);
-
-  const handleToggle = useCallback(async (moduleId, currentlyOn) => {
-    const cmd = currentlyOn ? `${moduleId}.stop` : `${moduleId}.start`;
-    setPending(p => ({ ...p, [moduleId]: true }));
-    try {
-      await sendCommand(cmd);
     } catch {
-      setPending(p => { const n = { ...p }; delete n[moduleId]; return n; });
+      setError(true);
     }
   }, []);
 
-  const onRefresh = useCallback(async () => {
-    setRefreshing(true);
-    await syncStatus();
-    setRefreshing(false);
-  }, [syncStatus]);
+  useEffect(() => {
+    poll();
+    timerRef.current = setInterval(poll, POLL_MS);
+    return () => clearInterval(timerRef.current);
+  }, [poll]);
 
-  if (!permOk) {
-    return (
-      <View style={styles.container}>
-        <StatusBar style="light" backgroundColor="#0d1117" />
-        <PermissionScreen onGrant={openAllFilesSettings} />
-      </View>
-    );
-  }
+  const handleAction = useCallback(async (moduleId, action) => {
+    setPending(moduleId);
+    try {
+      await postAction(moduleId, action);
+      // Esperar 2s para que el proceso arranque/pare antes de re-polling
+      await new Promise(r => setTimeout(r, 2000));
+      await poll();
+    } catch {
+      // Silenciar — el siguiente poll refrescará el estado real
+    } finally {
+      setPending(null);
+    }
+  }, [poll]);
 
   return (
-    <View style={styles.container}>
-      <StatusBar style="light" backgroundColor="#0d1117" />
+    <SafeAreaView style={styles.root}>
+      <StatusBar style="light" backgroundColor={C.bg} />
 
       <View style={styles.header}>
         <Text style={styles.headerTitle}>termux-ai-stack</Text>
-        {lastSync && (
-          <Text style={styles.headerSync}>
-            {lastSync.toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
-          </Text>
-        )}
+        {!error && data && <Banner ip={data.ip} ram={data.ram} lastSync={lastSync} />}
       </View>
 
-      <ScrollView
-        contentContainerStyle={styles.scroll}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#79c0ff" />}
-      >
-        {MODULES.map(m => (
-          <ModuleCard
-            key={m.id}
-            module={m}
-            running={status[m.id] ?? null}
-            installing={!!pending[m.id]}
-            onToggle={() => handleToggle(m.id, status[m.id])}
-          />
-        ))}
-
-        <View style={styles.footer}>
-          <Text style={styles.footerText}>Arriba para refrescar · polling cada 3 s</Text>
-          <Text style={styles.footerText}>IPC: /sdcard/termux_stack/</Text>
+      {error ? (
+        <ErrorScreen />
+      ) : !data ? (
+        <View style={styles.center}>
+          <ActivityIndicator size="large" color={C.blue} />
+          <Text style={styles.loadText}>conectando...</Text>
         </View>
-      </ScrollView>
-    </View>
+      ) : (
+        <FlatList
+          data={data.modules}
+          keyExtractor={item => item.id}
+          renderItem={({ item }) => (
+            <ModuleRow item={item} onAction={handleAction} pending={pending} />
+          )}
+          contentContainerStyle={styles.list}
+          ItemSeparatorComponent={() => <View style={styles.sep} />}
+        />
+      )}
+    </SafeAreaView>
   );
 }
 
 // ── Styles ──────────────────────────────────────────────────────
 
 const C = {
-  bg:       '#0d1117',
-  surface:  '#161b22',
-  border:   '#30363d',
-  text:     '#e6edf3',
-  muted:    '#7d8590',
-  blue:     '#79c0ff',
-  green:    '#3fb950',
-  red:      '#f85149',
+  bg:      '#0d1117',
+  surface: '#161b22',
+  border:  '#30363d',
+  text:    '#e6edf3',
+  muted:   '#7d8590',
+  blue:    '#79c0ff',
+  green:   '#3fb950',
+  yellow:  '#e3b341',
+  red:     '#f85149',
 };
 
 const styles = StyleSheet.create({
-  container:  { flex: 1, backgroundColor: C.bg },
-  header:     { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-                paddingHorizontal: 20, paddingTop: 52, paddingBottom: 16,
-                borderBottomWidth: 1, borderBottomColor: C.border },
-  headerTitle:{ color: C.blue, fontFamily: 'monospace', fontSize: 15, fontWeight: 'bold', letterSpacing: 1 },
-  headerSync: { color: C.muted, fontFamily: 'monospace', fontSize: 11 },
-  scroll:     { padding: 16, gap: 12 },
-  card:       { backgroundColor: C.surface, borderRadius: 10, borderWidth: 1, borderColor: C.border,
-                flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-                paddingVertical: 16, paddingHorizontal: 18 },
-  cardLeft:   { flexDirection: 'row', alignItems: 'center', gap: 14, flex: 1 },
-  dot:        { width: 10, height: 10, borderRadius: 5 },
-  dotOn:      { backgroundColor: C.green },
-  dotOff:     { backgroundColor: C.red },
-  cardTitle:  { color: C.text, fontFamily: 'monospace', fontSize: 15, fontWeight: 'bold' },
-  cardSub:    { color: C.muted, fontFamily: 'monospace', fontSize: 11, marginTop: 2 },
-  cardStatus: { fontFamily: 'monospace', fontSize: 11, marginTop: 4 },
-  statusOn:   { color: C.green },
-  statusOff:  { color: C.muted },
-  footer:     { paddingTop: 24, paddingBottom: 40, alignItems: 'center', gap: 4 },
-  footerText: { color: C.muted, fontFamily: 'monospace', fontSize: 10 },
-  // Permission screen
-  center:     { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 32, gap: 16 },
-  permIcon:   { fontSize: 48, color: C.blue },
-  permTitle:  { color: C.text, fontFamily: 'monospace', fontSize: 17, fontWeight: 'bold' },
-  permBody:   { color: C.muted, fontFamily: 'monospace', fontSize: 13, textAlign: 'center', lineHeight: 22 },
-  mono:       { color: C.green, fontFamily: 'monospace' },
-  btn:        { backgroundColor: '#1f6feb', borderRadius: 8, paddingVertical: 12, paddingHorizontal: 32, marginTop: 8 },
-  btnText:    { color: C.text, fontFamily: 'monospace', fontSize: 14, fontWeight: 'bold' },
-  permHint:   { color: C.muted, fontFamily: 'monospace', fontSize: 10, textAlign: 'center', lineHeight: 18, marginTop: 8 },
+  root:         { flex: 1, backgroundColor: C.bg },
+  header:       { paddingHorizontal: 16, paddingTop: 16, paddingBottom: 12,
+                  borderBottomWidth: 1, borderBottomColor: C.border },
+  headerTitle:  { color: C.blue, fontFamily: 'monospace', fontSize: 16,
+                  fontWeight: 'bold', letterSpacing: 1, marginBottom: 8 },
+  banner:       { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  bannerRow:    { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  bannerLabel:  { color: C.muted, fontFamily: 'monospace', fontSize: 11 },
+  bannerValue:  { color: C.text,  fontFamily: 'monospace', fontSize: 11 },
+  bannerSep:    { color: C.border,fontFamily: 'monospace', fontSize: 11 },
+  syncText:     { color: C.muted, fontFamily: 'monospace', fontSize: 10 },
+  list:         { padding: 12 },
+  sep:          { height: 1, backgroundColor: C.border, marginHorizontal: 4 },
+  row:          { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+                  paddingVertical: 14, paddingHorizontal: 8 },
+  rowLeft:      { flexDirection: 'row', alignItems: 'center', flex: 1, gap: 12 },
+  rowIcon:      { fontSize: 20, width: 28, textAlign: 'center' },
+  rowInfo:      { flex: 1 },
+  rowNameLine:  { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  rowName:      { color: C.text, fontFamily: 'monospace', fontSize: 14, fontWeight: 'bold' },
+  rowSub:       { color: C.muted, fontFamily: 'monospace', fontSize: 11, marginTop: 2 },
+  badge:        { borderWidth: 1, borderRadius: 4, paddingHorizontal: 6, paddingVertical: 1 },
+  badgeText:    { fontFamily: 'monospace', fontSize: 10 },
+  rowAction:    { marginLeft: 8 },
+  btn:          { borderRadius: 6, paddingVertical: 6, paddingHorizontal: 14, marginLeft: 8 },
+  btnStart:     { backgroundColor: '#1f6feb' },
+  btnStop:      { backgroundColor: '#21262d', borderWidth: 1, borderColor: C.border },
+  btnText:      { color: C.text, fontFamily: 'monospace', fontSize: 12, fontWeight: 'bold' },
+  center:       { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 32, gap: 14 },
+  loadText:     { color: C.muted, fontFamily: 'monospace', fontSize: 12, letterSpacing: 2 },
+  errIcon:      { fontSize: 44, color: C.blue },
+  errTitle:     { color: C.text, fontFamily: 'monospace', fontSize: 16, fontWeight: 'bold' },
+  errBody:      { color: C.muted, fontFamily: 'monospace', fontSize: 13 },
+  codeBox:      { backgroundColor: C.surface, borderRadius: 8, borderWidth: 1,
+                  borderColor: C.border, paddingVertical: 10, paddingHorizontal: 18 },
+  code:         { color: C.green, fontFamily: 'monospace', fontSize: 13 },
+  errHint:      { color: C.muted, fontFamily: 'monospace', fontSize: 11,
+                  textAlign: 'center', lineHeight: 18 },
 });
