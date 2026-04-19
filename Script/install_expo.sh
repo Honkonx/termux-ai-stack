@@ -432,6 +432,42 @@ log "Todos los scripts de control creados"
 fi
 
 # ============================================================
+# PASO 5b — Watcher IPC para app React Native (Fase 8b-B)
+# ============================================================
+titulo "PASO 5b — Watcher IPC"
+
+if check_done "watcher_setup"; then
+  log "Watcher ya configurado [checkpoint]"
+else
+  WATCHER_URL="https://raw.githubusercontent.com/Honkonx/termux-ai-stack/main/Script/watcher.sh"
+  info "Descargando watcher.sh..."
+  curl -fsSL "$WATCHER_URL" -o "$HOME/watcher.sh" || {
+    warn "No se pudo descargar watcher.sh desde GitHub"
+    info "Descárgalo manualmente y colócalo en ~/watcher.sh"
+  }
+  chmod +x "$HOME/watcher.sh" 2>/dev/null || true
+
+  # Alias de control
+  grep -v "watcher-start\|watcher-stop\|watcher-status" "$HOME/.bashrc" \
+    > "$HOME/.bashrc.tmp" 2>/dev/null && mv "$HOME/.bashrc.tmp" "$HOME/.bashrc"
+
+  cat >> "$HOME/.bashrc" << 'WATCHER_ALIASES'
+
+# ════════════════════════════════
+#  Watcher IPC · aliases (Fase 8b-B)
+# ════════════════════════════════
+alias watcher-start='bash ~/watcher.sh &'
+alias watcher-stop='pkill -f watcher.sh'
+alias watcher-status='cat /sdcard/termux_stack/registry 2>/dev/null || echo "no iniciado"'
+WATCHER_ALIASES
+
+  mark_done "watcher_setup"
+  log "Watcher IPC configurado"
+  info "Usa: watcher-start   para iniciar el servicio IPC"
+  info "Usa: watcher-status  para ver el registry en vivo"
+fi
+
+# ============================================================
 # PASO 6 — Aliases en .bashrc
 # ============================================================
 titulo "PASO 6 — Configurando aliases"
