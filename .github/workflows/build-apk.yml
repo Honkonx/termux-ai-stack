@@ -1,0 +1,148 @@
+# ============================================================
+#  termux-ai-stack · GitHub Actions — Build APK
+#  
+#  PREREQUISITO: secreto EXPO_TOKEN en el repo
+#    Settings → Secrets → Actions → New repository secret
+#    Nombre: EXPO_TOKEN
+#    Valor:  expo.dev → Account Settings → Access Tokens → Create
+#
+#  RESULTADO:
+#    - APK como artifact en cada run (~15 min)
+#    - GitHub Release automático con tag v*
+# ============================================================
+
+name: Build APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: 'Perfil de build'
+        required: true
+        default: 'preview'
+        type: choice
+        options:
+          - preview
+          - production
+
+  push:
+    branches: [main]
+    paths:
+      - 'App/**'
+      - '.github/workflows/build-apk.yml'
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    name: Build APK con EAS
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      # ── 1. Checkout ────────────────────────────────────────
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── 2. Node.js (sin cache — package-lock puede no existir)
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # ── 3. Instalar dependencias ───────────────────────────
+      - name: Instalar dependencias npm
+        working-directory: App
+        run: npm install
+
+      # ── 4. EAS CLI ─────────────────────────────────────────
+      - name: Instalar EAS CLI
+        run: npm install -g eas-cli@latest
+
+      # ── 5. Verificar login ─────────────────────────────────
+      - name: Login en Expo
+        run: eas whoami
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+
+      # ── 6. Perfil de build ─────────────────────────────────
+      - name: Determinar perfil
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "BUILD_PROFILE=${{ github.event.inputs.profile }}" >> $GITHUB_ENV
+          else
+            echo "BUILD_PROFILE=preview" >> $GITHUB_ENV
+          fi
+
+      # ── 7. EAS Build ───────────────────────────────────────
+      - name: EAS Build
+        working-directory: App
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          eas build \
+            --platform android \
+            --profile ${{ env.BUILD_PROFILE }} \
+            --non-interactive \
+            --output ../build-output.apk
+
+      # ── 8. Buscar APK si --output no funcionó ──────────────
+      - name: Verificar APK
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          if [ ! -f "build-output.apk" ]; then
+            echo "Buscando APK generado..."
+            APK_FILE=$(find . -name "*.apk" 2>/dev/null | head -1)
+            if [ -n "$APK_FILE" ]; then
+              cp "$APK_FILE" build-output.apk
+              echo "APK encontrado: $APK_FILE"
+            else
+              echo "Intentando descargar desde EAS..."
+              BUILD_URL=$(eas build:list \
+                --platform android --limit 1 --json \
+                2>/dev/null | python3 -c \
+                "import json,sys; d=json.load(sys.stdin); print(d[0].get('artifacts',{}).get('buildUrl',''))" \
+                2>/dev/null || echo "")
+              if [ -n "$BUILD_URL" ]; then
+                curl -fsSL -o build-output.apk "$BUILD_URL"
+                echo "APK descargado desde EAS"
+              else
+                echo "No se pudo obtener el APK"
+              fi
+            fi
+          fi
+          ls -lh build-output.apk 2>/dev/null || true
+
+      # ── 9. Artifact ────────────────────────────────────────
+      - name: Subir APK como artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: termux-ai-stack-${{ github.sha }}
+          path: build-output.apk
+          retention-days: 30
+          if-no-files-found: warn
+
+      # ── 10. Release en tags v* ─────────────────────────────
+      - name: Crear GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: build-output.apk
+          name: "termux-ai-stack ${{ github.ref_name }}"
+          body: |
+            ## termux-ai-stack ${{ github.ref_name }}
+
+            ### Instalación
+            1. Descarga `build-output.apk`
+            2. Instala en el teléfono (habilita fuentes desconocidas)
+            3. Abre Termux y ejecuta: `bash ~/dashboard_start.sh`
+
+            ### Prerequisitos
+            - Termux (F-Droid)
+            - `bash ~/dashboard_start.sh` corriendo en Termux
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
