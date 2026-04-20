@@ -1,0 +1,28 @@
+{
+  "expo": {
+    "name": "termux-ai-stack",
+    "slug": "termux-ai-stack",
+    "version": "1.4.0",
+    "sdkVersion": "50.0.0",
+    "orientation": "portrait",
+    "platforms": ["android"],
+    "splash": {
+      "backgroundColor": "#0d1117"
+    },
+    "android": {
+      "package": "com.honkonx.termuxaistack",
+      "usesCleartextTraffic": true,
+      "versionCode": 6
+    },
+    "plugins": [
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "usesCleartextTraffic": true
+          }
+        }
+      ]
+    ]
+  }
+}
