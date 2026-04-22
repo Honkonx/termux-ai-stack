@@ -1,19 +1,40 @@
 #!/usr/bin/env python3
 # termux-ai-stack · dashboard_server.py
-# v1.3.0 | Abril 2026
-# Fix: ollama proc detection · backup action · /api/ollama/models · /api/ssh/info
+# v1.4.0 | Abril 2026
+# Añadido endpoint /api/chatbot para SQLite (n8n proxy)
 
 import os, json, subprocess, collections, datetime, shutil
+import sqlite3
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs
 
 _cmd_log = collections.deque(maxlen=20)
-
-HOME          = os.path.expanduser("~")
+HOME = os.path.expanduser("~")
 REGISTRY_FILE = os.path.join(HOME, ".android_server_registry")
 DASHBOARD_DIR = os.path.join(HOME, "dashboard")
 TERMUX_PREFIX = os.environ.get("TERMUX_PREFIX", "/data/data/com.termux/files/usr")
-PORT          = 8080
+PORT = 8080
+
+# === CONFIGURACIÓN CHATBOT DB ===
+CHATBOT_DB_PATH = os.path.join(HOME, "chatbot_memoria.db")
+
+def init_chatbot_db():
+    conn = sqlite3.connect(CHATBOT_DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            role TEXT NOT NULL,
+            content TEXT NOT NULL,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+# Inicializar DB al arrancar el servidor
+init_chatbot_db()
 
 # ── Registry ──────────────────────────────────────────────────
 def read_registry():
@@ -31,402 +52,233 @@ def read_registry():
 
 def reg(d, *keys):
     for k in keys:
-        if k in d:
-            return d[k]
+        if k in d: return d[k]
     return ""
 
 # ── Detección de procesos ─────────────────────────────────────
 def proc_running(pattern):
-    """pgrep -f con fallback a ps aux para compatibilidad con Android."""
     try:
-        r = subprocess.run(["pgrep", "-f", pattern],
-                           capture_output=True, timeout=2)
+        r = subprocess.run(["pgrep", "-f", pattern], capture_output=True, timeout=2)
         return r.returncode == 0
     except:
         pass
     try:
-        r = subprocess.run(["ps", "aux"], capture_output=True, text=True, timeout=3)
-        return pattern in r.stdout
-    except:
-        return False
-
-def ollama_running():
-    """Detecta ollama serve por cualquier método disponible."""
-    # Método 1: pgrep/ps directo
-    if proc_running("ollama serve"):
-        return True
-    # Método 2: tmux session ollama-server
-    try:
-        r = subprocess.run(["tmux", "has-session", "-t", "ollama-server"],
-                           capture_output=True, timeout=2)
-        if r.returncode == 0:
-            return True
-    except:
-        pass
-    # Método 3: puerto 11434 abierto (ollama responde)
-    try:
-        r = subprocess.run(
-            ["curl", "-s", "--max-time", "1", "http://localhost:11434/api/tags"],
-            capture_output=True, timeout=3
-        )
-        return r.returncode == 0
+        r = subprocess.run(["ps", "aux"], capture_output=True, text=True, timeout=2)
+        for line in r.stdout.split('\n'):
+            if pattern in line and "grep" not in line:
+                return True
     except:
         pass
     return False
 
-def n8n_running():
-    """Detecta n8n en proot por tmux session y proceso."""
-    try:
-        r = subprocess.run(["tmux", "has-session", "-t", "n8n-server"],
-                           capture_output=True, timeout=2)
-        if r.returncode == 0:
-            return True
-    except:
-        pass
-    return proc_running("n8n start")
-
-# ── RAM ───────────────────────────────────────────────────────
+# ── Status principal ─────────────────────────────────────────
 def get_ram():
     try:
-        r = subprocess.run(["free", "-m"], capture_output=True, text=True, timeout=3)
-        p = r.stdout.strip().split("\n")[1].split()
-        return {
-            "total_mb":     int(p[1]),
-            "used_mb":      int(p[2]),
-            "free_mb":      int(p[3]),
-            "available_mb": int(p[6]) if len(p) > 6 else int(p[3]),
-        }
-    except Exception as e:
-        return {"error": str(e)}
+        r = subprocess.run(["free", "-m"], capture_output=True, text=True)
+        lines = r.stdout.split('\n')
+        if len(lines) > 1:
+            parts = lines[1].split()
+            if len(parts) >= 7:
+                return f"{parts[3]}M libres"
+    except: pass
+    return "N/A"
 
-# ── IP ────────────────────────────────────────────────────────
 def get_ip():
     try:
-        r = subprocess.run(["ifconfig"], capture_output=True, text=True, timeout=3)
-        for line in r.stdout.split("\n"):
-            if "inet " in line and "127.0.0.1" not in line:
-                parts = line.strip().split()
-                for i, p in enumerate(parts):
-                    if p == "inet" and i + 1 < len(parts):
-                        return parts[i + 1]
-    except:
-        pass
-    try:
-        r = subprocess.run(["hostname", "-I"], capture_output=True, text=True, timeout=3)
-        for ip in r.stdout.strip().split():
-            if ip.startswith(("192.", "10.", "172.")):
-                return ip
-    except:
-        pass
+        r = subprocess.run(["ifconfig", "wlan0"], capture_output=True, text=True)
+        for line in r.stdout.split('\n'):
+            if "inet " in line:
+                return line.split()[1]
+    except: pass
     return "127.0.0.1"
 
-# ── Detección de módulos ──────────────────────────────────────
-def claude_installed(d):
-    if reg(d, "claude_code.installed", "claude.installed", "claude_installed") == "true":
-        return True
-    return os.path.exists(os.path.join(TERMUX_PREFIX, "bin", "claude"))
-
-def eas_installed(d):
-    if reg(d, "expo.installed", "eas.installed", "eas_installed", "expo_installed") == "true":
-        return True
-    return os.path.exists(os.path.join(TERMUX_PREFIX, "bin", "eas"))
-
-# ── Modelos Ollama ────────────────────────────────────────────
-def get_ollama_models():
-    """Retorna lista de modelos instalados en Ollama."""
-    models = []
-    try:
-        r = subprocess.run(["ollama", "list"],
-                           capture_output=True, text=True, timeout=5)
-        if r.returncode == 0:
-            lines = r.stdout.strip().split("\n")[1:]  # skip header
-            for line in lines:
-                parts = line.split()
-                if parts:
-                    models.append({
-                        "name": parts[0],
-                        "size": parts[2] if len(parts) > 2 else "?",
-                    })
-    except:
-        pass
-    return models
-
-# ── Info SSH ──────────────────────────────────────────────────
-def get_ssh_info():
-    ip   = get_ip()
-    port = "8022"
-    user = os.environ.get("USER", "u0_a")
-    authorized_keys_count = 0
-    ak_path = os.path.join(HOME, ".ssh", "authorized_keys")
-    try:
-        with open(ak_path) as f:
-            authorized_keys_count = sum(
-                1 for line in f
-                if line.strip() and not line.strip().startswith("#")
-            )
-    except:
-        pass
-    return {
-        "ip":       ip,
-        "port":     port,
-        "user":     user,
-        "cmd":      f"ssh -p {port} {user}@{ip}",
-        "scp_cmd":  f"scp -P {port} archivo.txt {user}@{ip}:~/",
-        "keys":     authorized_keys_count,
-    }
-
-# ── Tunnel URL n8n ────────────────────────────────────────────
 def get_n8n_url():
-    # 1. Archivo .last_cf_url
     cf_url_path = os.path.join(HOME, ".last_cf_url")
     try:
         with open(cf_url_path) as f:
             url = f.read().strip()
-            if url:
-                return url
-    except:
-        pass
-    # 2. Variable en .env_n8n
+            if url: return url
+    except: pass
     env_path = os.path.join(HOME, ".env_n8n")
     try:
         with open(env_path) as f:
             for line in f:
                 if line.startswith("N8N_WEBHOOK_URL="):
                     return line.strip().split("=", 1)[1]
-    except:
-        pass
+    except: pass
     return ""
 
-# ── Status principal ─────────────────────────────────────────
 def build_status():
-    d       = read_registry()
-    ram     = get_ram()
-    ip      = get_ip()
+    d = read_registry()
+    ram = get_ram()
+    ip = get_ip()
     n8n_url = get_n8n_url()
-
-    modules = [
-        {
-            "id":        "n8n",
-            "name":      "n8n",
-            "icon":      "⬡",
-            "type":      "service",
-            "installed": reg(d, "n8n.installed", "n8n_installed") == "true",
-            "running":   n8n_running(),
-            "version":   reg(d, "n8n.version", "n8n_version"),
-            "detail":    n8n_url,
-            "url":       n8n_url,
-            "layer":     "proot",
-        },
-        {
-            "id":        "ollama",
-            "name":      "Ollama",
-            "icon":      "◎",
-            "type":      "service",
-            "installed": reg(d, "ollama.installed", "ollama_installed") == "true",
-            "running":   ollama_running(),
-            "version":   reg(d, "ollama.version", "ollama_version"),
-            "detail":    ":11434",
-            "url":       "http://localhost:11434",
-            "layer":     "termux",
-        },
-        {
-            "id":        "claude",
-            "name":      "Claude Code",
-            "icon":      "◆",
-            "type":      "tool",
-            "installed": claude_installed(d),
-            "running":   False,
-            "version":   reg(d, "claude_code.version", "claude.version", "claude_version"),
-            "detail":    "",
-            "url":       "",
-            "layer":     "termux",
-        },
-        {
-            "id":        "eas",
-            "name":      "Expo / EAS",
-            "icon":      "◈",
-            "type":      "tool",
-            "installed": eas_installed(d),
-            "running":   False,
-            "version":   reg(d, "expo.version", "eas.version", "eas_version", "expo_version"),
-            "detail":    "",
-            "url":       "",
-            "layer":     "termux",
-        },
-        {
-            "id":        "python",
-            "name":      "Python",
-            "icon":      "🐍",
-            "type":      "tool",
-            "installed": reg(d, "python.installed", "python_installed") == "true",
-            "running":   False,
-            "version":   reg(d, "python.version", "python_version"),
-            "detail":    "",
-            "url":       "",
-            "layer":     "termux",
-        },
-        {
-            "id":        "ssh",
-            "name":      "SSH",
-            "icon":      "⌗",
-            "type":      "service",
-            "installed": reg(d, "ssh.installed", "ssh_installed") == "true",
-            "running":   proc_running("sshd"),
-            "version":   reg(d, "ssh.version", "ssh_version"),
-            "detail":    f"{ip}:{reg(d, 'ssh.port', 'ssh_port') or '8022'}",
-            "url":       "",
-            "layer":     "termux",
-        },
-    ]
+    
     return {
-        "ram":     ram,
-        "ip":      ip,
-        "device":  reg(d, "device_model", "device") or "Android",
-        "modules": modules,
+        "device": { "ram": ram, "ip": ip, "time": datetime.datetime.now().strftime("%H:%M:%S") },
+        "n8n": {
+            "version": reg(d, "n8n_version"),
+            "running": proc_running("n8n"),
+            "url": n8n_url
+        },
+        "ollama": {
+            "version": reg(d, "ollama.version", "ollama_version"),
+            "running": proc_running("ollama serve")
+        },
+        "claude": {
+            "version": reg(d, "claude_version"),
+            "running": True if reg(d, "claude_version") else False
+        },
+        "expo": {
+            "version": reg(d, "eas_version"),
+            "running": True if reg(d, "eas_version") else False
+        },
+        "python": {
+            "version": reg(d, "python_version"),
+            "running": True if reg(d, "python_version") else False
+        },
+        "ssh": {
+            "version": reg(d, "ssh_version"),
+            "running": proc_running("sshd")
+        }
     }
 
 # ── Backup ────────────────────────────────────────────────────
 def do_backup():
-    """Ejecuta bash ~/backup.sh en background."""
     backup_sh = os.path.join(HOME, "backup.sh")
     if not os.path.exists(backup_sh):
         return False, "backup.sh no encontrado en ~/"
     try:
-        subprocess.Popen(
-            ["bash", backup_sh],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        return True, "Backup iniciado — revisa /sdcard/termux-backup/"
+        subprocess.Popen(["bash", backup_sh], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return True, "Backup iniciado en background"
     except Exception as e:
         return False, str(e)
 
-# ── Handler HTTP ──────────────────────────────────────────────
-class H(BaseHTTPRequestHandler):
-    def log_message(self, *a): pass
-
-    def send_json(self, code, data):
-        b = json.dumps(data, ensure_ascii=False).encode()
-        self.send_response(code)
-        self.send_header("Content-Type",   "application/json; charset=utf-8")
-        self.send_header("Content-Length", len(b))
-        self.send_header("Access-Control-Allow-Origin", "*")
+# ── Servidor HTTP ─────────────────────────────────────────────
+class MyHandler(BaseHTTPRequestHandler):
+    def send_json(self, data, status=200):
+        self.send_response(status)
+        self.send_header('Content-type', 'application/json')
+        self.send_header('Access-Control-Allow-Origin', '*')
         self.end_headers()
-        self.wfile.write(b)
+        self.wfile.write(json.dumps(data).encode())
 
-    def serve_file(self, path, ct):
-        try:
-            b = open(path, "rb").read()
-            self.send_response(200)
-            self.send_header("Content-Type",   ct)
-            self.send_header("Content-Length", len(b))
-            self.end_headers()
-            self.wfile.write(b)
-        except:
-            self.send_response(404)
-            self.end_headers()
-            self.wfile.write(b"404")
+    def send_cors_headers(self):
+        self.send_response(200)
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        self.end_headers()
+
+    def do_OPTIONS(self):
+        self.send_cors_headers()
 
     def do_GET(self):
-        p = urlparse(self.path).path.rstrip("/") or "/"
+        parsed_path = urlparse(self.path)
+        path = parsed_path.path
 
-        if p in ("/", "/index.html"):
-            self.serve_file(DASHBOARD_DIR + "/index.html", "text/html; charset=utf-8")
+        if path == "/api/status":
+            self.send_json(build_status())
+        
+        elif path == "/api/chatbot/history":
+            # Endpoint para que n8n lea la memoria del chatbot
+            query_components = parse_qs(parsed_path.query)
+            user_id = query_components.get("user_id", [""])[0]
+            limit = int(query_components.get("limit", ["6"])[0])
+            
+            if not user_id:
+                self.send_json({"error": "user_id is required"}, status=400)
+                return
+            
+            try:
+                conn = sqlite3.connect(CHATBOT_DB_PATH)
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT role, content 
+                    FROM messages 
+                    WHERE user_id = ? 
+                    ORDER BY id DESC LIMIT ?
+                """, (user_id, limit))
+                
+                rows = cursor.fetchall()
+                messages = [dict(row) for row in rows]
+                conn.close()
+                
+                self.send_json({"messages": messages})
+            except Exception as e:
+                self.send_json({"error": str(e)}, status=500)
 
-        elif p == "/api/status":
-            self.send_json(200, build_status())
-
-        elif p == "/api/ping":
-            self.send_json(200, {"ok": True, "port": PORT})
-
-        elif p == "/api/registry":
-            self.send_json(200, read_registry())
-
-        elif p == "/api/logs":
-            self.send_json(200, {"logs": list(_cmd_log)})
-
-        # ── Endpoints específicos por módulo ──────────────────
-        elif p == "/api/ollama/models":
-            self.send_json(200, {
-                "running": ollama_running(),
-                "models":  get_ollama_models(),
-            })
-
-        elif p == "/api/ssh/info":
-            self.send_json(200, get_ssh_info())
-
-        elif p == "/api/n8n/url":
-            self.send_json(200, {"url": get_n8n_url()})
-
+        elif path == "/":
+            self.send_response(200)
+            self.send_header('Content-type', 'text/html')
+            self.end_headers()
+            index_path = os.path.join(DASHBOARD_DIR, "index.html")
+            if os.path.exists(index_path):
+                with open(index_path, 'rb') as f:
+                    self.wfile.write(f.read())
+            else:
+                self.wfile.write(b"<h1>Dashboard API corriendo</h1><p>Falta index.html en ~/dashboard/</p>")
         else:
             self.send_response(404)
             self.end_headers()
 
     def do_POST(self):
-        path = urlparse(self.path).path.rstrip("/")
-        n    = int(self.headers.get("Content-Length", 0))
+        parsed_path = urlparse(self.path)
+        path = parsed_path.path
+        
+        content_length = int(self.headers.get('Content-Length', 0))
+        post_data = self.rfile.read(content_length) if content_length > 0 else b""
+        
+        try:
+            req_body = json.loads(post_data.decode('utf-8')) if post_data else {}
+        except json.JSONDecodeError:
+            req_body = {}
 
-        if path == "/api/action":
+        if path == "/api/chatbot/save":
+            # Endpoint para que n8n guarde un nuevo par de mensajes (usuario/asistente)
+            user_id = req_body.get("user_id")
+            user_text = req_body.get("user_text")
+            bot_text = req_body.get("bot_text")
+            
+            if not all([user_id, user_text, bot_text]):
+                self.send_json({"error": "Missing parameters (user_id, user_text, bot_text)"}, status=400)
+                return
+            
             try:
-                b      = json.loads(self.rfile.read(n))
-                action = b.get("action", "").lower()
-                module = b.get("module", "").lower()
-                ts     = datetime.datetime.now().strftime("%H:%M:%S")
-
-                # ── Acciones de sistema ───────────────────────
-                if module == "system" and action == "backup":
-                    ok, msg = do_backup()
-                    _cmd_log.append({"ts": ts, "module": "system", "action": "backup",
-                                     "cmd": "bash ~/backup.sh", "ok": ok})
-                    self.send_json(200 if ok else 500, {"ok": ok, "msg": msg})
-                    return
-
-                # ── Acciones de ollama (pull modelo) ──────────
-                if module == "ollama" and action.startswith("pull:"):
-                    model_name = action.split(":", 1)[1]
-                    subprocess.Popen(
-                        f"tmux new-session -d -s ollama-pull 'ollama pull {model_name}'",
-                        shell=True,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                    )
-                    _cmd_log.append({"ts": ts, "module": "ollama", "action": f"pull {model_name}",
-                                     "cmd": f"ollama pull {model_name}", "ok": True})
-                    self.send_json(200, {"ok": True, "msg": f"Descargando {model_name}..."})
-                    return
-
-                # ── Acciones estándar de servicios ────────────
-                cmds = {
-                    ("n8n",    "start"): "bash ~/start_servidor.sh",
-                    ("n8n",    "stop"):  "tmux kill-session -t n8n-server 2>/dev/null; pkill -f 'n8n start'; pkill -f cloudflared",
-                    ("ollama", "start"): "tmux new-session -d -s ollama-server 'ollama serve' 2>/dev/null || true",
-                    ("ollama", "stop"):  "tmux kill-session -t ollama-server 2>/dev/null; pkill -f 'ollama serve' 2>/dev/null; true",
-                    ("ssh",    "start"): "sshd",
-                    ("ssh",    "stop"):  "pkill sshd",
-                }
-                cmd = cmds.get((module, action))
-
-                if cmd:
-                    subprocess.Popen(
-                        cmd, shell=True,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                    )
-                    _cmd_log.append({"ts": ts, "module": module, "action": action,
-                                     "cmd": cmd, "ok": True})
-                    self.send_json(200, {"ok": True, "msg": f"{module} {action} iniciado"})
-                else:
-                    _cmd_log.append({"ts": ts, "module": module, "action": action,
-                                     "cmd": "", "ok": False})
-                    self.send_json(400, {"ok": False, "msg": "Acción no disponible"})
-
+                conn = sqlite3.connect(CHATBOT_DB_PATH)
+                cursor = conn.cursor()
+                # Insertar mensaje del usuario
+                cursor.execute("INSERT INTO messages (user_id, role, content) VALUES (?, 'user', ?)", (user_id, user_text))
+                # Insertar respuesta del bot
+                cursor.execute("INSERT INTO messages (user_id, role, content) VALUES (?, 'assistant', ?)", (user_id, bot_text))
+                conn.commit()
+                conn.close()
+                self.send_json({"success": True})
             except Exception as e:
-                self.send_json(500, {"ok": False, "msg": str(e)})
+                self.send_json({"error": str(e)}, status=500)
 
+        elif path.startswith("/api/cmd/"):
+            action = path.split("/")[-1]
+            success = False
+            msg = ""
+            
+            if action == "backup":
+                success, msg = do_backup()
+            else:
+                msg = f"Acción desconocida: {action}"
+                
+            self.send_json({"success": success, "msg": msg})
         else:
             self.send_response(404)
             self.end_headers()
 
-os.makedirs(DASHBOARD_DIR, exist_ok=True)
-print(f"[dashboard] :{PORT}  http://localhost:{PORT}")
-HTTPServer(("0.0.0.0", PORT), H).serve_forever()
+if __name__ == '__main__':
+    print(f"Iniciando dashboard en puerto {PORT}...")
+    server = HTTPServer(('0.0.0.0', PORT), MyHandler)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    server.server_close()
+    print("Servidor detenido.")
