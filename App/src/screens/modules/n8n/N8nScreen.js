@@ -1,88 +1,90 @@
-// src/screens/modules/n8n/N8nScreen.js — v2.0.0
-import React, { useState, useEffect, useCallback } from 'react';
+// src/screens/modules/n8n/N8nScreen.js — v2.1.1
+// Fix: campos correctos del dashboard (url/cf_mode/webhook_url)
+// Header: sin compensación sbHeight propia — App.js ya lo maneja globalmente
+import React, { useState, useEffect } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity,
-  Switch, StyleSheet, Platform, Alert, Clipboard,
+  Switch, StyleSheet, Alert, Clipboard,
 } from 'react-native';
-import { useTheme }       from '../../../theme/ThemeContext';
-import { useStatus }      from '../../../hooks/useStatus';
-import { useAction }      from '../../../hooks/useAction';
-import { InputField }     from '../../../components/InputField';
-import { ActionButton }   from '../../../components/ActionButton';
-import { StatusPill }     from '../../../components/StatusPill';
-import { SectionLabel }   from '../../../components/SectionLabel';
-import { Divider }        from '../../../components/Divider';
-import { InfoRow }        from '../../../components/InfoRow';
-import { CodeBox }        from '../../../components/CodeBox';
-import { LogsModal }      from '../../logs/LogsModal';
-import {
-  getN8nInfo, postN8nToken, postN8nWebhook,
-} from '../../../services/dashboard';
+import { useTheme }     from '../../../theme/ThemeContext';
+import { useStatus }    from '../../../hooks/useStatus';
+import { useAction }    from '../../../hooks/useAction';
+import { InputField }   from '../../../components/InputField';
+import { ActionButton } from '../../../components/ActionButton';
+import { StatusPill }   from '../../../components/StatusPill';
+import { SectionLabel } from '../../../components/SectionLabel';
+import { Divider }      from '../../../components/Divider';
+import { InfoRow }      from '../../../components/InfoRow';
+import { CodeBox }      from '../../../components/CodeBox';
+import { LogsModal }    from '../../logs/LogsModal';
+import { getN8nInfo, postN8nToken, postN8nWebhook } from '../../../services/dashboard';
 
-// ─── Helper de estado ────────────────────────────────────────
+// ─── Helper ──────────────────────────────────────────────────
 
-function getStatus(mod) {
-  if (!mod) return 'inactive';
-  if (mod.running === true) return 'active';
-  if (mod.installed) return 'ready';
-  return 'inactive';
+function getModStatus(mod) {
+  if (!mod || !mod.installed) return 'inactive';
+  if (mod.running === true)   return 'active';
+  return 'ready';
 }
 
 // ─── N8nScreen ───────────────────────────────────────────────
 
 export function N8nScreen({ goBack }) {
-  const { theme }               = useTheme();
-  const { status }              = useStatus();
+  const { theme }                = useTheme();
+  const { status }               = useStatus();
   const { actionState, trigger } = useAction('n8n');
   const s = createStyles(theme);
 
-  // Info del módulo desde status
   const mod = status?.modules?.find(m => m.id === 'n8n');
 
-  // Estado local
   const [n8nInfo, setN8nInfo]         = useState(null);
   const [token, setToken]             = useState('');
-  const [tokenSaved, setTokenSaved]   = useState('');  // mensaje feedback
+  const [tokenMsg, setTokenMsg]       = useState('');
   const [webhook, setWebhook]         = useState('');
-  const [webhookSaved, setWebhookSaved] = useState('');
+  const [webhookMsg, setWebhookMsg]   = useState('');
   const [logsVisible, setLogsVisible] = useState(false);
   const [saving, setSaving]           = useState(false);
 
-  // Cargar info de n8n
+  useEffect(() => { loadInfo(); }, []);
+
+  // Recargar URL cuando n8n se activa — cloudflared tarda ~3s en generar URL
   useEffect(() => {
-    loadInfo();
-  }, []);
+    if (mod?.running) {
+      const t = setTimeout(loadInfo, 3500);
+      return () => clearTimeout(t);
+    }
+  }, [mod?.running]);
 
   const loadInfo = async () => {
     try {
       const data = await getN8nInfo();
+      // /api/n8n/info devuelve: { url, cf_mode, webhook_url }
+      // cf_mode: "fija" (con token) | "temporal" (free/sin token)
       setN8nInfo(data);
-      if (data?.webhook_url) setWebhook(data.webhook_url);
+      if (data?.webhook_url && !webhook) setWebhook(data.webhook_url);
     } catch { /* dashboard offline */ }
   };
 
-  // ── Guardar token ─────────────────────────────────────────
+  // ── Token ─────────────────────────────────────────────────
 
   const handleSaveToken = async () => {
     if (!token.trim()) return;
     setSaving(true);
     try {
       await postN8nToken(token.trim());
-      setTokenSaved('✓ Token guardado — reinicia n8n para aplicar');
+      setTokenMsg('✓ Guardado — reinicia n8n para aplicar');
       setToken('');
-      setTimeout(() => setTokenSaved(''), 4000);
+      setTimeout(() => { setTokenMsg(''); loadInfo(); }, 3500);
     } catch {
-      setTokenSaved('✗ Error al guardar token');
-      setTimeout(() => setTokenSaved(''), 3000);
-    } finally {
-      setSaving(false);
-    }
+      setTokenMsg('✗ Error al guardar');
+      setTimeout(() => setTokenMsg(''), 3000);
+    } finally { setSaving(false); }
   };
 
-  const handleRemoveToken = async () => {
+  const handleRemoveToken = () => {
     Alert.alert(
       'Quitar token',
-      '¿Quitar el token cloudflared? n8n usará URL temporal (gratuita).',
+      'n8n usará URL temporal gratuita. Cambia cada vez que reinicias.',
       [
         { text: 'Cancelar', style: 'cancel' },
         {
@@ -91,52 +93,52 @@ export function N8nScreen({ goBack }) {
             setSaving(true);
             try {
               await postN8nToken('', true);
-              setTokenSaved('✓ Token eliminado');
-              setTimeout(() => setTokenSaved(''), 3000);
+              setTokenMsg('✓ Token eliminado — modo free activo');
+              setTimeout(() => { setTokenMsg(''); loadInfo(); }, 3000);
             } catch {
-              setTokenSaved('✗ Error al quitar token');
-              setTimeout(() => setTokenSaved(''), 3000);
-            } finally {
-              setSaving(false);
-              loadInfo();
-            }
+              setTokenMsg('✗ Error al quitar');
+              setTimeout(() => setTokenMsg(''), 3000);
+            } finally { setSaving(false); }
           },
         },
       ]
     );
   };
 
-  // ── Guardar webhook ──────────────────────────────────────
+  // ── Webhook ───────────────────────────────────────────────
 
   const handleSaveWebhook = async () => {
     if (!webhook.trim()) return;
     setSaving(true);
     try {
       await postN8nWebhook(webhook.trim());
-      setWebhookSaved('✓ Webhook guardado');
-      setTimeout(() => setWebhookSaved(''), 3000);
+      setWebhookMsg('✓ Webhook guardado — reinicia n8n');
+      setTimeout(() => setWebhookMsg(''), 3500);
     } catch {
-      setWebhookSaved('✗ Error al guardar');
-      setTimeout(() => setWebhookSaved(''), 3000);
-    } finally {
-      setSaving(false);
-    }
+      setWebhookMsg('✗ Error al guardar');
+      setTimeout(() => setWebhookMsg(''), 3000);
+    } finally { setSaving(false); }
   };
 
-  const copyToClipboard = (text) => {
-    Clipboard.setString(text);
-  };
+  // ── Derivados de la respuesta del dashboard ───────────────
+  // Fuente primaria: /api/n8n/info → { url, cf_mode, webhook_url }
+  // Fuente fallback: /api/status   → { n8n_url }
+  const tunnelUrl    = n8nInfo?.url || status?.n8n_url || '';
+  const cfMode       = n8nInfo?.cf_mode || '';   // "fija" | "temporal" | ""
+  const hasToken     = cfMode === 'fija';
+  const urlModeLabel = hasToken    ? '⚿ token fijo'
+                     : tunnelUrl   ? '○ free (temporal)'
+                     : '— sin URL';
+  const urlModeColor = hasToken    ? theme.success
+                     : tunnelUrl   ? theme.warning
+                     : theme.textMuted;
 
-  // ── URL mode ─────────────────────────────────────────────
-  // Determina si la URL es de token fijo o free (temporal)
-  const tunnelUrl    = n8nInfo?.tunnel_url || status?.n8n_url || '';
-  const hasToken     = n8nInfo?.has_token === true;
-  const urlMode      = hasToken ? 'tunnel' : tunnelUrl ? 'free' : 'sin URL';
-  const urlModeColor = hasToken ? theme.success : tunnelUrl ? theme.warning : theme.textMuted;
+  // ── Render ────────────────────────────────────────────────
 
   return (
     <View style={s.root}>
-      {/* Header con back */}
+
+      {/* TopBar — sin compensación de status bar (App.js la maneja) */}
       <View style={s.topBar}>
         <TouchableOpacity onPress={goBack} style={s.backBtn} activeOpacity={0.7}>
           <Text style={s.backIcon}>‹</Text>
@@ -147,21 +149,21 @@ export function N8nScreen({ goBack }) {
       <ScrollView style={s.scroll} contentContainerStyle={s.content}
         showsVerticalScrollIndicator={false}>
 
-        {/* ── Título + estado + switch ── */}
+        {/* ── Header módulo ── */}
         <View style={s.moduleHeader}>
           <View style={s.moduleLeft}>
-            <Text style={s.moduleIcon}>∞</Text>
+            <Text style={s.modIcon}>∞</Text>
             <View>
-              <Text style={s.moduleName}>n8n</Text>
-              {mod?.version ? <Text style={s.moduleVer}>v{mod.version}</Text> : null}
+              <Text style={s.modName}>n8n</Text>
+              {mod?.version ? <Text style={s.modVer}>v{mod.version}</Text> : null}
             </View>
           </View>
           <View style={s.moduleRight}>
-            <StatusPill status={getStatus(mod)} />
+            <StatusPill status={getModStatus(mod)} />
             {mod?.installed ? (
               <Switch
                 value={mod?.running === true}
-                onValueChange={(val) => trigger(val ? 'start' : 'stop')}
+                onValueChange={val => trigger(val ? 'start' : 'stop')}
                 trackColor={{ false: theme.overlay, true: theme.success }}
                 thumbColor={mod?.running ? '#fff' : theme.textMuted}
                 disabled={actionState === 'loading'}
@@ -177,7 +179,7 @@ export function N8nScreen({ goBack }) {
             { color: theme.warning }
           ]}>
             {actionState === 'loading' ? '⏳ Aplicando...' :
-             actionState === 'success' ? '✓ Hecho' : '✗ Sin respuesta'}
+             actionState === 'success' ? '✓ Listo' : '✗ Sin respuesta'}
           </Text>
         )}
 
@@ -187,16 +189,14 @@ export function N8nScreen({ goBack }) {
         <SectionLabel>URL PÚBLICA</SectionLabel>
         <View style={s.urlRow}>
           <View style={[s.modePill, { borderColor: urlModeColor + '55' }]}>
-            <Text style={[s.modeText, { color: urlModeColor }]}>
-              {urlMode === 'tunnel' ? '⚿ token' : urlMode === 'free' ? '○ free' : '— sin URL'}
-            </Text>
+            <Text style={[s.modeText, { color: urlModeColor }]}>{urlModeLabel}</Text>
           </View>
-          <TouchableOpacity style={s.refreshBtn} onPress={loadInfo} activeOpacity={0.7}>
-            <Text style={s.refreshIcon}>↻</Text>
+          <TouchableOpacity style={s.iconBtn} onPress={loadInfo} activeOpacity={0.7}>
+            <Text style={s.iconBtnText}>↻</Text>
           </TouchableOpacity>
         </View>
         {tunnelUrl ? (
-          <CodeBox value={tunnelUrl} onCopy={copyToClipboard} label="URL activa" />
+          <CodeBox value={tunnelUrl} label="URL activa" onCopy={v => Clipboard.setString(v)} />
         ) : (
           <Text style={s.emptyNote}>
             {mod?.running ? 'Obteniendo URL...' : 'Inicia n8n para ver la URL'}
@@ -208,21 +208,22 @@ export function N8nScreen({ goBack }) {
         {/* ── Token cloudflared ── */}
         <SectionLabel>TOKEN CLOUDFLARED</SectionLabel>
         <Text style={s.hint}>
-          Con token: URL fija permanente.{'\n'}Sin token: URL temporal gratuita (cambia al reiniciar).
+          Con token: URL fija permanente.{'\n'}
+          Sin token: URL temporal gratuita (cambia al reiniciar).
         </Text>
-        <View style={s.tokenStatus}>
-          <Text style={[s.tokenState,
-            hasToken ? { color: theme.success } : { color: theme.textMuted }
-          ]}>
-            {hasToken ? '⚿ Token configurado' : '○ Sin token (modo free)'}
-          </Text>
-        </View>
+        <Text style={[s.tokenState,
+          hasToken ? { color: theme.success } : { color: theme.textMuted }
+        ]}>
+          {hasToken ? '⚿ Token configurado — URL fija' : '○ Sin token (modo free)'}
+        </Text>
+
         <InputField
           label="Nuevo token"
           value={token}
           onChangeText={setToken}
           placeholder="eyJhGxn0..."
           secureTextEntry
+          style={{ marginTop: 10 }}
         />
         <View style={s.btnRow}>
           <ActionButton
@@ -242,17 +243,17 @@ export function N8nScreen({ goBack }) {
             />
           ) : null}
         </View>
-        {tokenSaved ? (
+        {tokenMsg ? (
           <Text style={[s.feedback,
-            tokenSaved.startsWith('✓') ? { color: theme.success } : { color: theme.error }
-          ]}>{tokenSaved}</Text>
+            tokenMsg.startsWith('✓') ? { color: theme.success } : { color: theme.error }
+          ]}>{tokenMsg}</Text>
         ) : null}
 
         <Divider />
 
         {/* ── Webhook URL ── */}
         <SectionLabel>WEBHOOK URL</SectionLabel>
-        <Text style={s.hint}>URL de tu workflow de Telegram en n8n.</Text>
+        <Text style={s.hint}>URL del workflow de Telegram en n8n.</Text>
         <InputField
           label="URL webhook"
           value={webhook}
@@ -266,10 +267,10 @@ export function N8nScreen({ goBack }) {
           state={saving ? 'loading' : 'idle'}
           disabled={!webhook.trim()}
         />
-        {webhookSaved ? (
+        {webhookMsg ? (
           <Text style={[s.feedback,
-            webhookSaved.startsWith('✓') ? { color: theme.success } : { color: theme.error }
-          ]}>{webhookSaved}</Text>
+            webhookMsg.startsWith('✓') ? { color: theme.success } : { color: theme.error }
+          ]}>{webhookMsg}</Text>
         ) : null}
 
         <Divider />
@@ -286,91 +287,79 @@ export function N8nScreen({ goBack }) {
 
         {/* ── Info técnica ── */}
         <SectionLabel>INFO TÉCNICA</SectionLabel>
-        <InfoRow label="Puerto"       value="5678 (proot Debian)" />
-        <InfoRow label="Node.js"      value="v20 LTS (fijo)" />
-        <InfoRow label="Protocolo"    value="HTTPS + cloudflared" />
-        <InfoRow label="Webhook activo"
-          value={n8nInfo?.webhook_url ? 'Sí' : 'No'}
+        <InfoRow label="Puerto"      value="5678 (proot Debian)" />
+        <InfoRow label="Node.js"     value="v20 LTS (fijo)" />
+        <InfoRow label="Protocolo"   value="HTTPS + cloudflared" />
+        <InfoRow label="Modo tunnel"
+          value={cfMode || '—'}
+          valueColor={hasToken ? theme.success : cfMode ? theme.warning : theme.textMuted}
+        />
+        <InfoRow label="Webhook"
+          value={n8nInfo?.webhook_url ? 'Configurado' : 'Sin configurar'}
           valueColor={n8nInfo?.webhook_url ? theme.success : theme.textMuted}
         />
 
         <View style={{ height: 32 }} />
       </ScrollView>
 
-      {/* Modal de logs */}
-      <LogsModal
-        visible={logsVisible}
-        module="n8n"
-        onClose={() => setLogsVisible(false)}
-      />
+      <LogsModal visible={logsVisible} module="n8n" onClose={() => setLogsVisible(false)} />
     </View>
   );
 }
 
-// ─── Estilos ─────────────────────────────────────────────────
+// ─── Estilos — sin sbHeight, App.js lo maneja ────────────────
 
 function createStyles(t) {
   return StyleSheet.create({
-    root:   { flex: 1, backgroundColor: t.bg },
+    root:  { flex: 1, backgroundColor: t.bg },
+
     topBar: {
-      flexDirection: 'row',
-      alignItems: 'center',
+      paddingTop: 10,
+      paddingBottom: 10,
       paddingHorizontal: 14,
-      paddingTop: Platform.OS === 'android' ? 10 : 16,
-      paddingBottom: 6,
       backgroundColor: t.surface,
       borderBottomWidth: 1,
       borderBottomColor: t.border,
+      flexDirection: 'row',
+      alignItems: 'center',
     },
     backBtn:  { flexDirection: 'row', alignItems: 'center', gap: 4, padding: 4 },
-    backIcon: { fontSize: 22, color: t.accent, fontWeight: '700' },
+    backIcon: { fontSize: 24, color: t.accent, fontWeight: '700', lineHeight: 28 },
     backText: { fontSize: 14, color: t.accent, fontWeight: '500' },
 
     scroll:  { flex: 1 },
     content: { padding: 16 },
 
-    // Header módulo
     moduleHeader: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      justifyContent: 'space-between',
-      marginBottom: 6,
+      flexDirection: 'row', alignItems: 'center',
+      justifyContent: 'space-between', marginBottom: 6,
     },
     moduleLeft:  { flexDirection: 'row', alignItems: 'center', gap: 12 },
-    moduleIcon:  { fontSize: 32, color: '#e05d28' },
-    moduleName:  { fontSize: 20, fontWeight: '700', color: t.textPrimary },
-    moduleVer:   { fontSize: 11, color: t.textMuted, marginTop: 2 },
+    modIcon:     { fontSize: 34, color: '#e05d28' },
+    modName:     { fontSize: 20, fontWeight: '700', color: t.textPrimary },
+    modVer:      { fontSize: 11, color: t.textMuted, marginTop: 2 },
     moduleRight: { flexDirection: 'row', alignItems: 'center', gap: 10 },
 
-    feedback: { fontSize: 12, fontWeight: '600', marginBottom: 8 },
+    feedback: { fontSize: 12, fontWeight: '600', marginVertical: 6 },
 
-    // URL
-    urlRow:      { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 },
-    modePill:    { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 999,
-                   borderWidth: 1, backgroundColor: t.overlay },
-    modeText:    { fontSize: 11, fontWeight: '700' },
-    refreshBtn:  { width: 32, height: 32, borderRadius: 8, backgroundColor: t.overlay,
-                   borderWidth: 1, borderColor: t.border,
-                   alignItems: 'center', justifyContent: 'center' },
-    refreshIcon: { fontSize: 16, color: t.textSecond },
+    urlRow:   { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 },
+    modePill: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 999,
+                borderWidth: 1, backgroundColor: t.overlay },
+    modeText: { fontSize: 11, fontWeight: '700' },
+    iconBtn:  { width: 32, height: 32, borderRadius: 8, backgroundColor: t.overlay,
+                borderWidth: 1, borderColor: t.border,
+                alignItems: 'center', justifyContent: 'center' },
+    iconBtnText: { fontSize: 16, color: t.textSecond },
     emptyNote:   { fontSize: 12, color: t.textMuted, marginBottom: 8, fontStyle: 'italic' },
 
-    // Token
-    hint: { fontSize: 12, color: t.textSecond, marginBottom: 10, lineHeight: 18 },
-    tokenStatus: { marginBottom: 10 },
-    tokenState:  { fontSize: 12, fontWeight: '600' },
-    btnRow:      { flexDirection: 'row', gap: 8, marginBottom: 4 },
+    hint:       { fontSize: 12, color: t.textSecond, marginBottom: 8, lineHeight: 18 },
+    tokenState: { fontSize: 12, fontWeight: '600', marginBottom: 4 },
+    btnRow:     { flexDirection: 'row', gap: 8, marginBottom: 4 },
 
-    // Logs
     logsBtn: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      backgroundColor: t.card,
-      borderWidth: 1,
-      borderColor: t.border,
-      borderRadius: 10,
-      padding: 14,
-      gap: 10,
+      flexDirection: 'row', alignItems: 'center',
+      backgroundColor: t.card, borderWidth: 1, borderColor: t.border,
+      borderRadius: 10, padding: 14, gap: 10,
     },
     logsIcon:    { fontSize: 16, color: t.accent },
     logsBtnText: { flex: 1, fontSize: 13, fontWeight: '600', color: t.textPrimary },
