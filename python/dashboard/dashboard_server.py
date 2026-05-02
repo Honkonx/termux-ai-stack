@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 # termux-ai-stack · dashboard_server.py
-# v2.1.0 | Mayo 2026
-# Fix: token save sin chmod (SELinux Android 15) · pattern n8n/stop más específico
+# v2.3.0 | Mayo 2026
+# S14: /api/claude/projects
+# S15: WebSocket PTY (:8081) + /api/claude/download-dirs + /api/claude/project/create + delete
 
-import os, json, subprocess, collections, shutil, sqlite3
+import os, json, subprocess, collections, shutil, sqlite3, threading, struct, fcntl, termios, pty, select, signal
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 from urllib import request as ureq
@@ -13,6 +14,7 @@ HOME          = os.path.expanduser("~")
 REGISTRY_FILE = os.path.join(HOME, ".android_server_registry")
 TERMUX_PREFIX = os.environ.get("TERMUX_PREFIX", "/data/data/com.termux/files/usr")
 PORT          = 8080
+PORT_WS       = 8081  # WebSocket PTY server
 
 BOT_HISTORY_DB = os.path.join(HOME, "bot_history.db")
 _cmd_log       = collections.deque(maxlen=30)
@@ -459,6 +461,34 @@ class Handler(BaseHTTPRequestHandler):
                     logs = "[Logs no disponibles — n8n debe estar corriendo]"
             self.send_json({"logs": logs})
 
+        # ── /api/claude/projects ─────────────────
+        elif path == "/api/claude/projects":
+            proj_dir = os.path.join(HOME, "proyectos")
+            projects = []
+            try:
+                for name in sorted(os.listdir(proj_dir)):
+                    full = os.path.join(proj_dir, name)
+                    is_link = os.path.islink(full)
+                    target = ""
+                    if is_link:
+                        try: target = os.readlink(full)
+                        except: pass
+                    projects.append({"name": name, "is_symlink": is_link, "target": target})
+            except: pass
+            self.send_json({"projects": projects})
+
+        # ── /api/claude/download-dirs ─────────────
+        elif path == "/api/claude/download-dirs":
+            dl_path = "/storage/emulated/0/Download"
+            dirs = []
+            try:
+                for name in sorted(os.listdir(dl_path)):
+                    full = os.path.join(dl_path, name)
+                    if os.path.isdir(full):
+                        dirs.append(name)
+            except: pass
+            self.send_json({"dirs": dirs})
+
         # ── /api/chat/history ─────────────────────
         elif path == "/api/chat/history":
             chat_id = params.get("chat_id", ["app_local"])[0]
@@ -615,12 +645,284 @@ class Handler(BaseHTTPRequestHandler):
                 write_registry("claude_code.endpoint", endpoint)
             self.send_json({"ok": True, "msg": "Configuración guardada"})
 
+        # ── /api/claude/project/create ───────────
+        elif path == "/api/claude/project/create":
+            name = body.get("name", "").strip()
+            if not name:
+                self.send_json({"ok": False, "msg": "nombre vacío"}, 400)
+                return
+            proj_dir = os.path.join(HOME, "proyectos")
+            dl_path  = "/storage/emulated/0/Download"
+            src  = os.path.join(dl_path, name)
+            dst  = os.path.join(proj_dir, name)
+            try:
+                os.makedirs(proj_dir, exist_ok=True)
+                if os.path.exists(dst) or os.path.islink(dst):
+                    self.send_json({"ok": False, "msg": f"Ya existe: ~/proyectos/{name}"})
+                    return
+                os.symlink(src, dst)
+                self.send_json({"ok": True, "msg": f"Symlink creado: ~/proyectos/{name} → {src}"})
+            except Exception as e:
+                self.send_json({"ok": False, "msg": str(e)}, 500)
+
+        # ── /api/claude/project/delete ───────────
+        elif path == "/api/claude/project/delete":
+            name = body.get("name", "").strip()
+            if not name or "/" in name or ".." in name:
+                self.send_json({"ok": False, "msg": "nombre inválido"}, 400)
+                return
+            target = os.path.join(HOME, "proyectos", name)
+            try:
+                if os.path.islink(target):
+                    os.remove(target)
+                    self.send_json({"ok": True, "msg": f"Symlink eliminado: {name}"})
+                else:
+                    self.send_json({"ok": False, "msg": "No es un symlink"})
+            except Exception as e:
+                self.send_json({"ok": False, "msg": str(e)}, 500)
+
         else:
             self.send_json({"error": "not found"}, 404)
 
 
+# ── WebSocket PTY Server (:8081) ──────────────────────────────
+
+WS_MAGIC = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+
+def ws_handshake(conn, key):
+    import base64, hashlib
+    accept = base64.b64encode(hashlib.sha1((key + WS_MAGIC).encode()).digest()).decode()
+    response = (
+        "HTTP/1.1 101 Switching Protocols\r\n"
+        "Upgrade: websocket\r\n"
+        "Connection: Upgrade\r\n"
+        "Sec-WebSocket-Accept: " + accept + "\r\n\r\n"
+    )
+    conn.sendall(response.encode())
+
+def ws_recv_frame(conn):
+    try:
+        header = b""
+        while len(header) < 2:
+            chunk = conn.recv(2 - len(header))
+            if not chunk: return None, None
+            header += chunk
+        b0, b1 = header[0], header[1]
+        opcode = b0 & 0x0F
+        masked  = (b1 & 0x80) != 0
+        plen    = b1 & 0x7F
+        if plen == 126:
+            ext = b""
+            while len(ext) < 2: ext += conn.recv(2 - len(ext))
+            plen = struct.unpack("!H", ext)[0]
+        elif plen == 127:
+            ext = b""
+            while len(ext) < 8: ext += conn.recv(8 - len(ext))
+            plen = struct.unpack("!Q", ext)[0]
+        mask_key = b""
+        if masked:
+            while len(mask_key) < 4: mask_key += conn.recv(4 - len(mask_key))
+        payload = b""
+        while len(payload) < plen:
+            chunk = conn.recv(plen - len(payload))
+            if not chunk: return None, None
+            payload += chunk
+        if masked:
+            payload = bytes(payload[i] ^ mask_key[i % 4] for i in range(len(payload)))
+        return opcode, payload
+    except: return None, None
+
+def ws_send_text(conn, data):
+    try:
+        if isinstance(data, str):
+            data = data.encode("utf-8", errors="replace")
+        length = len(data)
+        if length <= 125:
+            header = bytes([0x81, length])
+        elif length <= 65535:
+            header = struct.pack("!BBH", 0x81, 126, length)
+        else:
+            header = struct.pack("!BBQ", 0x81, 127, length)
+        conn.sendall(header + data)
+    except: pass
+
+def find_claude_cli():
+    """Localiza cli.js de Claude Code — misma lógica que menu.sh"""
+    candidates = [
+        "/data/data/com.termux/files/usr/lib/node_modules/@anthropic-ai/claude-code/cli.js",
+        os.path.join(HOME, ".npm-global/lib/node_modules/@anthropic-ai/claude-code/cli.js"),
+        os.path.join(HOME, ".node_modules/@anthropic-ai/claude-code/cli.js"),
+    ]
+    # Intentar leer ruta desde el wrapper /usr/bin/claude
+    wrapper = "/data/data/com.termux/files/usr/bin/claude"
+    try:
+        with open(wrapper) as f:
+            for line in f:
+                if "cli.js" in line and "node" in line:
+                    import re
+                    m = re.search(r'(/[^\s"]+cli\.js)', line)
+                    if m and os.path.isfile(m.group(1)):
+                        return m.group(1)
+    except: pass
+    for p in candidates:
+        if os.path.isfile(p):
+            return p
+    return None
+
+def handle_ws_client(conn, addr):
+    try:
+        # HTTP upgrade
+        request = b""
+        while b"\r\n\r\n" not in request:
+            chunk = conn.recv(1024)
+            if not chunk: return
+            request += chunk
+        lines = request.decode("utf-8", errors="replace").split("\r\n")
+        ws_key = ""
+        for line in lines:
+            if line.lower().startswith("sec-websocket-key:"):
+                ws_key = line.split(":", 1)[1].strip()
+                break
+        if not ws_key:
+            conn.close(); return
+        ws_handshake(conn, ws_key)
+        conn.setblocking(False)
+
+        # Esperar mensaje init del cliente (contiene project_dir y cols/rows)
+        project_dir = None
+        cols, rows = 80, 24
+        deadline = __import__("time").time() + 5  # máx 5s esperando init
+        while __import__("time").time() < deadline:
+            try:
+                r, _, _ = select.select([conn], [], [], 0.2)
+                if r:
+                    opcode, payload = ws_recv_frame(conn)
+                    if opcode == 1 and payload:
+                        try:
+                            msg = json.loads(payload.decode("utf-8"))
+                            if msg.get("type") == "init":
+                                project_dir = msg.get("project_dir", "").strip() or None
+                                cols = int(msg.get("cols", 80))
+                                rows = int(msg.get("rows", 24))
+                                break
+                        except: pass
+            except (BlockingIOError, OSError): pass
+
+        # Resolver comando y directorio de trabajo
+        node_bin = "/data/data/com.termux/files/usr/bin/node"
+        cli_js   = find_claude_cli()
+
+        if not cli_js or not os.path.isfile(cli_js):
+            ws_send_text(conn, b"\x1b[31m[ERROR] claude cli.js no encontrado\x1b[0m\r\n")
+            ws_send_text(conn, b"\x1b[33mReinstala Claude Code desde el menu de Termux\x1b[0m\r\n")
+            conn.close(); return
+
+        # Directorio de trabajo
+        work_dir = HOME
+        if project_dir and os.path.isdir(project_dir):
+            work_dir = project_dir
+        elif project_dir:
+            # Intentar resolver como nombre relativo a ~/proyectos/
+            candidate = os.path.join(HOME, "proyectos", project_dir)
+            if os.path.isdir(candidate):
+                work_dir = candidate
+
+        # Spawn Claude Code en PTY
+        cmd = [node_bin, cli_js]
+        env = os.environ.copy()
+        env["TERM"]                 = "xterm-256color"
+        env["LANG"]                 = "en_US.UTF-8"
+        env["DISABLE_AUTOUPDATER"]  = "1"
+        env["DISABLE_UPDATES"]      = "1"
+        env["HOME"]                 = HOME
+
+        master_fd, slave_fd = pty.openpty()
+        # Configurar tamaño inicial del PTY
+        winsize = struct.pack("HHHH", rows, cols, 0, 0)
+        fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, winsize)
+
+        proc = subprocess.Popen(
+            cmd,
+            stdin=slave_fd, stdout=slave_fd, stderr=slave_fd,
+            close_fds=True, env=env, cwd=work_dir,
+            preexec_fn=os.setsid,
+        )
+        os.close(slave_fd)
+        conn.setblocking(False)
+
+        def pty_to_ws():
+            while proc.poll() is None:
+                try:
+                    r, _, _ = select.select([master_fd], [], [], 0.05)
+                    if r:
+                        try:
+                            data = os.read(master_fd, 4096)
+                            ws_send_text(conn, data)
+                        except OSError: break
+                except: break
+            ws_send_text(conn, b"\r\n\x1b[33m[sesion terminada]\x1b[0m\r\n")
+            try: conn.close()
+            except: pass
+
+        threading.Thread(target=pty_to_ws, daemon=True).start()
+
+        while proc.poll() is None:
+            try:
+                r, _, _ = select.select([conn], [], [], 0.1)
+                if not r: continue
+                opcode, payload = ws_recv_frame(conn)
+                if opcode is None or opcode == 8:
+                    break
+                if opcode == 1 and payload:
+                    try:
+                        msg = json.loads(payload.decode("utf-8"))
+                        if msg.get("type") == "input":
+                            os.write(master_fd, msg["data"].encode("utf-8", errors="replace"))
+                        elif msg.get("type") == "resize":
+                            cols = int(msg.get("cols", 80))
+                            rows = int(msg.get("rows", 24))
+                            winsize = struct.pack("HHHH", rows, cols, 0, 0)
+                            fcntl.ioctl(master_fd, termios.TIOCSWINSZ, winsize)
+                    except: pass
+            except (BlockingIOError, OSError): continue
+            except: break
+
+        try: proc.terminate()
+        except: pass
+        try: os.close(master_fd)
+        except: pass
+        try: conn.close()
+        except: pass
+    except Exception:
+        try: conn.close()
+        except: pass
+
+
+def start_ws_server():
+    """Inicia el servidor WebSocket PTY en PORT_WS"""
+    import socket
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        srv.bind(("0.0.0.0", PORT_WS))
+        srv.listen(5)
+        print(f"[ws-pty] Escuchando en :{PORT_WS}")
+        while True:
+            try:
+                conn, addr = srv.accept()
+                threading.Thread(target=handle_ws_client, args=(conn, addr), daemon=True).start()
+            except: break
+    except Exception as e:
+        print(f"[ws-pty] Error: {e}")
+    finally:
+        srv.close()
+
+
 if __name__ == "__main__":
-    print(f"[dashboard] v2.0.0 iniciando en puerto {PORT}...")
+    print(f"[dashboard] v2.3.0 iniciando en puerto {PORT}...")
+    # Iniciar WebSocket PTY en hilo separado
+    ws_thread = threading.Thread(target=start_ws_server, daemon=True)
+    ws_thread.start()
     server = HTTPServer(("0.0.0.0", PORT), Handler)
     try:
         server.serve_forever()
