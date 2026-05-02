@@ -2191,45 +2191,108 @@ PYREPORT
         _check_script "$BACKTEST_SCRIPT" "backtest_runner.py" || continue
         clear; echo ""
         echo -e "  ${CYAN}${BOLD}BACKTESTING — CSV MT5${NC}"
-        echo -e "  ${DIM}Coloca el CSV en ~/trading/ o /sdcard/Download/trading/${NC}"; echo ""
+        echo -e "  ${DIM}Busca CSV en: ~/trading/ · /sdcard/Download/trading/ · /sdcard/Download/${NC}"; echo ""
         python3 "$BACKTEST_SCRIPT" < /dev/tty
         echo ""; read -r _ < /dev/tty ;;
       11)
         _py_ok || continue
         clear; echo ""
         echo -e "  ${CYAN}${BOLD}EJECUTAR BOT PYTHON${NC}"; echo ""
-        # Buscar scripts en ~/python/trading/ excluyendo los del stack
-        STACK_SCRIPTS="signal_bot.py trade_tracker.py webhook_receiver.py backtest_runner.py"
-        mapfile -t BOTS < <(find "$TRADING_DIR" -maxdepth 1 -name "*.py" 2>/dev/null | sort)
-        if [ ${#BOTS[@]} -eq 0 ]; then
-          echo -e "  ${YELLOW}[AVISO]${NC} No hay scripts en $TRADING_DIR"
-          echo ""; read -r _ < /dev/tty; continue
-        fi
-        echo -e "  Scripts en $TRADING_DIR:\n"
+
+        # ── Rutas de búsqueda predeterminadas ────────────────────
+        BOT_SEARCH_DIRS=(
+          "$TRADING_DIR"
+          "/sdcard/Download/bots"
+          "/sdcard/Download/trading"
+          "/sdcard/Download"
+        )
+        # Scripts del stack a excluir
+        STACK_SCRIPTS="signal_bot.py|trade_tracker.py|webhook_receiver.py|backtest_runner.py"
+
+        # ── Recolectar scripts de todas las rutas ─────────────────
         BOT_LIST=()
-        for f in "${BOTS[@]}"; do
-          nombre_bot="$(basename "$f")"
-          BOT_LIST+=("$f")
-          printf "    [%d] %s\n" "${#BOT_LIST[@]}" "$nombre_bot"
+        for dir in "${BOT_SEARCH_DIRS[@]}"; do
+          [ -d "$dir" ] || continue
+          while IFS= read -r f; do
+            nombre_bot="$(basename "$f")"
+            echo "$nombre_bot" | grep -qE "^($STACK_SCRIPTS)$" && continue
+            BOT_LIST+=("$f")
+          done < <(find "$dir" -maxdepth 1 -name "*.py" 2>/dev/null | sort)
         done
-        echo ""
-        echo "    [m] Ruta manual"
+
+        # ── Mostrar lista ─────────────────────────────────────────
+        if [ ${#BOT_LIST[@]} -eq 0 ]; then
+          echo -e "  ${YELLOW}[AVISO]${NC} No se encontraron bots en:\n"
+          for dir in "${BOT_SEARCH_DIRS[@]}"; do
+            echo "    • $dir"
+          done
+          echo ""
+        else
+          echo -e "  Bots encontrados:\n"
+          for i in "${!BOT_LIST[@]}"; do
+            printf "    [%d] %s  ${DIM}(%s)${NC}\n" \
+              "$((i+1))" "$(basename "${BOT_LIST[$i]}")" \
+              "$(dirname "${BOT_LIST[$i]}")"
+          done
+          echo ""
+        fi
+
+        echo "    [m] Navegar otra carpeta"
+        echo "    [c] Crear carpeta /sdcard/Download/bots/"
         echo ""; echo -n "  Elige número: "
         read -r BOT_OPT < /dev/tty
-        if [ "$BOT_OPT" = "m" ] || [ "$BOT_OPT" = "M" ]; then
-          echo -n "  Ruta del script: "
-          read -r BOT_PATH < /dev/tty
-          BOT_PATH="${BOT_PATH/#\~/$HOME}"
+
+        if [ "$BOT_OPT" = "c" ] || [ "$BOT_OPT" = "C" ]; then
+          mkdir -p "/sdcard/Download/bots" \
+            && echo -e "  ${GREEN}[OK]${NC} Carpeta creada: /sdcard/Download/bots" \
+            || echo -e "  ${RED}[ERROR]${NC} No se pudo crear la carpeta"
+          echo ""; read -r _ < /dev/tty; continue
+
+        elif [ "$BOT_OPT" = "m" ] || [ "$BOT_OPT" = "M" ]; then
+          # ── Navegar carpeta: listar y elegir número ───────────
+          clear; echo ""
+          echo -e "  ${CYAN}Carpetas disponibles:${NC}"; echo ""
+          NAV_DIRS=("$HOME/python" "/sdcard/Download" "$HOME")
+          for i in "${!NAV_DIRS[@]}"; do
+            printf "    [%d] %s\n" "$((i+1))" "${NAV_DIRS[$i]}"
+          done
+          echo ""; echo -n "  Elegir carpeta (número): "
+          read -r NAV_OPT < /dev/tty
+          if [[ "$NAV_OPT" =~ ^[0-9]+$ ]] && [ "$NAV_OPT" -ge 1 ] && [ "$NAV_OPT" -le "${#NAV_DIRS[@]}" ]; then
+            NAV_DIR="${NAV_DIRS[$((NAV_OPT-1))]}"
+          else
+            echo -e "  ${YELLOW}[?]${NC} Opción inválida"; echo ""; read -r _ < /dev/tty; continue
+          fi
+          mapfile -t NAV_FILES < <(find "$NAV_DIR" -maxdepth 2 -name "*.py" 2>/dev/null | sort)
+          if [ ${#NAV_FILES[@]} -eq 0 ]; then
+            echo -e "  ${YELLOW}[AVISO]${NC} No hay .py en $NAV_DIR"
+            echo ""; read -r _ < /dev/tty; continue
+          fi
+          clear; echo ""
+          echo -e "  Scripts en $NAV_DIR:\n"
+          for i in "${!NAV_FILES[@]}"; do
+            printf "    [%d] %s\n" "$((i+1))" "$(basename "${NAV_FILES[$i]}")"
+          done
+          echo ""; echo -n "  Número: "
+          read -r NAV_SEL < /dev/tty
+          if [[ "$NAV_SEL" =~ ^[0-9]+$ ]] && [ "$NAV_SEL" -ge 1 ] && [ "$NAV_SEL" -le "${#NAV_FILES[@]}" ]; then
+            BOT_PATH="${NAV_FILES[$((NAV_SEL-1))]}"
+          else
+            echo -e "  ${YELLOW}[?]${NC} Opción inválida"; echo ""; read -r _ < /dev/tty; continue
+          fi
+
         elif [[ "$BOT_OPT" =~ ^[0-9]+$ ]] && [ "$BOT_OPT" -ge 1 ] && [ "$BOT_OPT" -le "${#BOT_LIST[@]}" ]; then
           BOT_PATH="${BOT_LIST[$((BOT_OPT-1))]}"
         else
           echo -e "  ${YELLOW}[?]${NC} Opción inválida"
           echo ""; read -r _ < /dev/tty; continue
         fi
+
         if [ ! -f "$BOT_PATH" ]; then
           echo -e "  ${RED}[ERROR]${NC} Archivo no encontrado: $BOT_PATH"
           echo ""; read -r _ < /dev/tty; continue
         fi
+
         echo ""
         echo -e "  ${CYAN}Argumentos adicionales (ENTER para ninguno):${NC}"
         echo -n "  args: "
