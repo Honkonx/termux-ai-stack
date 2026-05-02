@@ -349,7 +349,7 @@ function createStyles(t) {
     backIcon:     { fontSize: 22, color: t.accent, marginRight: 4, lineHeight: 28 },
     backLabel:    { fontSize: 13, color: t.accent, fontWeight: '500' },
     topBarCenter: { flex: 1, alignItems: 'center' },
-    topBarTitle:  { fontSize: 15, fontWeight: '700', color: t.text, letterSpacing: 0.2 },
+    topBarTitle:  { fontSize: 15, fontWeight: '700', color: t.textPrimary || t.text || '#f4f4f5', letterSpacing: 0.2 },
 
     scroll:        { flex: 1 },
     scrollContent: { paddingHorizontal: 14, paddingTop: 16 },
@@ -368,8 +368,8 @@ function createStyles(t) {
       alignItems: 'center', justifyContent: 'center',
     },
     termBtnGlyph: { fontSize: 15, color: '#d4a027', fontFamily: 'monospace', fontWeight: '700' },
-    termBtnLabel: { fontSize: 15, fontWeight: '700', color: t.text },
-    termBtnSub:   { fontSize: 11, color: t.textMuted, marginTop: 2, fontFamily: 'monospace' },
+    termBtnLabel: { fontSize: 15, fontWeight: '700', color: t.textPrimary || t.text || '#f4f4f5' },
+    termBtnSub:   { fontSize: 11, color: t.textMuted || '#6e7681', marginTop: 2, fontFamily: 'monospace' },
     termBtnArrow: { fontSize: 20, color: '#d4a027', fontWeight: '700' },
 
     // Hint OAuth
@@ -380,7 +380,7 @@ function createStyles(t) {
       padding: 12, marginBottom: 20,
     },
     oauthHintIcon: { fontSize: 16, marginTop: 1 },
-    oauthHintText: { flex: 1, fontSize: 12, color: t.textMuted, lineHeight: 17 },
+    oauthHintText: { flex: 1, fontSize: 12, color: t.textMuted || '#6e7681', lineHeight: 17 },
 
     // Sección row
     sectionRow: {
@@ -400,11 +400,11 @@ function createStyles(t) {
       borderWidth: 1, borderColor: t.border,
       padding: 14, marginBottom: 4,
     },
-    hint:     { fontSize: 11, color: t.textMuted, marginBottom: 10, lineHeight: 16 },
-    mono:     { fontFamily: 'monospace', color: t.textSecondary },
+    hint:     { fontSize: 11, color: t.textMuted || '#6e7681', marginBottom: 10, lineHeight: 16 },
+    mono:     { fontFamily: 'monospace', color: t.textSecond || '#8b949e' },
     row:      { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 8 },
     rowBetween: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 6 },
-    muted:    { fontSize: 12, color: t.textMuted },
+    muted:    { fontSize: 12, color: t.textMuted || '#6e7681' },
     fb:       { fontSize: 12, fontWeight: '500' },
     link:     { fontSize: 12, color: t.accent, fontWeight: '500' },
     emptyBox: { alignItems: 'center', paddingVertical: 16, gap: 10 },
@@ -429,9 +429,9 @@ function createStyles(t) {
       backgroundColor: t.surface, borderWidth: 1, borderColor: t.border,
       alignItems: 'center', justifyContent: 'center',
     },
-    projIconGlyph: { fontSize: 14, color: t.textMuted },
-    projName:      { fontSize: 13, fontWeight: '600', color: t.text },
-    projTarget:    { fontSize: 10, color: t.textMuted, fontFamily: 'monospace', marginTop: 1 },
+    projIconGlyph: { fontSize: 14, color: t.textMuted || '#6e7681' },
+    projName:      { fontSize: 13, fontWeight: '600', color: t.textPrimary || t.text || '#f4f4f5' },
+    projTarget:    { fontSize: 10, color: t.textMuted || '#6e7681', fontFamily: 'monospace', marginTop: 1 },
     selBadge:  {
       paddingHorizontal: 6, paddingVertical: 2,
       backgroundColor: 'rgba(212,160,39,0.15)',
@@ -457,15 +457,15 @@ function createStyles(t) {
       paddingHorizontal: 16, paddingVertical: 14,
       borderBottomWidth: 1, borderBottomColor: t.border,
     },
-    dlTitle:  { fontSize: 14, fontWeight: '700', color: t.text },
-    dlClose:  { fontSize: 18, color: t.textMuted, fontWeight: '700' },
-    dlSub:    { fontSize: 12, color: t.textMuted, paddingHorizontal: 16, paddingVertical: 8 },
+    dlTitle:  { fontSize: 14, fontWeight: '700', color: t.textPrimary || t.text || '#f4f4f5' },
+    dlClose:  { fontSize: 18, color: t.textMuted || '#6e7681', fontWeight: '700' },
+    dlSub:    { fontSize: 12, color: t.textMuted || '#6e7681', paddingHorizontal: 16, paddingVertical: 8 },
     dlRow: {
       flexDirection: 'row', alignItems: 'center', gap: 10,
       paddingHorizontal: 16, paddingVertical: 13,
       borderBottomWidth: 1, borderBottomColor: t.border,
     },
-    dlDirName: { fontSize: 13, fontWeight: '600', color: t.text },
+    dlDirName: { fontSize: 13, fontWeight: '600', color: t.textPrimary || t.text || '#f4f4f5' },
     dlArrow:   { fontSize: 18, color: t.accent, fontWeight: '700' },
   });
 }

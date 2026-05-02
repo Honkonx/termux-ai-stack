@@ -743,8 +743,16 @@ def ws_send_text(conn, data):
             header = struct.pack("!BBH", 0x81, 126, length)
         else:
             header = struct.pack("!BBQ", 0x81, 127, length)
-        conn.sendall(header + data)
-    except: pass
+        frame = header + data
+        # Enviar en modo blocking temporalmente para evitar pérdida de datos
+        import socket as _sock
+        try:
+            conn.setblocking(True)
+            conn.sendall(frame)
+        finally:
+            conn.setblocking(False)
+    except Exception:
+        pass
 
 def find_claude_cli():
     """Localiza cli.js de Claude Code — misma lógica que menu.sh"""
@@ -848,7 +856,8 @@ def handle_ws_client(conn, addr):
             preexec_fn=os.setsid,
         )
         os.close(slave_fd)
-        conn.setblocking(False)
+        # conn ya es non-blocking desde el handshake
+        # ws_send_text maneja errores internamente
 
         def pty_to_ws():
             while proc.poll() is None:
