@@ -8,8 +8,8 @@ import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
   Switch, ActivityIndicator, Alert, RefreshControl,
 } from 'react-native';
-import { useTheme } from '../../theme/ThemeContext';
-import { useStatus } from '../../hooks/useStatus';
+import { useTheme } from '../../../theme/ThemeContext';
+import { useStatus } from '../../../hooks/useStatus';
 
 // ── Constantes ────────────────────────────────────────────────
 
