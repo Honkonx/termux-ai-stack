@@ -1887,6 +1887,113 @@ _check_script() {
 }
 
 # ════════════════════════════════════════════
+#  SUBMENÚ CONFIGURACIÓN ACTIVOS
+# ════════════════════════════════════════════
+submenu_activos() {
+  local WH_SCRIPT="$TRADING_DIR/webhook_receiver.py"
+  while true; do
+    clear; echo ""
+    echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
+    printf  "  ║  %-40s║\n" "◈ ACTIVOS — Configuración"
+    echo    "  ╠══════════════════════════════════════════╣"
+    echo -e "  ║  ${NC}[1] Listar activos por categoría ${CYAN}${BOLD}       ║"
+    echo -e "  ║  ${NC}[2] Agregar activo custom         ${CYAN}${BOLD}       ║"
+    echo -e "  ║  ${NC}[3] Ver categorías disponibles    ${CYAN}${BOLD}       ║"
+    echo -e "  ║  ${NC}[b] Volver                        ${CYAN}${BOLD}       ║"
+    echo -e "  ╚══════════════════════════════════════════╝${NC}"
+    echo ""; echo -n "  Opción: "
+    read -r AOPT < /dev/tty
+
+    case "$AOPT" in
+      1)
+        _py_ok || continue
+        clear; echo ""
+        echo -e "  ${CYAN}Activos registrados en BD:${NC}"; echo ""
+        python3 - << 'PYLIST'
+import sqlite3, os
+db = os.path.join(os.environ.get("HOME",""), "trading", "senales.db")
+try:
+    conn = sqlite3.connect(db)
+    c = conn.cursor()
+    c.execute("SELECT categoria, simbolo, broker, pip_mult FROM activos WHERE activo=1 ORDER BY categoria, simbolo")
+    rows = c.fetchall()
+    conn.close()
+    cat_actual = ""
+    for cat, sim, broker, pip in rows:
+        if cat != cat_actual:
+            print(f"\n  [{cat}]")
+            cat_actual = cat
+        print(f"    {sim:<18} broker={broker:<12} pip_mult={pip}")
+    if not rows:
+        print("  Sin activos. Inicializa la BD primero: [6] Inicializar BD")
+except Exception as e:
+    print(f"  Error: {e}")
+PYLIST
+        echo ""; read -r _ < /dev/tty ;;
+      2)
+        _py_ok || continue
+        clear; echo ""
+        echo -e "  ${BOLD}Agregar activo custom${NC}"; echo ""
+        echo -n "  Símbolo (ej: BTCUSD): "
+        read -r ACT_SIM < /dev/tty
+        [ -z "$ACT_SIM" ] && { echo -e "  ${YELLOW}Cancelado${NC}"; echo ""; read -r _ < /dev/tty; continue; }
+        echo -n "  Nombre (ej: Bitcoin/USD): "
+        read -r ACT_NOM < /dev/tty
+        echo -e "  Categoría: [1] forex  [2] crypto  [3] indice  [4] metal  [5] sintetico_deriv  [6] custom"
+        echo -n "  Opción: "
+        read -r ACT_CAT_OPT < /dev/tty
+        case "$ACT_CAT_OPT" in
+          1) ACT_CAT="forex" ;;
+          2) ACT_CAT="crypto" ;;
+          3) ACT_CAT="indice" ;;
+          4) ACT_CAT="metal" ;;
+          5) ACT_CAT="sintetico_deriv" ;;
+          *) ACT_CAT="custom" ;;
+        esac
+        echo -n "  Broker (ej: MT5): "
+        read -r ACT_BROKER < /dev/tty
+        echo -n "  pip_mult (ej: 10000 para FX, 1 para sintéticos): "
+        read -r ACT_PIP < /dev/tty
+        ACT_PIP="${ACT_PIP:-1}"
+        python3 - << PYINSERT
+import sqlite3, os
+from datetime import datetime
+db = os.path.join(os.environ.get("HOME",""), "trading", "senales.db")
+try:
+    conn = sqlite3.connect(db)
+    c = conn.cursor()
+    c.execute("""INSERT INTO activos (simbolo, nombre, categoria, broker, pip_mult)
+                 VALUES (?,?,?,?,?)
+                 ON CONFLICT(simbolo) DO UPDATE SET
+                 nombre=excluded.nombre, categoria=excluded.categoria,
+                 broker=excluded.broker, pip_mult=excluded.pip_mult, activo=1""",
+              ("$ACT_SIM", "$ACT_NOM", "$ACT_CAT", "$ACT_BROKER", float("$ACT_PIP")))
+    conn.commit()
+    conn.close()
+    print(f"  [OK] Activo '$ACT_SIM' guardado — cat=$ACT_CAT pip_mult=$ACT_PIP")
+except Exception as e:
+    print(f"  [ERROR] {e}")
+PYINSERT
+        echo ""; read -r _ < /dev/tty ;;
+      3)
+        clear; echo ""
+        echo -e "  ${CYAN}Categorías disponibles:${NC}"; echo ""
+        echo "    sintetico_deriv    → Boom, Crash, GainX, PainX (Deriv)"
+        echo "    sintetico_weltrade → Boom, Crash, GainX, PainX (Weltrade)"
+        echo "    forex              → EURUSD, GBPUSD, USDJPY..."
+        echo "    metal              → XAUUSD, XAGUSD"
+        echo "    indice             → US30, NAS100, GER40..."
+        echo "    crypto             → BTCUSD, ETHUSD..."
+        echo "    custom             → cualquier otro"
+        echo ""
+        read -r _ < /dev/tty ;;
+      b|B|"") break ;;
+      *) echo -e "  ${YELLOW}[?]${NC} Opción inválida"; sleep 1 ;;
+    esac
+  done
+}
+
+# ════════════════════════════════════════════
 #  SUBMENÚ TRADING
 # ════════════════════════════════════════════
 submenu_trading() {
@@ -1920,9 +2027,12 @@ submenu_trading() {
     echo -e "  ${BOLD}[6]${NC} Inicializar BD"
     echo -e "  ${BOLD}[7]${NC} Historial completo"
     echo -e "  ${BOLD}[8]${NC} Webhook receptor  ${DIM}(recibir señales MT5)${NC}"
+    echo -e "  ${BOLD}[9]${NC} Reporte semanal"
+    echo -e "  ${BOLD}[10]${NC} Backtesting (CSV MT5)"
+    echo -e "  ${BOLD}[11]${NC} Ejecutar bot Python"
     echo ""
     echo -e "  ${DIM}──────────────────────────────────────────${NC}"
-    echo -e "  ${DIM}[b] volver${NC}"
+    echo -e "  ${DIM}[c] Configurar activos  [b] volver${NC}"
     echo ""
     echo -n "  Opción: "
     read -r TOPT < /dev/tty
@@ -1988,7 +2098,10 @@ submenu_trading() {
         echo -e "  Endpoints disponibles:"
         echo -e "  ${DIM}POST http://TU_IP:9000/senal      → nueva señal${NC}"
         echo -e "  ${DIM}POST http://TU_IP:9000/actualizar → cierre/BE/resultado${NC}"
+        echo -e "  ${DIM}POST http://TU_IP:9000/activos    → agregar activo${NC}"
         echo -e "  ${DIM}GET  http://TU_IP:9000/senales    → últimas 20 (JSON)${NC}"
+        echo -e "  ${DIM}GET  http://TU_IP:9000/senal/ID   → señal por ID${NC}"
+        echo -e "  ${DIM}GET  http://TU_IP:9000/activos    → lista activos${NC}"
         echo -e "  ${DIM}GET  http://TU_IP:9000/stats      → estadísticas${NC}"
         echo -e "  ${DIM}GET  http://TU_IP:9000/ping       → health check${NC}"
         echo ""
@@ -2022,6 +2135,115 @@ submenu_trading() {
               || echo -e "  ${YELLOW}○ detenido${NC}" ;;
         esac
         echo ""; read -r _ < /dev/tty ;;
+      9)
+        _py_ok || continue
+        [ ! -f "$TRADING_DB" ] && { echo -e "\n  ${YELLOW}[AVISO]${NC} BD no encontrada — inicializa con [6]"; echo ""; read -r _ < /dev/tty; continue; }
+        clear; echo ""
+        echo -e "  ${CYAN}${BOLD}REPORTE SEMANAL — TRADING${NC}"; echo ""
+        python3 - << 'PYREPORT'
+import sqlite3, os
+from datetime import datetime, timedelta
+db = os.path.join(os.environ.get("HOME",""), "trading", "senales.db")
+conn = sqlite3.connect(db)
+c = conn.cursor()
+desde = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d 00:00:00")
+c.execute("SELECT COUNT(*) FROM senales WHERE fecha >= ?", (desde,))
+total = c.fetchone()[0]
+c.execute("SELECT COUNT(*) FROM senales WHERE resultado='WIN' AND fecha >= ?", (desde,))
+wins = c.fetchone()[0]
+c.execute("SELECT COUNT(*) FROM senales WHERE resultado='LOSS' AND fecha >= ?", (desde,))
+losses = c.fetchone()[0]
+c.execute("SELECT COUNT(*) FROM senales WHERE resultado='PENDIENTE' AND fecha >= ?", (desde,))
+pend = c.fetchone()[0]
+c.execute("SELECT SUM(pips) FROM senales WHERE resultado='WIN' AND fecha >= ? AND pips IS NOT NULL", (desde,))
+pips_win = c.fetchone()[0] or 0
+c.execute("SELECT SUM(pips) FROM senales WHERE resultado='LOSS' AND fecha >= ? AND pips IS NOT NULL", (desde,))
+pips_loss = c.fetchone()[0] or 0
+c.execute("SELECT AVG(duracion_min) FROM senales WHERE resultado != 'PENDIENTE' AND fecha >= ? AND duracion_min IS NOT NULL", (desde,))
+dur_avg = c.fetchone()[0]
+c.execute("""SELECT activo, COUNT(*), SUM(CASE WHEN resultado='WIN' THEN 1 ELSE 0 END)
+             FROM senales WHERE fecha >= ? GROUP BY activo ORDER BY COUNT(*) DESC""", (desde,))
+por_activo = c.fetchall()
+conn.close()
+wr = round(wins/(wins+losses)*100,1) if (wins+losses) > 0 else 0.0
+print(f"  Periodo : ultimos 7 dias (desde {desde[:10]})")
+print()
+print(f"  {'Total senales':<22}: {total}")
+print(f"  {'WIN':<22}: {wins}")
+print(f"  {'LOSS':<22}: {losses}")
+print(f"  {'Pendientes':<22}: {pend}")
+print(f"  {'Winrate':<22}: {wr}%")
+print(f"  {'Pips ganados':<22}: {round(pips_win,1)}")
+print(f"  {'Pips perdidos':<22}: {round(pips_loss,1)}")
+print(f"  {'Pips neto':<22}: {round(pips_win+pips_loss,1)}")
+if dur_avg:
+    print(f"  {'Duracion promedio':<22}: {int(dur_avg)} min")
+if por_activo:
+    print()
+    print(f"  Por activo:")
+    for a, tot, w in por_activo:
+        print(f"    {a:<18} {tot} ops  W:{w} L:{tot-w}")
+PYREPORT
+        echo ""; read -r _ < /dev/tty ;;
+      10)
+        BACKTEST_SCRIPT="$TRADING_DIR/backtest_runner.py"
+        _py_ok || continue
+        _check_script "$BACKTEST_SCRIPT" "backtest_runner.py" || continue
+        clear; echo ""
+        echo -e "  ${CYAN}${BOLD}BACKTESTING — CSV MT5${NC}"
+        echo -e "  ${DIM}Coloca el CSV en ~/trading/ o /sdcard/Download/trading/${NC}"; echo ""
+        python3 "$BACKTEST_SCRIPT" < /dev/tty
+        echo ""; read -r _ < /dev/tty ;;
+      11)
+        _py_ok || continue
+        clear; echo ""
+        echo -e "  ${CYAN}${BOLD}EJECUTAR BOT PYTHON${NC}"; echo ""
+        # Buscar scripts en ~/python/trading/ excluyendo los del stack
+        STACK_SCRIPTS="signal_bot.py trade_tracker.py webhook_receiver.py backtest_runner.py"
+        mapfile -t BOTS < <(find "$TRADING_DIR" -maxdepth 1 -name "*.py" 2>/dev/null | sort)
+        if [ ${#BOTS[@]} -eq 0 ]; then
+          echo -e "  ${YELLOW}[AVISO]${NC} No hay scripts en $TRADING_DIR"
+          echo ""; read -r _ < /dev/tty; continue
+        fi
+        echo -e "  Scripts en $TRADING_DIR:\n"
+        BOT_LIST=()
+        for f in "${BOTS[@]}"; do
+          nombre_bot="$(basename "$f")"
+          BOT_LIST+=("$f")
+          printf "    [%d] %s\n" "${#BOT_LIST[@]}" "$nombre_bot"
+        done
+        echo ""
+        echo "    [m] Ruta manual"
+        echo ""; echo -n "  Elige número: "
+        read -r BOT_OPT < /dev/tty
+        if [ "$BOT_OPT" = "m" ] || [ "$BOT_OPT" = "M" ]; then
+          echo -n "  Ruta del script: "
+          read -r BOT_PATH < /dev/tty
+          BOT_PATH="${BOT_PATH/#\~/$HOME}"
+        elif [[ "$BOT_OPT" =~ ^[0-9]+$ ]] && [ "$BOT_OPT" -ge 1 ] && [ "$BOT_OPT" -le "${#BOT_LIST[@]}" ]; then
+          BOT_PATH="${BOT_LIST[$((BOT_OPT-1))]}"
+        else
+          echo -e "  ${YELLOW}[?]${NC} Opción inválida"
+          echo ""; read -r _ < /dev/tty; continue
+        fi
+        if [ ! -f "$BOT_PATH" ]; then
+          echo -e "  ${RED}[ERROR]${NC} Archivo no encontrado: $BOT_PATH"
+          echo ""; read -r _ < /dev/tty; continue
+        fi
+        echo ""
+        echo -e "  ${CYAN}Argumentos adicionales (ENTER para ninguno):${NC}"
+        echo -n "  args: "
+        read -r BOT_ARGS < /dev/tty
+        echo ""
+        echo -e "  ${CYAN}Ejecutando: $(basename "$BOT_PATH") $BOT_ARGS${NC}"; echo ""
+        cd "$(dirname "$BOT_PATH")" && python3 "$BOT_PATH" $BOT_ARGS < /dev/tty
+        BOT_EXIT=$?
+        echo ""
+        [ $BOT_EXIT -eq 0 ] \
+          && echo -e "  ${GREEN}[OK]${NC} Terminó (código 0)" \
+          || echo -e "  ${YELLOW}[AVISO]${NC} Terminó con código $BOT_EXIT"
+        echo ""; read -r _ < /dev/tty ;;
+      c|C) submenu_activos ;;
       b|B|"") break ;;
       *) echo -e "  ${YELLOW}[?]${NC} Opción inválida"; sleep 1 ;;
     esac

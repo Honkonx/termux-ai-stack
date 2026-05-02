@@ -2028,7 +2028,8 @@ submenu_trading() {
     echo -e "  ${BOLD}[7]${NC} Historial completo"
     echo -e "  ${BOLD}[8]${NC} Webhook receptor  ${DIM}(recibir señales MT5)${NC}"
     echo -e "  ${BOLD}[9]${NC} Reporte semanal"
-    echo -e "  ${BOLD}[10]${NC} Backtesting (CSV MT5 → HTML)"
+    echo -e "  ${BOLD}[10]${NC} Backtesting (CSV MT5)"
+    echo -e "  ${BOLD}[11]${NC} Ejecutar bot Python"
     echo ""
     echo -e "  ${DIM}──────────────────────────────────────────${NC}"
     echo -e "  ${DIM}[c] Configurar activos  [b] volver${NC}"
@@ -2189,9 +2190,58 @@ PYREPORT
         _py_ok || continue
         _check_script "$BACKTEST_SCRIPT" "backtest_runner.py" || continue
         clear; echo ""
-        echo -e "  ${CYAN}${BOLD}BACKTESTING — CSV MT5 → Reporte HTML${NC}"
-        echo -e "  ${DIM}Coloca el CSV en ~/trading/ o /sdcard/Download/${NC}"; echo ""
+        echo -e "  ${CYAN}${BOLD}BACKTESTING — CSV MT5${NC}"
+        echo -e "  ${DIM}Coloca el CSV en ~/trading/ o /sdcard/Download/trading/${NC}"; echo ""
         python3 "$BACKTEST_SCRIPT" < /dev/tty
+        echo ""; read -r _ < /dev/tty ;;
+      11)
+        _py_ok || continue
+        clear; echo ""
+        echo -e "  ${CYAN}${BOLD}EJECUTAR BOT PYTHON${NC}"; echo ""
+        # Buscar scripts en ~/python/trading/ excluyendo los del stack
+        STACK_SCRIPTS="signal_bot.py trade_tracker.py webhook_receiver.py backtest_runner.py"
+        mapfile -t BOTS < <(find "$TRADING_DIR" -maxdepth 1 -name "*.py" 2>/dev/null | sort)
+        if [ ${#BOTS[@]} -eq 0 ]; then
+          echo -e "  ${YELLOW}[AVISO]${NC} No hay scripts en $TRADING_DIR"
+          echo ""; read -r _ < /dev/tty; continue
+        fi
+        echo -e "  Scripts en $TRADING_DIR:\n"
+        BOT_LIST=()
+        for f in "${BOTS[@]}"; do
+          nombre_bot="$(basename "$f")"
+          BOT_LIST+=("$f")
+          printf "    [%d] %s\n" "${#BOT_LIST[@]}" "$nombre_bot"
+        done
+        echo ""
+        echo "    [m] Ruta manual"
+        echo ""; echo -n "  Elige número: "
+        read -r BOT_OPT < /dev/tty
+        if [ "$BOT_OPT" = "m" ] || [ "$BOT_OPT" = "M" ]; then
+          echo -n "  Ruta del script: "
+          read -r BOT_PATH < /dev/tty
+          BOT_PATH="${BOT_PATH/#\~/$HOME}"
+        elif [[ "$BOT_OPT" =~ ^[0-9]+$ ]] && [ "$BOT_OPT" -ge 1 ] && [ "$BOT_OPT" -le "${#BOT_LIST[@]}" ]; then
+          BOT_PATH="${BOT_LIST[$((BOT_OPT-1))]}"
+        else
+          echo -e "  ${YELLOW}[?]${NC} Opción inválida"
+          echo ""; read -r _ < /dev/tty; continue
+        fi
+        if [ ! -f "$BOT_PATH" ]; then
+          echo -e "  ${RED}[ERROR]${NC} Archivo no encontrado: $BOT_PATH"
+          echo ""; read -r _ < /dev/tty; continue
+        fi
+        echo ""
+        echo -e "  ${CYAN}Argumentos adicionales (ENTER para ninguno):${NC}"
+        echo -n "  args: "
+        read -r BOT_ARGS < /dev/tty
+        echo ""
+        echo -e "  ${CYAN}Ejecutando: $(basename "$BOT_PATH") $BOT_ARGS${NC}"; echo ""
+        cd "$(dirname "$BOT_PATH")" && python3 "$BOT_PATH" $BOT_ARGS < /dev/tty
+        BOT_EXIT=$?
+        echo ""
+        [ $BOT_EXIT -eq 0 ] \
+          && echo -e "  ${GREEN}[OK]${NC} Terminó (código 0)" \
+          || echo -e "  ${YELLOW}[AVISO]${NC} Terminó con código $BOT_EXIT"
         echo ""; read -r _ < /dev/tty ;;
       c|C) submenu_activos ;;
       b|B|"") break ;;

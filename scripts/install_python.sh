@@ -285,7 +285,7 @@ else
   echo "  ▸ signal_bot.py        → señales manuales + stats"
   echo "  ▸ trade_tracker.py     → registrar WIN/LOSS"
   echo "  ▸ webhook_receiver.py  → receptor señales MT5 (:9000)"
-  echo "  ▸ backtest_runner.py   → backtest CSV MT5 → reporte HTML"
+  echo "  ▸ backtest_runner.py   → backtest CSV MT5 (basico o avanzado si pandas+matplotlib instalados)"
   echo "  ▸ test_trading.py   → tests unitarios"
   echo ""
   echo -n "  ¿Descargar scripts de trading? (s/n): "
