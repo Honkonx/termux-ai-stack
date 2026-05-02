@@ -1919,6 +1919,7 @@ submenu_trading() {
     echo -e "  ${BOLD}[5]${NC} Ejecutar tests"
     echo -e "  ${BOLD}[6]${NC} Inicializar BD"
     echo -e "  ${BOLD}[7]${NC} Historial completo"
+    echo -e "  ${BOLD}[8]${NC} Webhook receptor  ${DIM}(recibir señales MT5)${NC}"
     echo ""
     echo -e "  ${DIM}──────────────────────────────────────────${NC}"
     echo -e "  ${DIM}[b] volver${NC}"
@@ -1975,6 +1976,51 @@ submenu_trading() {
         _check_script "$TRADE_TRACKER" "trade_tracker.py" || continue
         clear; echo ""
         python3 "$TRADE_TRACKER" historial 50
+        echo ""; read -r _ < /dev/tty ;;
+      8)
+        WEBHOOK_SCRIPT="$TRADING_DIR/webhook_receiver.py"
+        _py_ok || continue
+        _check_script "$WEBHOOK_SCRIPT" "webhook_receiver.py" || continue
+        clear; echo ""
+        echo -e "  ${CYAN}${BOLD}WEBHOOK RECEPTOR — Señales MT5${NC}"
+        echo -e "  ${DIM}Puerto: 9000  |  BD: $TRADING_DB${NC}"
+        echo ""
+        echo -e "  Endpoints disponibles:"
+        echo -e "  ${DIM}POST http://TU_IP:9000/senal      → nueva señal${NC}"
+        echo -e "  ${DIM}POST http://TU_IP:9000/actualizar → cierre/BE/resultado${NC}"
+        echo -e "  ${DIM}GET  http://TU_IP:9000/senales    → últimas 20 (JSON)${NC}"
+        echo -e "  ${DIM}GET  http://TU_IP:9000/stats      → estadísticas${NC}"
+        echo -e "  ${DIM}GET  http://TU_IP:9000/ping       → health check${NC}"
+        echo ""
+        echo -e "  ${YELLOW}[INFO]${NC} Corre en tmux para no bloquear el menú"
+        echo -e "  ${DIM}Comando: tmux new -d -s trading-wh 'python3 $WEBHOOK_SCRIPT'${NC}"
+        echo ""
+        echo -e "  ${BOLD}[1]${NC} Iniciar en background (tmux)"
+        echo -e "  ${BOLD}[2]${NC} Iniciar en primer plano"
+        echo -e "  ${BOLD}[3]${NC} Detener servidor"
+        echo -e "  ${BOLD}[4]${NC} Ver estado"
+        echo -e "  ${BOLD}[b]${NC} Volver"
+        echo ""
+        echo -n "  Opción: "
+        read -r WHOPT < /dev/tty
+        case "$WHOPT" in
+          1)
+            tmux kill-session -t "trading-wh" 2>/dev/null || true
+            tmux new-session -d -s "trading-wh" "python3 $WEBHOOK_SCRIPT" 2>/dev/null \
+              && echo -e "  ${GREEN}[OK]${NC} Webhook corriendo en tmux (sesión: trading-wh)" \
+              || echo -e "  ${RED}[ERROR]${NC} Error iniciando tmux — instala tmux: pkg install tmux" ;;
+          2)
+            echo -e "  ${CYAN}Iniciando webhook (Ctrl+C para salir)...${NC}"; echo ""
+            python3 "$WEBHOOK_SCRIPT" < /dev/tty ;;
+          3)
+            tmux kill-session -t "trading-wh" 2>/dev/null \
+              && echo -e "  ${GREEN}[OK]${NC} Servidor detenido" \
+              || echo -e "  ${YELLOW}[INFO]${NC} No había servidor corriendo" ;;
+          4)
+            tmux has-session -t "trading-wh" 2>/dev/null \
+              && echo -e "  ${GREEN}● activo${NC} (sesión tmux: trading-wh)" \
+              || echo -e "  ${YELLOW}○ detenido${NC}" ;;
+        esac
         echo ""; read -r _ < /dev/tty ;;
       b|B|"") break ;;
       *) echo -e "  ${YELLOW}[?]${NC} Opción inválida"; sleep 1 ;;

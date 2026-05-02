@@ -270,9 +270,87 @@ else
 fi
 
 # ============================================================
-# PASO 6 — Actualizar registry
+# PASO 6 — Descargar scripts de trading
 # ============================================================
-titulo "PASO 6 — Actualizando registry"
+titulo "PASO 6 — Módulo Trading"
+
+REPO_RAW_PY="https://raw.githubusercontent.com/Honkonx/termux-ai-stack/main/python/trading"
+TRADING_DIR="$HOME/python/trading"
+TESTS_DIR="$HOME/tests"
+
+if check_done "trading_scripts"; then
+  log "Scripts trading ya descargados [checkpoint]"
+else
+  echo "  Descarga los scripts del módulo trading:"
+  echo "  ▸ signal_bot.py     → señales manuales + stats"
+  echo "  ▸ trade_tracker.py  → registrar WIN/LOSS"
+  echo "  ▸ webhook_receiver.py → receptor señales MT5"
+  echo "  ▸ test_trading.py   → tests unitarios"
+  echo ""
+  echo -n "  ¿Descargar scripts de trading? (s/n): "
+  read -r INST_TRADING < /dev/tty
+
+  if [ "$INST_TRADING" = "s" ] || [ "$INST_TRADING" = "S" ]; then
+    mkdir -p "$TRADING_DIR" "$TESTS_DIR" "$HOME/trading"
+
+    SCRIPTS_OK=0
+    SCRIPTS_FAIL=0
+
+    for script in signal_bot.py trade_tracker.py webhook_receiver.py; do
+      echo -n "  Descargando $script... "
+      TMP="$TRADING_DIR/${script}.tmp"
+      curl -fsSL "$REPO_RAW_PY/$script" -o "$TMP" 2>/dev/null || \
+        wget -q "$REPO_RAW_PY/$script" -O "$TMP" 2>/dev/null
+      if [ -f "$TMP" ] && [ -s "$TMP" ]; then
+        mv "$TMP" "$TRADING_DIR/$script"
+        chmod +x "$TRADING_DIR/$script"
+        echo -e "${GREEN}✓${NC}"
+        SCRIPTS_OK=$((SCRIPTS_OK + 1))
+      else
+        rm -f "$TMP"
+        echo -e "${RED}✗ (descarga manual: github.com/Honkonx/termux-ai-stack)${NC}"
+        SCRIPTS_FAIL=$((SCRIPTS_FAIL + 1))
+      fi
+    done
+
+    # test_trading.py va en tests/
+    echo -n "  Descargando test_trading.py... "
+    TMP="$TESTS_DIR/test_trading.py.tmp"
+    curl -fsSL "$REPO_RAW_PY/test_trading.py" -o "$TMP" 2>/dev/null || \
+      wget -q "$REPO_RAW_PY/test_trading.py" -O "$TMP" 2>/dev/null
+    if [ -f "$TMP" ] && [ -s "$TMP" ]; then
+      mv "$TMP" "$TESTS_DIR/test_trading.py"
+      echo -e "${GREEN}✓${NC}"
+      SCRIPTS_OK=$((SCRIPTS_OK + 1))
+    else
+      rm -f "$TMP"
+      echo -e "${RED}✗${NC}"
+      SCRIPTS_FAIL=$((SCRIPTS_FAIL + 1))
+    fi
+
+    echo ""
+    [ $SCRIPTS_OK -gt 0 ] && log "$SCRIPTS_OK scripts descargados en $TRADING_DIR"
+    [ $SCRIPTS_FAIL -gt 0 ] && warn "$SCRIPTS_FAIL scripts no pudieron descargarse — descarga manual necesaria"
+
+    # Init BD trading
+    if [ -f "$TRADING_DIR/signal_bot.py" ]; then
+      echo -n "  Inicializando BD trading... "
+      python3 "$TRADING_DIR/signal_bot.py" init 2>/dev/null \
+        && echo -e "${GREEN}✓${NC}" \
+        || echo -e "${YELLOW}omitido${NC}"
+    fi
+
+    mark_done "trading_scripts"
+  else
+    info "Trading omitido — descarga después desde el menú: [5] Python → [7] Trading → [6] Inicializar BD"
+    mark_done "trading_scripts"
+  fi
+fi
+
+# ============================================================
+# PASO 7 — Actualizar registry
+# ============================================================
+titulo "PASO 7 — Actualizando registry"
 
 PY_VER=$(python3 --version 2>/dev/null | awk '{print $2}')
 [ -z "$PY_VER" ] && PY_VER="unknown"
