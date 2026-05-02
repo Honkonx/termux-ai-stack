@@ -1,6 +1,6 @@
 #!/data/data/com.termux/files/usr/bin/python3
 # python/trading/trade_tracker.py
-# termux-ai-stack — Registrar resultados de señales
+# termux-ai-stack — Registrar resultados de senales
 # REGLAS ARM64: datetime.now() siempre · sin requests
 
 import sqlite3
@@ -8,7 +8,7 @@ import os
 import sys
 from datetime import datetime
 
-DB_PATH = os.path.join(os.environ.get("HOME", "/data/data/com.termux/files/home"), "trading", "señales.db")
+DB_PATH = os.path.join(os.environ.get("HOME", "/data/data/com.termux/files/home"), "trading", "senales.db")
 
 # ── Actualizar resultado de señal ────────────────────────────────
 def actualizar_resultado(señal_id, resultado, notas=""):
@@ -27,7 +27,7 @@ def actualizar_resultado(señal_id, resultado, notas=""):
     c = conn.cursor()
 
     # Verificar que existe
-    c.execute("SELECT id, activo, tipo, resultado FROM señales WHERE id=?", (señal_id,))
+    c.execute("SELECT id, activo, tipo, resultado FROM senales WHERE id=?", (señal_id,))
     row = c.fetchone()
     if not row:
         conn.close()
@@ -38,11 +38,11 @@ def actualizar_resultado(señal_id, resultado, notas=""):
 
     if notas:
         c.execute("""
-            UPDATE señales SET resultado=?, notas=notas||' ['||?||'] '||?
+            UPDATE senales SET resultado=?, notas=notas||' ['||?||'] '||?
             WHERE id=?
         """, (resultado, fecha_update, notas, señal_id))
     else:
-        c.execute("UPDATE señales SET resultado=? WHERE id=?", (resultado, señal_id))
+        c.execute("UPDATE senales SET resultado=? WHERE id=?", (resultado, señal_id))
 
     conn.commit()
     conn.close()
@@ -63,14 +63,14 @@ def actualizar_interactivo():
     c = conn.cursor()
     c.execute("""
         SELECT id, activo, tipo, entrada, fecha
-        FROM señales WHERE resultado='PENDIENTE'
+        FROM senales WHERE resultado='PENDIENTE'
         ORDER BY id DESC LIMIT 10
     """)
     pendientes = c.fetchall()
     conn.close()
 
     if not pendientes:
-        print("  Sin señales pendientes.\n")
+        print("  Sin senales pendientes.\n")
         return
 
     print("  Señales PENDIENTES:")
@@ -104,7 +104,7 @@ def historial(limit=20):
     c = conn.cursor()
     c.execute("""
         SELECT id, activo, tipo, entrada, resultado, confianza, fecha
-        FROM señales ORDER BY id DESC LIMIT ?
+        FROM senales ORDER BY id DESC LIMIT ?
     """, (limit,))
     rows = c.fetchall()
     conn.close()

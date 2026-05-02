@@ -1,6 +1,6 @@
 #!/data/data/com.termux/files/usr/bin/python3
 # python/trading/signal_bot.py
-# termux-ai-stack — Bot señales GainX/PainX/Boom/Crash
+# termux-ai-stack — Bot senales GainX/PainX/Boom/Crash
 # REGLAS ARM64: datetime.now() siempre · urllib (no requests) · rutas $HOME
 
 import sqlite3
@@ -11,7 +11,7 @@ from datetime import datetime
 from urllib import request as ureq
 from urllib.error import URLError
 
-DB_PATH = os.path.join(os.environ.get("HOME", "/data/data/com.termux/files/home"), "trading", "señales.db")
+DB_PATH = os.path.join(os.environ.get("HOME", "/data/data/com.termux/files/home"), "trading", "senales.db")
 CFG_PATH = os.path.join(os.environ.get("HOME", "/data/data/com.termux/files/home"), ".trading_config")
 
 ACTIVOS = ["GainX 500", "GainX 800", "PainX 500", "PainX 800", "Boom 500", "Boom 1000", "Crash 500", "Crash 1000"]
@@ -22,7 +22,7 @@ def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("""
-        CREATE TABLE IF NOT EXISTS señales (
+        CREATE TABLE IF NOT EXISTS senales (
             id        INTEGER PRIMARY KEY AUTOINCREMENT,
             activo    TEXT NOT NULL,
             tipo      TEXT NOT NULL,
@@ -52,7 +52,7 @@ def guardar_señal(activo, tipo, entrada, sl, tp1, tp2, confianza, notas=""):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("""
-        INSERT INTO señales (activo, tipo, entrada, sl, tp1, tp2, confianza, resultado, notas, fecha)
+        INSERT INTO senales (activo, tipo, entrada, sl, tp1, tp2, confianza, resultado, notas, fecha)
         VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDIENTE', ?, ?)
     """, (activo, tipo, entrada, sl, tp1, tp2, confianza, notas, fecha))
     conn.commit()
@@ -60,13 +60,13 @@ def guardar_señal(activo, tipo, entrada, sl, tp1, tp2, confianza, notas=""):
     conn.close()
     return señal_id
 
-# ── Ver últimas señales ──────────────────────────────────────────
-def ver_señales(limit=10):
+# ── Ver últimas senales ──────────────────────────────────────────
+def ver_senales(limit=10):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("""
         SELECT id, activo, tipo, entrada, sl, tp1, confianza, resultado, fecha
-        FROM señales ORDER BY id DESC LIMIT ?
+        FROM senales ORDER BY id DESC LIMIT ?
     """, (limit,))
     rows = c.fetchall()
     conn.close()
@@ -76,13 +76,13 @@ def ver_señales(limit=10):
 def get_stats():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("SELECT COUNT(*) FROM señales")
+    c.execute("SELECT COUNT(*) FROM senales")
     total = c.fetchone()[0]
-    c.execute("SELECT COUNT(*) FROM señales WHERE resultado='WIN'")
+    c.execute("SELECT COUNT(*) FROM senales WHERE resultado='WIN'")
     wins = c.fetchone()[0]
-    c.execute("SELECT COUNT(*) FROM señales WHERE resultado='LOSS'")
+    c.execute("SELECT COUNT(*) FROM senales WHERE resultado='LOSS'")
     losses = c.fetchone()[0]
-    c.execute("SELECT COUNT(*) FROM señales WHERE resultado='PENDIENTE'")
+    c.execute("SELECT COUNT(*) FROM senales WHERE resultado='PENDIENTE'")
     pendientes = c.fetchone()[0]
     conn.close()
     winrate = round((wins / (wins + losses) * 100), 1) if (wins + losses) > 0 else 0.0
@@ -138,9 +138,9 @@ if __name__ == "__main__":
 
     elif cmd == "ver":
         limit = int(sys.argv[2]) if len(sys.argv) > 2 else 10
-        rows = ver_señales(limit)
+        rows = ver_senales(limit)
         if not rows:
-            print("\n  Sin señales registradas.\n")
+            print("\n  Sin senales registradas.\n")
         else:
             print(f"\n  {'ID':<4} {'ACTIVO':<14} {'TIPO':<5} {'ENTRADA':<10} {'SL':<10} {'TP1':<10} {'CONF':<5} {'RESULT':<10} FECHA")
             print("  " + "─" * 80)
@@ -153,7 +153,7 @@ if __name__ == "__main__":
         print(f"\n  ╔══════════════════════════════════════╗")
         print(f"  ║  ESTADÍSTICAS TRADING                ║")
         print(f"  ╠══════════════════════════════════════╣")
-        print(f"  ║  Total señales : {s['total']:<20}║")
+        print(f"  ║  Total senales : {s['total']:<20}║")
         print(f"  ║  WIN           : {s['wins']:<20}║")
         print(f"  ║  LOSS          : {s['losses']:<20}║")
         print(f"  ║  Pendientes    : {s['pendientes']:<20}║")

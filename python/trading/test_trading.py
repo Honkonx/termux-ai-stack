@@ -12,7 +12,7 @@ from datetime import datetime
 
 # Ruta de test separada — no tocar la BD de producción
 HOME = os.environ.get("HOME", "/data/data/com.termux/files/home")
-TEST_DB = os.path.join(HOME, "trading", "señales_test.db")
+TEST_DB = os.path.join(HOME, "trading", "senales_test.db")
 
 # Parchear DB_PATH antes de importar los módulos
 sys.path.insert(0, os.path.join(HOME, "python", "trading"))
@@ -27,7 +27,7 @@ def _init_test_db():
     conn = _get_conn()
     c = conn.cursor()
     c.execute("""
-        CREATE TABLE IF NOT EXISTS señales (
+        CREATE TABLE IF NOT EXISTS senales (
             id        INTEGER PRIMARY KEY AUTOINCREMENT,
             activo    TEXT NOT NULL,
             tipo      TEXT NOT NULL,
@@ -44,12 +44,12 @@ def _init_test_db():
     conn.commit()
     conn.close()
 
-def _insertar_señal(activo, tipo, entrada, sl, tp1, tp2, confianza, resultado="PENDIENTE"):
+def _insertar_senal(activo, tipo, entrada, sl, tp1, tp2, confianza, resultado="PENDIENTE"):
     fecha = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     conn = _get_conn()
     c = conn.cursor()
     c.execute("""
-        INSERT INTO señales (activo, tipo, entrada, sl, tp1, tp2, confianza, resultado, notas, fecha)
+        INSERT INTO senales (activo, tipo, entrada, sl, tp1, tp2, confianza, resultado, notas, fecha)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', ?)
     """, (activo, tipo, entrada, sl, tp1, tp2, confianza, resultado, fecha))
     conn.commit()
@@ -57,21 +57,21 @@ def _insertar_señal(activo, tipo, entrada, sl, tp1, tp2, confianza, resultado="
     conn.close()
     return sid
 
-def _actualizar_resultado(señal_id, resultado):
+def _actualizar_resultado(senal_id, resultado):
     conn = _get_conn()
     c = conn.cursor()
-    c.execute("UPDATE señales SET resultado=? WHERE id=?", (resultado, señal_id))
+    c.execute("UPDATE senales SET resultado=? WHERE id=?", (resultado, senal_id))
     conn.commit()
     conn.close()
 
 def _get_stats():
     conn = _get_conn()
     c = conn.cursor()
-    c.execute("SELECT COUNT(*) FROM señales")
+    c.execute("SELECT COUNT(*) FROM senales")
     total = c.fetchone()[0]
-    c.execute("SELECT COUNT(*) FROM señales WHERE resultado='WIN'")
+    c.execute("SELECT COUNT(*) FROM senales WHERE resultado='WIN'")
     wins = c.fetchone()[0]
-    c.execute("SELECT COUNT(*) FROM señales WHERE resultado='LOSS'")
+    c.execute("SELECT COUNT(*) FROM senales WHERE resultado='LOSS'")
     losses = c.fetchone()[0]
     conn.close()
     winrate = round((wins / (wins + losses) * 100), 1) if (wins + losses) > 0 else 0.0
@@ -89,43 +89,43 @@ class TestDBInit(unittest.TestCase):
         _init_test_db()
         self.assertTrue(os.path.exists(TEST_DB), "BD de test no se creó")
 
-    def test_tabla_señales_existe(self):
+    def test_tabla_senales_existe(self):
         _init_test_db()
         conn = _get_conn()
         c = conn.cursor()
-        c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='señales'")
+        c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='senales'")
         result = c.fetchone()
         conn.close()
-        self.assertIsNotNone(result, "Tabla 'señales' no existe")
+        self.assertIsNotNone(result, "Tabla 'senales' no existe")
 
     def test_columnas_correctas(self):
         _init_test_db()
         conn = _get_conn()
         c = conn.cursor()
-        c.execute("PRAGMA table_info(señales)")
+        c.execute("PRAGMA table_info(senales)")
         cols = {row[1] for row in c.fetchall()}
         conn.close()
         required = {"id", "activo", "tipo", "entrada", "sl", "tp1", "tp2", "confianza", "resultado", "notas", "fecha"}
         self.assertEqual(required, cols, f"Columnas incorrectas. Faltan: {required - cols}")
 
 
-class TestInsertarSeñal(unittest.TestCase):
-    """Test inserción de señales"""
+class TestInsertarSenal(unittest.TestCase):
+    """Test inserción de senales"""
 
     def setUp(self):
         _init_test_db()
 
-    def test_insertar_señal_basica(self):
-        sid = _insertar_señal("GainX 500", "BUY", 1234.5, 1200.0, 1280.0, None, 8)
+    def test_insertar_senal_basica(self):
+        sid = _insertar_senal("GainX 500", "BUY", 1234.5, 1200.0, 1280.0, None, 8)
         self.assertIsNotNone(sid)
         self.assertGreater(sid, 0)
 
     def test_fecha_nunca_vacia(self):
         """ARM64 regla: fecha siempre desde Python, nunca DEFAULT SQL"""
-        sid = _insertar_señal("Boom 500", "SELL", 900.0, 950.0, 850.0, 800.0, 7)
+        sid = _insertar_senal("Boom 500", "SELL", 900.0, 950.0, 850.0, 800.0, 7)
         conn = _get_conn()
         c = conn.cursor()
-        c.execute("SELECT fecha FROM señales WHERE id=?", (sid,))
+        c.execute("SELECT fecha FROM senales WHERE id=?", (sid,))
         fecha = c.fetchone()[0]
         conn.close()
         self.assertIsNotNone(fecha, "fecha es NULL — viola regla ARM64")
@@ -137,17 +137,17 @@ class TestInsertarSeñal(unittest.TestCase):
             self.fail(f"Formato de fecha incorrecto: {fecha}")
 
     def test_resultado_default_pendiente(self):
-        sid = _insertar_señal("PainX 800", "BUY", 500.0, 480.0, 530.0, None, 6)
+        sid = _insertar_senal("PainX 800", "BUY", 500.0, 480.0, 530.0, None, 6)
         conn = _get_conn()
         c = conn.cursor()
-        c.execute("SELECT resultado FROM señales WHERE id=?", (sid,))
+        c.execute("SELECT resultado FROM senales WHERE id=?", (sid,))
         resultado = c.fetchone()[0]
         conn.close()
         self.assertEqual(resultado, "PENDIENTE")
 
     def test_tipos_validos(self):
-        sid_buy  = _insertar_señal("Crash 500", "BUY",  300.0, 280.0, 330.0, None, 9)
-        sid_sell = _insertar_señal("Crash 500", "SELL", 300.0, 320.0, 270.0, None, 9)
+        sid_buy  = _insertar_senal("Crash 500", "BUY",  300.0, 280.0, 330.0, None, 9)
+        sid_sell = _insertar_senal("Crash 500", "SELL", 300.0, 320.0, 270.0, None, 9)
         self.assertGreater(sid_buy, 0)
         self.assertGreater(sid_sell, 0)
 
@@ -159,31 +159,31 @@ class TestActualizarResultado(unittest.TestCase):
         _init_test_db()
 
     def test_marcar_win(self):
-        sid = _insertar_señal("GainX 800", "BUY", 2000.0, 1950.0, 2100.0, None, 8)
+        sid = _insertar_senal("GainX 800", "BUY", 2000.0, 1950.0, 2100.0, None, 8)
         _actualizar_resultado(sid, "WIN")
         conn = _get_conn()
         c = conn.cursor()
-        c.execute("SELECT resultado FROM señales WHERE id=?", (sid,))
+        c.execute("SELECT resultado FROM senales WHERE id=?", (sid,))
         self.assertEqual(c.fetchone()[0], "WIN")
         conn.close()
 
     def test_marcar_loss(self):
-        sid = _insertar_señal("PainX 500", "SELL", 1000.0, 1050.0, 900.0, None, 5)
+        sid = _insertar_senal("PainX 500", "SELL", 1000.0, 1050.0, 900.0, None, 5)
         _actualizar_resultado(sid, "LOSS")
         conn = _get_conn()
         c = conn.cursor()
-        c.execute("SELECT resultado FROM señales WHERE id=?", (sid,))
+        c.execute("SELECT resultado FROM senales WHERE id=?", (sid,))
         self.assertEqual(c.fetchone()[0], "LOSS")
         conn.close()
 
     def test_cambio_de_resultado(self):
         """Debe poder cambiar de PENDIENTE → WIN → LOSS"""
-        sid = _insertar_señal("Boom 1000", "BUY", 5000.0, 4800.0, 5500.0, None, 7)
+        sid = _insertar_senal("Boom 1000", "BUY", 5000.0, 4800.0, 5500.0, None, 7)
         _actualizar_resultado(sid, "WIN")
         _actualizar_resultado(sid, "LOSS")
         conn = _get_conn()
         c = conn.cursor()
-        c.execute("SELECT resultado FROM señales WHERE id=?", (sid,))
+        c.execute("SELECT resultado FROM senales WHERE id=?", (sid,))
         self.assertEqual(c.fetchone()[0], "LOSS")
         conn.close()
 
@@ -203,24 +203,24 @@ class TestEstadisticas(unittest.TestCase):
         self.assertEqual(s["winrate"], 0.0)
 
     def test_winrate_100(self):
-        sid1 = _insertar_señal("GainX 500", "BUY", 100.0, 90.0, 120.0, None, 8)
-        sid2 = _insertar_señal("GainX 500", "BUY", 200.0, 190.0, 220.0, None, 9)
+        sid1 = _insertar_senal("GainX 500", "BUY", 100.0, 90.0, 120.0, None, 8)
+        sid2 = _insertar_senal("GainX 500", "BUY", 200.0, 190.0, 220.0, None, 9)
         _actualizar_resultado(sid1, "WIN")
         _actualizar_resultado(sid2, "WIN")
         s = _get_stats()
         self.assertEqual(s["winrate"], 100.0)
 
     def test_winrate_50(self):
-        sid1 = _insertar_señal("PainX 500", "SELL", 100.0, 110.0, 80.0, None, 7)
-        sid2 = _insertar_señal("PainX 500", "SELL", 200.0, 210.0, 180.0, None, 6)
+        sid1 = _insertar_senal("PainX 500", "SELL", 100.0, 110.0, 80.0, None, 7)
+        sid2 = _insertar_senal("PainX 500", "SELL", 200.0, 210.0, 180.0, None, 6)
         _actualizar_resultado(sid1, "WIN")
         _actualizar_resultado(sid2, "LOSS")
         s = _get_stats()
         self.assertEqual(s["winrate"], 50.0)
 
     def test_pendientes_no_cuentan_en_winrate(self):
-        sid1 = _insertar_señal("Boom 500", "BUY", 100.0, 90.0, 120.0, None, 8)
-        sid2 = _insertar_señal("Boom 500", "BUY", 200.0, 190.0, 220.0, None, 7)
+        sid1 = _insertar_senal("Boom 500", "BUY", 100.0, 90.0, 120.0, None, 8)
+        sid2 = _insertar_senal("Boom 500", "BUY", 200.0, 190.0, 220.0, None, 7)
         # sid2 queda PENDIENTE
         _actualizar_resultado(sid1, "WIN")
         s = _get_stats()
@@ -235,12 +235,12 @@ class TestARM64Compliance(unittest.TestCase):
     def test_no_datetime_sql_default(self):
         """La fecha debe venir de Python, no de SQL DEFAULT"""
         before = datetime.now()
-        sid = _insertar_señal("GainX 500", "BUY", 100.0, 90.0, 110.0, None, 5)
+        sid = _insertar_senal("GainX 500", "BUY", 100.0, 90.0, 110.0, None, 5)
         after = datetime.now()
 
         conn = _get_conn()
         c = conn.cursor()
-        c.execute("SELECT fecha FROM señales WHERE id=?", (sid,))
+        c.execute("SELECT fecha FROM senales WHERE id=?", (sid,))
         fecha_str = c.fetchone()[0]
         conn.close()
 
@@ -271,7 +271,7 @@ if __name__ == "__main__":
     suite  = unittest.TestSuite()
 
     suite.addTests(loader.loadTestsFromTestCase(TestDBInit))
-    suite.addTests(loader.loadTestsFromTestCase(TestInsertarSeñal))
+    suite.addTests(loader.loadTestsFromTestCase(TestInsertarSenal))
     suite.addTests(loader.loadTestsFromTestCase(TestActualizarResultado))
     suite.addTests(loader.loadTestsFromTestCase(TestEstadisticas))
     suite.addTests(loader.loadTestsFromTestCase(TestARM64Compliance))
