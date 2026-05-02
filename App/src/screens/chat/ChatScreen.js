@@ -229,7 +229,7 @@ const ModelSelector = ({ models, selected, onSelect, t }) => {
 
 // ── Pantalla principal ────────────────────────────────────────
 
-export default function ChatScreen({ navigate, goBack, params = {} }) {
+export function ChatScreen({ navigate, goBack, params = {} }) {
   const { theme: t }  = useTheme();
   const { status }    = useStatus();
 

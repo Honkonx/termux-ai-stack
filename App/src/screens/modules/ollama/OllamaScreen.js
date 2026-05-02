@@ -229,7 +229,7 @@ const PresetRow = ({ preset, isInstalled, pulling, onPull, t, isLast }) => (
 
 // ── Pantalla principal ────────────────────────────────────────
 
-export default function OllamaScreen({ navigate, goBack }) {
+export function OllamaScreen({ navigate, goBack }) {
   const { theme: t } = useTheme();
   const { status } = useStatus();
 
