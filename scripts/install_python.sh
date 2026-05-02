@@ -282,9 +282,10 @@ if check_done "trading_scripts"; then
   log "Scripts trading ya descargados [checkpoint]"
 else
   echo "  Descarga los scripts del módulo trading:"
-  echo "  ▸ signal_bot.py     → señales manuales + stats"
-  echo "  ▸ trade_tracker.py  → registrar WIN/LOSS"
-  echo "  ▸ webhook_receiver.py → receptor señales MT5"
+  echo "  ▸ signal_bot.py        → señales manuales + stats"
+  echo "  ▸ trade_tracker.py     → registrar WIN/LOSS"
+  echo "  ▸ webhook_receiver.py  → receptor señales MT5 (:9000)"
+  echo "  ▸ backtest_runner.py   → backtest CSV MT5 → reporte HTML"
   echo "  ▸ test_trading.py   → tests unitarios"
   echo ""
   echo -n "  ¿Descargar scripts de trading? (s/n): "
@@ -296,7 +297,7 @@ else
     SCRIPTS_OK=0
     SCRIPTS_FAIL=0
 
-    for script in signal_bot.py trade_tracker.py webhook_receiver.py; do
+    for script in signal_bot.py trade_tracker.py webhook_receiver.py backtest_runner.py; do
       echo -n "  Descargando $script... "
       TMP="$TRADING_DIR/${script}.tmp"
       curl -fsSL "$REPO_RAW_PY/$script" -o "$TMP" 2>/dev/null || \
