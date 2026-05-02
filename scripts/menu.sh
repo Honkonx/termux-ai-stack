@@ -2609,6 +2609,186 @@ submenu_desinstalar() {
 }
 
 # ════════════════════════════════════════════
+#  RUTAS TRADING
+# ════════════════════════════════════════════
+TRADING_DIR="$HOME/python/trading"
+SIGNAL_BOT="$TRADING_DIR/signal_bot.py"
+TRADE_TRACKER="$TRADING_DIR/trade_tracker.py"
+TRADING_DB="$HOME/trading/señales.db"
+TRADING_TEST="$HOME/tests/test_trading.py"
+
+_py_ok() {
+  command -v python3 &>/dev/null && return 0
+  echo -e "  ${RED}[ERROR]${NC} Python3 no encontrado. Instala desde [5]."
+  return 1
+}
+
+_check_script() {
+  local path="$1" name="$2"
+  if [ ! -f "$path" ]; then
+    echo -e "  ${YELLOW}[AVISO]${NC} $name no encontrado en $path"
+    echo -e "  ${DIM}Descarga desde: github.com/Honkonx/termux-ai-stack${NC}"
+    echo ""; read -r _ < /dev/tty
+    return 1
+  fi
+  return 0
+}
+
+# ════════════════════════════════════════════
+#  SUBMENÚ TRADING
+# ════════════════════════════════════════════
+submenu_trading() {
+  while true; do
+    clear; echo ""
+
+    local DB_STATUS SEÑALES_TOTAL WIN LOSS PENDIENTES
+    if [ -f "$TRADING_DB" ]; then
+      SEÑALES_TOTAL=$(python3 -c "import sqlite3; conn=sqlite3.connect('$TRADING_DB'); c=conn.cursor(); c.execute('SELECT COUNT(*) FROM señales'); print(c.fetchone()[0]); conn.close()" 2>/dev/null || echo "?")
+      WIN=$(python3 -c "import sqlite3; conn=sqlite3.connect('$TRADING_DB'); c=conn.cursor(); c.execute(\"SELECT COUNT(*) FROM señales WHERE resultado='WIN'\"); print(c.fetchone()[0]); conn.close()" 2>/dev/null || echo "?")
+      LOSS=$(python3 -c "import sqlite3; conn=sqlite3.connect('$TRADING_DB'); c=conn.cursor(); c.execute(\"SELECT COUNT(*) FROM señales WHERE resultado='LOSS'\"); print(c.fetchone()[0]); conn.close()" 2>/dev/null || echo "?")
+      PENDIENTES=$(python3 -c "import sqlite3; conn=sqlite3.connect('$TRADING_DB'); c=conn.cursor(); c.execute(\"SELECT COUNT(*) FROM señales WHERE resultado='PENDIENTE'\"); print(c.fetchone()[0]); conn.close()" 2>/dev/null || echo "?")
+      DB_STATUS="${GREEN}● activa${NC}"
+    else
+      DB_STATUS="${YELLOW}○ sin BD${NC}"
+      SEÑALES_TOTAL="─"; WIN="─"; LOSS="─"; PENDIENTES="─"
+    fi
+
+    echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
+    printf  "  ║  %-40s║\n" "◈ TRADING"
+    echo    "  ╠══════════════════════════════════════════╣"
+    printf  "  ║  BD: %-35b║\n" "$DB_STATUS"
+    printf  "  ║  %-40s║\n" "Total:$SEÑALES_TOTAL  W:$WIN  L:$LOSS  Pend:$PENDIENTES"
+    echo -e "  ╚══════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "  ${BOLD}[1]${NC} Nueva señal manual"
+    echo -e "  ${BOLD}[2]${NC} Ver señales (últimas 10)"
+    echo -e "  ${BOLD}[3]${NC} Estadísticas win/loss"
+    echo -e "  ${BOLD}[4]${NC} Registrar resultado"
+    echo -e "  ${BOLD}[5]${NC} Ejecutar tests"
+    echo -e "  ${BOLD}[6]${NC} Inicializar BD"
+    echo -e "  ${BOLD}[7]${NC} Historial completo"
+    echo ""
+    echo -e "  ${DIM}──────────────────────────────────────────${NC}"
+    echo -e "  ${DIM}[b] volver${NC}"
+    echo ""
+    echo -n "  Opción: "
+    read -r TOPT < /dev/tty
+
+    case "$TOPT" in
+      1)
+        _py_ok || continue
+        _check_script "$SIGNAL_BOT" "signal_bot.py" || continue
+        clear; echo ""
+        python3 "$SIGNAL_BOT" nueva < /dev/tty
+        echo ""; read -r _ < /dev/tty ;;
+      2)
+        _py_ok || continue
+        _check_script "$SIGNAL_BOT" "signal_bot.py" || continue
+        clear; echo ""
+        python3 "$SIGNAL_BOT" ver 10
+        echo ""; read -r _ < /dev/tty ;;
+      3)
+        _py_ok || continue
+        _check_script "$SIGNAL_BOT" "signal_bot.py" || continue
+        clear; echo ""
+        python3 "$SIGNAL_BOT" stats
+        echo ""; read -r _ < /dev/tty ;;
+      4)
+        _py_ok || continue
+        _check_script "$TRADE_TRACKER" "trade_tracker.py" || continue
+        clear; echo ""
+        python3 "$TRADE_TRACKER" actualizar < /dev/tty
+        echo ""; read -r _ < /dev/tty ;;
+      5)
+        _py_ok || continue
+        _check_script "$TRADING_TEST" "test_trading.py" || continue
+        clear; echo ""
+        echo -e "  ${CYAN}Ejecutando tests trading...${NC}\n"
+        python3 "$TRADING_TEST"
+        TEST_EXIT=$?
+        echo ""
+        [ $TEST_EXIT -eq 0 ] \
+          && echo -e "  ${GREEN}[OK]${NC} Todos los tests pasaron" \
+          || echo -e "  ${RED}[FAIL]${NC} Algunos tests fallaron (exit $TEST_EXIT)"
+        echo ""; read -r _ < /dev/tty ;;
+      6)
+        _py_ok || continue
+        _check_script "$SIGNAL_BOT" "signal_bot.py" || continue
+        clear; echo ""
+        python3 "$SIGNAL_BOT" init
+        echo -e "  ${DIM}Ruta: $TRADING_DB${NC}"
+        echo ""; read -r _ < /dev/tty ;;
+      7)
+        _py_ok || continue
+        _check_script "$TRADE_TRACKER" "trade_tracker.py" || continue
+        clear; echo ""
+        python3 "$TRADE_TRACKER" historial 50
+        echo ""; read -r _ < /dev/tty ;;
+      b|B|"") break ;;
+      *) echo -e "  ${YELLOW}[?]${NC} Opción inválida"; sleep 1 ;;
+    esac
+  done
+}
+
+# ════════════════════════════════════════════
+#  SUBMENÚ PYTHON
+# ════════════════════════════════════════════
+submenu_python() {
+  while true; do
+    clear; echo ""
+
+    IFS='|' read -r PY_STATE PY_VER _ <<< "$(check_python)"
+
+    echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
+    printf  "  ║  %-40s║\n" "◉ PYTHON"
+    echo    "  ╠══════════════════════════════════════════╣"
+    printf  "  ║  %-40s║\n" "Versión: ${PY_VER:-no instalado}"
+    echo -e "  ╚══════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "  ${BOLD}[1]${NC} Ejecutar script Python"
+    echo -e "  ${BOLD}[2]${NC} Chat Ollama CLI"
+    echo -e "  ${BOLD}[3]${NC} ◈ Trading  →"
+    echo -e "  ${BOLD}[4]${NC} ◉ Bot deportivo  →  ${DIM}(próximamente)${NC}"
+    echo ""
+    echo -e "  ${DIM}──────────────────────────────────────────${NC}"
+    echo -e "  ${DIM}[b] volver${NC}"
+    echo ""
+    echo -n "  Opción: "
+    read -r PYOPT < /dev/tty
+
+    case "$PYOPT" in
+      1)
+        _py_ok || continue
+        clear; echo ""
+        echo -n "  Ruta del script (ej: ~/python/script.py): "
+        read -r SCRIPT_PATH < /dev/tty
+        SCRIPT_PATH="${SCRIPT_PATH/#\~/$HOME}"
+        if [ ! -f "$SCRIPT_PATH" ]; then
+          echo -e "  ${RED}[ERROR]${NC} Archivo no encontrado: $SCRIPT_PATH"
+        else
+          echo ""
+          python3 "$SCRIPT_PATH" < /dev/tty
+        fi
+        echo ""; read -r _ < /dev/tty ;;
+      2)
+        if [ -f "$HOME/python/ollama_cli.py" ]; then
+          _py_ok && python3 "$HOME/python/ollama_cli.py" < /dev/tty
+        else
+          echo -e "\n  ${YELLOW}[AVISO]${NC} ollama_cli.py no encontrado"
+          echo -e "  ${DIM}Módulo pendiente — ver MEJORAS_PENDIENTES.md #10${NC}"
+          echo ""; read -r _ < /dev/tty
+        fi ;;
+      3) submenu_trading ;;
+      4)
+        echo -e "\n  ${DIM}Bot deportivo SQLite — en desarrollo (ver #17)${NC}"
+        echo ""; read -r _ < /dev/tty ;;
+      b|B|"") break ;;
+      *) echo -e "  ${YELLOW}[?]${NC} Opción inválida"; sleep 1 ;;
+    esac
+  done
+}
+
+# ════════════════════════════════════════════
 #  LOOP PRINCIPAL
 # ════════════════════════════════════════════
 while true; do
