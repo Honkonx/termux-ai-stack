@@ -1,256 +1,253 @@
-// src/screens/modules/claude/TerminalModal.js — v1.0.0 (S15)
-// Terminal embebida usando WebView + xterm.js + WebSocket PTY
-// Sin dependencias nativas — solo WebView (incluida en Expo SDK 50)
+// src/screens/modules/claude/TerminalModal.js — v2.0.0 (S15c-fix)
+// Terminal sin react-native-webview — solo componentes nativos RN
+// Comunicación: WebSocket nativo del JS engine (sin deps) → Dashboard PTY :8081
+// Colores ANSI: stripeados del output para mostrar texto limpio
 
-import React, { useRef, useEffect, useCallback } from 'react';
+import React, {
+  useState, useEffect, useRef, useCallback,
+} from 'react';
 import {
-  View, Text, TouchableOpacity, StyleSheet,
-  Modal, Animated, Dimensions,
+  View, Text, TextInput, TouchableOpacity, ScrollView,
+  StyleSheet, Modal, Animated, Dimensions, KeyboardAvoidingView,
+  Platform,
 } from 'react-native';
-import { WebView } from 'react-native-webview';
 import { useTheme } from '../../../theme/ThemeContext';
 import { Icons }    from '../../../theme/icons';
 
 const { height: SCREEN_H } = Dimensions.get('window');
 
-// ─── HTML inline con xterm.js desde CDN ──────────────────────────────────────
-// Se inyecta la IP y puerto del WS dinámicamente
-function buildTerminalHTML(wsUrl, projectDir) {
-  return `<!DOCTYPE html>
-<html>
-<head>
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
-<style>
-  * { margin:0; padding:0; box-sizing:border-box; }
-  html, body { width:100%; height:100%; background:#0a0a0a; overflow:hidden; }
-  #terminal { width:100%; height:100%; }
-  .xterm { height:100% !important; }
-  .xterm-viewport { overflow-y:auto !important; }
-</style>
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/xterm/5.3.0/xterm.min.css"/>
-</head>
-<body>
-<div id="terminal"></div>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xterm/5.3.0/xterm.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xterm/5.3.0/addon-fit/addon-fit.min.js"></script>
-<script>
-(function() {
-  var WS_URL = "${wsUrl}";
-
-  var term = new Terminal({
-    cursorBlink: true,
-    fontSize: 13,
-    fontFamily: 'monospace',
-    theme: {
-      background: '#0a0a0a',
-      foreground: '#e0e0e0',
-      cursor:     '#d4a027',
-      black:      '#1a1a1a',
-      red:        '#e06c75',
-      green:      '#4ade80',
-      yellow:     '#d4a027',
-      blue:       '#58a6ff',
-      magenta:    '#c084fc',
-      cyan:       '#22d3ee',
-      white:      '#e0e0e0',
-      brightBlack: '#404040',
-      brightGreen: '#86efac',
-    },
-    scrollback: 2000,
-    convertEol: true,
-  });
-
-  var fitAddon = new FitAddon.FitAddon();
-  term.loadAddon(fitAddon);
-  term.open(document.getElementById('terminal'));
-  fitAddon.fit();
-
-  window.addEventListener('resize', function() { fitAddon.fit(); });
-
-  // Conectar WebSocket
-  var ws;
-  var reconnectDelay = 1000;
-
-  function connect() {
-    term.write('\\x1b[33mConectando a ' + WS_URL + '...\\x1b[0m\\r\\n');
-    try {
-      ws = new WebSocket(WS_URL);
-    } catch(e) {
-      term.write('\\x1b[31mError al crear WebSocket: ' + e.message + '\\x1b[0m\\r\\n');
-      return;
-    }
-
-    ws.onopen = function() {
-      reconnectDelay = 1000;
-      // Primer mensaje: init con proyecto y dimensiones
-      var initMsg = {
-        type: 'init',
-        project_dir: PROJECT_DIR,
-        cols: term.cols,
-        rows: term.rows,
-      };
-      ws.send(JSON.stringify(initMsg));
-      var proj = PROJECT_DIR ? PROJECT_DIR.split('/').pop() : null;
-      if (proj) {
-        term.write('\\x1b[32m✓ Iniciando Claude Code en \\x1b[33m' + proj + '\\x1b[0m\\r\\n');
-      } else {
-        term.write('\\x1b[32m✓ Iniciando Claude Code\\x1b[0m\\r\\n');
-      }
-    };
-
-    ws.onmessage = function(evt) {
-      term.write(evt.data);
-    };
-
-    ws.onerror = function(e) {
-      term.write('\\x1b[31m[WS Error]\\x1b[0m\\r\\n');
-    };
-
-    ws.onclose = function(evt) {
-      term.write('\\x1b[33m[Sesión terminada — código ' + evt.code + ']\\x1b[0m\\r\\n');
-      if (evt.code !== 1000) {
-        setTimeout(function() {
-          term.write('\\x1b[33mReconectando...\\x1b[0m\\r\\n');
-          connect();
-        }, reconnectDelay);
-        reconnectDelay = Math.min(reconnectDelay * 2, 10000);
-      }
-    };
-  }
-
-  // Input del usuario → WS
-  term.onData(function(data) {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type:'input', data: data }));
-    }
-  });
-
-  // Resize → notificar al servidor
-  term.onResize(function(size) {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type:'resize', cols: size.cols, rows: size.rows }));
-    }
-  });
-
-  // Notificar a React Native cuando hay actividad
-  term.onData(function() {
-    if (window.ReactNativeWebView) {
-      window.ReactNativeWebView.postMessage(JSON.stringify({ type:'activity' }));
-    }
-  });
-
-  // Recibir project_dir del contexto
-  var PROJECT_DIR = "${projectDir}";
-
-  connect();
-})();
-</script>
-</body>
-</html>`;
+// Elimina secuencias ANSI del texto para display limpio
+function stripAnsi(str) {
+  // eslint-disable-next-line no-control-regex
+  return str.replace(/\x1B\[[0-9;]*[mGKHFABCDJsu]/g, '')
+            .replace(/\x1B\][^\x07]*\x07/g, '')
+            .replace(/\x1B[@-Z\\-_]/g, '')
+            .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '');
 }
 
-// ─── Componente ───────────────────────────────────────────────────────────────
 export function TerminalModal({ visible, onClose, wsUrl, title, projectDir }) {
-  const { theme }    = useTheme();
-  const s            = createStyles(theme);
-  const slideAnim    = useRef(new Animated.Value(SCREEN_H)).current;
-  const webviewRef   = useRef(null);
+  const { theme }     = useTheme();
+  const s             = createStyles(theme);
+  const slideAnim     = useRef(new Animated.Value(SCREEN_H)).current;
+  const scrollRef     = useRef(null);
+  const wsRef         = useRef(null);
 
-  // Animación slide-up al abrir
+  const [lines, setLines]     = useState([]);
+  const [input, setInput]     = useState('');
+  const [connected, setConnected] = useState(false);
+  const [connMsg, setConnMsg] = useState('Conectando...');
+
+  // Scroll al fondo cuando llegan líneas nuevas
+  useEffect(() => {
+    if (lines.length > 0) {
+      setTimeout(() => scrollRef.current?.scrollToEnd({ animated: false }), 50);
+    }
+  }, [lines]);
+
+  // Animación slide
   useEffect(() => {
     if (visible) {
+      setLines([]);
+      setInput('');
+      setConnected(false);
+      setConnMsg('Conectando...');
       Animated.spring(slideAnim, {
-        toValue: 0,
-        tension: 65,
-        friction: 11,
-        useNativeDriver: true,
+        toValue: 0, tension: 65, friction: 11, useNativeDriver: true,
       }).start();
+      connectWs();
     } else {
       Animated.timing(slideAnim, {
-        toValue: SCREEN_H,
-        duration: 250,
-        useNativeDriver: true,
+        toValue: SCREEN_H, duration: 220, useNativeDriver: true,
       }).start();
+      disconnectWs();
     }
   }, [visible]);
 
-  const handleClose = useCallback(() => {
-    Animated.timing(slideAnim, {
-      toValue: SCREEN_H,
-      duration: 220,
-      useNativeDriver: true,
-    }).start(() => onClose());
-  }, [onClose]);
-
-  const handleMessage = useCallback((event) => {
-    // Mensajes del WebView (actividad, errores, etc.)
-    try {
-      const msg = JSON.parse(event.nativeEvent.data);
-      // Extender aquí si se necesita comunicación bidireccional adicional
-    } catch {}
+  const addLine = useCallback((text) => {
+    const clean = stripAnsi(text);
+    if (!clean && text && text.trim()) return; // era solo ANSI, ignorar
+    const parts = clean.split(/\r?\n/);
+    setLines(prev => {
+      const next = [...prev];
+      // Si la última línea no terminó en \n, concatenar
+      if (parts.length > 0 && next.length > 0 && !next[next.length - 1].endsWith('\n')) {
+        next[next.length - 1] = next[next.length - 1] + parts[0];
+        for (let i = 1; i < parts.length; i++) next.push(parts[i]);
+      } else {
+        for (const p of parts) next.push(p);
+      }
+      // Limitar buffer a 500 líneas
+      return next.length > 500 ? next.slice(-500) : next;
+    });
   }, []);
+
+  const connectWs = useCallback(() => {
+    if (wsRef.current) {
+      try { wsRef.current.close(); } catch {}
+    }
+    const url = wsUrl || 'ws://127.0.0.1:8081';
+    try {
+      const ws = new WebSocket(url);
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        setConnected(true);
+        setConnMsg('');
+        // Enviar init con proyecto
+        ws.send(JSON.stringify({
+          type: 'init',
+          project_dir: projectDir || '',
+          cols: 80,
+          rows: 24,
+        }));
+      };
+
+      ws.onmessage = (evt) => {
+        addLine(evt.data);
+      };
+
+      ws.onerror = () => {
+        setConnMsg('Error de conexión — ¿está el dashboard corriendo?');
+      };
+
+      ws.onclose = (evt) => {
+        setConnected(false);
+        if (evt.code !== 1000) {
+          setConnMsg(`[Sesión terminada — código ${evt.code}]`);
+        }
+      };
+    } catch (e) {
+      setConnMsg(`Error: ${e.message}`);
+    }
+  }, [wsUrl, projectDir, addLine]);
+
+  const disconnectWs = useCallback(() => {
+    if (wsRef.current) {
+      try { wsRef.current.close(1000); } catch {}
+      wsRef.current = null;
+    }
+    setConnected(false);
+  }, []);
+
+  const sendInput = useCallback(() => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    const text = input;
+    setInput('');
+    // Mostrar lo que se escribió
+    addLine(`${text}`);
+    wsRef.current.send(JSON.stringify({ type: 'input', data: text + '\n' }));
+  }, [input, addLine]);
+
+  const sendCtrlC = useCallback(() => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    wsRef.current.send(JSON.stringify({ type: 'input', data: '\x03' }));
+    addLine('^C');
+  }, [addLine]);
+
+  const handleClose = useCallback(() => {
+    disconnectWs();
+    Animated.timing(slideAnim, {
+      toValue: SCREEN_H, duration: 220, useNativeDriver: true,
+    }).start(() => onClose());
+  }, [onClose, disconnectWs]);
 
   if (!visible) return null;
 
-  const html = buildTerminalHTML(wsUrl || 'ws://127.0.0.1:8081', projectDir || '');
-
   return (
-    <Modal
-      visible={visible}
-      transparent
-      animationType="none"
-      onRequestClose={handleClose}
-    >
-      <View style={s.overlay}>
-        <Animated.View
-          style={[s.panel, { transform: [{ translateY: slideAnim }] }]}
-        >
+    <Modal visible={visible} transparent animationType="none" onRequestClose={handleClose}>
+      <KeyboardAvoidingView
+        style={s.overlay}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      >
+        <Animated.View style={[s.panel, { transform: [{ translateY: slideAnim }] }]}>
+
           {/* Header */}
           <View style={s.header}>
-            <View style={s.headerLeft}>
-              <View style={s.termDot} />
-              <View style={[s.termDot, { backgroundColor: '#d4a027' }]} />
-              <View style={[s.termDot, { backgroundColor: '#4ade80' }]} />
+            <View style={s.dotsRow}>
+              <View style={[s.dot, { backgroundColor: '#e06c75' }]} />
+              <View style={[s.dot, { backgroundColor: '#d4a027' }]} />
+              <View style={[s.dot, { backgroundColor: '#4ade80' }]} />
             </View>
             <Text style={s.headerTitle} numberOfLines={1}>
-              {title || 'Terminal · Claude Code'}
+              {title || 'Claude Code'}
             </Text>
+            <View style={s.headerRight}>
+              <TouchableOpacity onPress={sendCtrlC} style={s.ctrlCBtn}
+                hitSlop={{ top:8, bottom:8, left:8, right:8 }}>
+                <Text style={s.ctrlCText}>^C</Text>
+              </TouchableOpacity>
+              <TouchableOpacity onPress={handleClose} style={s.closeBtn}
+                hitSlop={{ top:10, bottom:10, left:10, right:10 }}>
+                <Text style={s.closeIcon}>{Icons.close}</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+
+          {/* Estado de conexión */}
+          {(!connected || connMsg) && (
+            <View style={s.connBar}>
+              <Text style={[s.connText, { color: connected ? '#4ade80' : '#d4a027' }]}>
+                {connected ? '● conectado' : connMsg || '○ desconectado'}
+              </Text>
+              {!connected && (
+                <TouchableOpacity onPress={connectWs} hitSlop={{ top:8, bottom:8, left:8, right:8 }}>
+                  <Text style={s.retryText}>{Icons.refresh} Reconectar</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          )}
+
+          {/* Output terminal */}
+          <ScrollView
+            ref={scrollRef}
+            style={s.output}
+            contentContainerStyle={s.outputContent}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+          >
+            {lines.map((line, i) => (
+              <Text key={i} style={s.outputLine} selectable>
+                {line}
+              </Text>
+            ))}
+          </ScrollView>
+
+          {/* Input */}
+          <View style={s.inputRow}>
+            <Text style={s.prompt}>›</Text>
+            <TextInput
+              style={s.input}
+              value={input}
+              onChangeText={setInput}
+              onSubmitEditing={sendInput}
+              placeholder="escribe un comando..."
+              placeholderTextColor="#404040"
+              autoCapitalize="none"
+              autoCorrect={false}
+              returnKeyType="send"
+              blurOnSubmit={false}
+              editable={connected}
+            />
             <TouchableOpacity
-              onPress={handleClose}
-              style={s.closeBtn}
-              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              onPress={sendInput}
+              disabled={!connected || !input.trim()}
+              style={[s.sendBtn, (!connected || !input.trim()) && { opacity: 0.35 }]}
             >
-              <Text style={s.closeIcon}>{Icons.close}</Text>
+              <Text style={s.sendIcon}>{Icons.send}</Text>
             </TouchableOpacity>
           </View>
 
-          {/* WebView con xterm.js */}
-          <WebView
-            ref={webviewRef}
-            source={{ html }}
-            style={s.webview}
-            originWhitelist={['*']}
-            onMessage={handleMessage}
-            javaScriptEnabled
-            domStorageEnabled
-            allowFileAccess
-            mixedContentMode="always"
-            // Permitir WebSockets a IP local
-            allowUniversalAccessFromFileURLs
-            onError={(e) => console.warn('WebView error:', e.nativeEvent)}
-          />
         </Animated.View>
-      </View>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }
 
-// ─── Estilos ──────────────────────────────────────────────────────────────────
 function createStyles(t) {
   return StyleSheet.create({
     overlay: {
       flex: 1,
-      backgroundColor: 'rgba(0,0,0,0.82)',
+      backgroundColor: 'rgba(0,0,0,0.85)',
       justifyContent: 'flex-end',
     },
     panel: {
@@ -260,7 +257,7 @@ function createStyles(t) {
       borderTopRightRadius: 16,
       overflow: 'hidden',
       borderTopWidth: 1,
-      borderColor: 'rgba(212,160,39,0.25)', // ámbar Claude sutil
+      borderColor: 'rgba(212,160,39,0.25)',
     },
     header: {
       flexDirection: 'row',
@@ -271,35 +268,65 @@ function createStyles(t) {
       borderBottomWidth: 1,
       borderBottomColor: 'rgba(255,255,255,0.07)',
     },
-    headerLeft: {
-      flexDirection: 'row',
-      gap: 6,
-      marginRight: 10,
-    },
-    termDot: {
-      width: 11, height: 11, borderRadius: 6,
-      backgroundColor: '#e06c75',
-    },
+    dotsRow: { flexDirection: 'row', gap: 6, marginRight: 10 },
+    dot: { width: 11, height: 11, borderRadius: 6 },
     headerTitle: {
-      flex: 1,
-      fontSize: 12,
-      fontWeight: '600',
-      color: '#a0a0a0',
-      fontFamily: 'monospace',
-      textAlign: 'center',
+      flex: 1, fontSize: 12, fontWeight: '600',
+      color: '#808080', fontFamily: 'monospace', textAlign: 'center',
     },
-    closeBtn: {
-      width: 28, height: 28,
+    headerRight: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+    ctrlCBtn: {
+      paddingHorizontal: 8, paddingVertical: 3,
+      backgroundColor: '#1a1a1a', borderRadius: 4,
+      borderWidth: 1, borderColor: '#333',
+    },
+    ctrlCText: { fontSize: 11, color: '#e06c75', fontWeight: '700', fontFamily: 'monospace' },
+    closeBtn: { width: 28, height: 28, alignItems: 'center', justifyContent: 'center' },
+    closeIcon: { fontSize: 18, color: '#505050', fontWeight: '700' },
+
+    connBar: {
+      flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+      paddingHorizontal: 12, paddingVertical: 6,
+      backgroundColor: '#111',
+      borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.05)',
+    },
+    connText:  { fontSize: 11, fontFamily: 'monospace' },
+    retryText: { fontSize: 11, color: '#d4a027', fontWeight: '600' },
+
+    output: { flex: 1, backgroundColor: '#0a0a0a' },
+    outputContent: { padding: 12, paddingBottom: 8 },
+    outputLine: {
+      fontSize: 12,
+      fontFamily: 'monospace',
+      color: '#d0d0d0',
+      lineHeight: 18,
+    },
+
+    inputRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      paddingHorizontal: 12,
+      paddingVertical: 8,
+      backgroundColor: '#111',
+      borderTopWidth: 1,
+      borderTopColor: 'rgba(212,160,39,0.2)',
+      gap: 8,
+    },
+    prompt: { fontSize: 16, color: '#d4a027', fontFamily: 'monospace', fontWeight: '700' },
+    input: {
+      flex: 1,
+      fontSize: 13,
+      fontFamily: 'monospace',
+      color: '#e0e0e0',
+      paddingVertical: 6,
+      paddingHorizontal: 0,
+    },
+    sendBtn: {
+      width: 34, height: 34, borderRadius: 8,
+      backgroundColor: '#1a1400',
+      borderWidth: 1, borderColor: 'rgba(212,160,39,0.4)',
       alignItems: 'center', justifyContent: 'center',
     },
-    closeIcon: {
-      fontSize: 18,
-      color: '#606060',
-      fontWeight: '700',
-    },
-    webview: {
-      flex: 1,
-      backgroundColor: '#0a0a0a',
-    },
+    sendIcon: { fontSize: 14, color: '#d4a027', fontWeight: '700' },
   });
 }
