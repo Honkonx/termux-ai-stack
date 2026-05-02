@@ -1,441 +1,679 @@
-// src/screens/modules/ollama/OllamaScreen.js — v1.0.0 (S14)
-// SURFACE:   bg + surface + card. Acento verde #4ade80 — terminal/IA local
-// JERARQUÍA: topBarTitle > sectionLabel > modelName > modelMeta/caption
-// ACENTO:    #4ade80 (verde Ollama) — chips seleccionados, botón chat, íconos activos
-// BORDES:    1px rgba sutil. Chips seleccionados con borderColor acento.
-// DENSIDAD:  Media-alta. Lista de modelos + chips compactos + descargar con presets.
+// src/screens/ollama/OllamaScreen.js — v2.0 (S18)
+// Fix crítico: t.textPrimary || t.text || '#f4f4f5' en todos los textos
+// Conectado a endpoints reales del dashboard
+// Pasa modelo y num_ctx seleccionados a ChatScreen
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
-  View, Text, ScrollView, TouchableOpacity,
-  StyleSheet, ActivityIndicator, Alert,
+  View, Text, StyleSheet, ScrollView, TouchableOpacity,
+  Switch, ActivityIndicator, Alert, RefreshControl,
 } from 'react-native';
-import { useTheme }       from '../../../theme/ThemeContext';
-import { StatusPill }     from '../../../components/StatusPill';
-import { ActionButton }   from '../../../components/ActionButton';
-import { SectionLabel }   from '../../../components/SectionLabel';
-import { Divider }        from '../../../components/Divider';
-import { Icons }          from '../../../theme/icons';
-import { useStatus }      from '../../../hooks/useStatus';
-import { useAction }      from '../../../hooks/useAction';
-import { apiFetch }       from '../../../services/api';
-import { ROUTES }         from '../../../navigation/routes';
+import { useTheme } from '../../theme/ThemeContext';
+import { useStatus } from '../../hooks/useStatus';
 
-// ─── Constantes ──────────────────────────────────────────────────────────────
-const CTX_OPTIONS = [512, 1024, 2048, 4096, 8192];
-const MODEL_PRESETS = [
-  { id: 'gemma3:1b',     label: 'gemma3:1b',     size: '~815MB', note: 'Google · rápido' },
-  { id: 'llama3.2:1b',   label: 'llama3.2:1b',   size: '~1.3GB', note: 'Meta · equilibrado' },
-  { id: 'phi3:mini',     label: 'phi3:mini',      size: '~2.3GB', note: 'Microsoft · razonamiento' },
-  { id: 'qwen2.5:0.5b',  label: 'qwen2.5:0.5b',  size: '~398MB', note: 'Alibaba · ultraligero' },
+// ── Constantes ────────────────────────────────────────────────
+
+const OLLAMA_ACCENT = '#4ade80';
+const OLLAMA_DIM    = '#1a2a1a';
+
+const CTX_OPTIONS = [
+  { label: '512',  value: 512,  note: 'mín RAM' },
+  { label: '1K',   value: 1024, note: 'rápido' },
+  { label: '2K',   value: 2048, note: '◉ recmd' },
+  { label: '4K',   value: 4096, note: 'normal' },
+  { label: '8K',   value: 8192, note: 'lento' },
 ];
 
-// ─── Componente principal ─────────────────────────────────────────────────────
-export function OllamaScreen({ navigate, goBack }) {
-  const { theme }   = useTheme();
-  const s           = createStyles(theme);
-  const { status }  = useStatus();
-  const { trigger } = useAction();
+const PRESETS_DESCARGA = [
+  { name: 'gemma3:1b',    size: '~815 MB', maker: 'Google',    note: 'rápido' },
+  { name: 'llama3.2:1b',  size: '~1.3 GB', maker: 'Meta',      note: 'equilibrado' },
+  { name: 'phi3:mini',    size: '~2.3 GB', maker: 'Microsoft', note: 'razonamiento' },
+  { name: 'qwen2.5:0.5b', size: '~398 MB', maker: 'Alibaba',   note: 'ultraligero' },
+];
 
-  // Modelos instalados
-  const [models, setModels]       = useState([]);
-  const [modelsLoading, setModelsLoading] = useState(false);
-  const [modelsErr, setModelsErr] = useState(null);
+// ── Helper fetch con timeout ──────────────────────────────────
 
-  // num_ctx seleccionado
-  const [selectedCtx, setSelectedCtx] = useState(2048);
+async function apiFetch(ip, path, opts = {}, ms = 8000) {
+  const ctrl = new AbortController();
+  const tid = setTimeout(() => ctrl.abort(), ms);
+  try {
+    const res = await fetch(`http://${ip}:8080${path}`, {
+      ...opts,
+      signal: ctrl.signal,
+      headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) },
+    });
+    clearTimeout(tid);
+    return await res.json();
+  } catch (e) {
+    clearTimeout(tid);
+    throw e;
+  }
+}
 
-  // Descarga
-  const [downloadingId, setDownloadingId] = useState(null);
-  const [downloadMsg, setDownloadMsg]     = useState({}); // { [modelId]: { ok, text } }
+// ── Componentes internos ──────────────────────────────────────
 
-  // Eliminar
-  const [deletingId, setDeletingId] = useState(null);
+const SectionLabel = ({ children, style, t }) => (
+  <Text style={[{
+    fontSize: 10, fontWeight: '700', letterSpacing: 1.2,
+    color: t.textMuted || '#52525b',
+    textTransform: 'uppercase', marginBottom: 8, marginTop: 4,
+  }, style]}>
+    {children}
+  </Text>
+);
 
-  // Switch start/stop
-  const [toggling, setToggling] = useState(false);
+const Divider = ({ t }) => (
+  <View style={{ height: 1, backgroundColor: t.border, marginVertical: 2 }} />
+);
 
-  const ollamaModule = status?.modules?.find(m => m.id === 'ollama');
-  const isActive     = ollamaModule?.status === 'active';
+// Chip de num_ctx
+const CtxChip = ({ opt, selected, onPress, t }) => (
+  <TouchableOpacity
+    onPress={onPress}
+    activeOpacity={0.7}
+    style={{
+      paddingHorizontal: 14, paddingVertical: 8,
+      borderRadius: 999,
+      backgroundColor: selected ? OLLAMA_DIM : t.card,
+      borderWidth: 1,
+      borderColor: selected ? OLLAMA_ACCENT : (t.border),
+      marginRight: 8, marginBottom: 8,
+      alignItems: 'center',
+    }}
+  >
+    <Text style={{
+      fontSize: 13, fontWeight: selected ? '700' : '500',
+      color: selected ? OLLAMA_ACCENT : (t.textPrimary || t.text || '#f4f4f5'),
+    }}>
+      {opt.label}
+    </Text>
+    {opt.note ? (
+      <Text style={{
+        fontSize: 9, fontWeight: '500', letterSpacing: 0.3,
+        color: selected ? (OLLAMA_ACCENT + 'aa') : (t.textMuted || '#52525b'),
+        marginTop: 1,
+      }}>
+        {opt.note}
+      </Text>
+    ) : null}
+  </TouchableOpacity>
+);
 
-  // Carga modelos al montar
-  useEffect(() => {
-    loadModels();
+// Fila de modelo instalado
+const ModelRow = ({ model, onChat, onDelete, t, isLast }) => (
+  <View>
+    <View style={{
+      flexDirection: 'row', alignItems: 'center',
+      paddingVertical: 12, paddingHorizontal: 14,
+    }}>
+      {/* Icono hexágono Ollama */}
+      <View style={{
+        width: 36, height: 36, borderRadius: 8,
+        backgroundColor: OLLAMA_DIM,
+        borderWidth: 1, borderColor: OLLAMA_ACCENT + '44',
+        alignItems: 'center', justifyContent: 'center',
+        marginRight: 12,
+      }}>
+        <Text style={{ fontSize: 16, color: OLLAMA_ACCENT, fontWeight: '700' }}>⬡</Text>
+      </View>
+
+      {/* Nombre + tamaño */}
+      <View style={{ flex: 1 }}>
+        <Text style={{
+          fontSize: 13, fontWeight: '600',
+          color: t.textPrimary || t.text || '#f4f4f5',
+          fontFamily: 'monospace',
+        }} numberOfLines={1}>
+          {model.name}
+        </Text>
+        <Text style={{
+          fontSize: 11, fontWeight: '500',
+          color: t.textMuted || '#52525b',
+          marginTop: 2,
+        }}>
+          {model.size}
+        </Text>
+      </View>
+
+      {/* Botón chat */}
+      <TouchableOpacity
+        onPress={onChat}
+        activeOpacity={0.75}
+        style={{
+          paddingHorizontal: 14, paddingVertical: 8,
+          borderRadius: 8,
+          backgroundColor: t.accentDim || '#1a2d5a',
+          borderWidth: 1,
+          borderColor: (t.accent || '#3d7aed') + '55',
+          marginRight: 8,
+        }}
+      >
+        <Text style={{
+          fontSize: 12, fontWeight: '600',
+          color: t.accent || '#3d7aed',
+        }}>
+          chat →
+        </Text>
+      </TouchableOpacity>
+
+      {/* Botón eliminar */}
+      <TouchableOpacity
+        onPress={onDelete}
+        activeOpacity={0.75}
+        style={{
+          width: 32, height: 32, borderRadius: 8,
+          backgroundColor: (t.errorDim || '#2d0707'),
+          borderWidth: 1, borderColor: (t.error || '#ef4444') + '44',
+          alignItems: 'center', justifyContent: 'center',
+        }}
+      >
+        <Text style={{ fontSize: 14, color: t.error || '#ef4444' }}>✕</Text>
+      </TouchableOpacity>
+    </View>
+    {!isLast && <Divider t={t} />}
+  </View>
+);
+
+// Fila de preset descarga
+const PresetRow = ({ preset, isInstalled, pulling, onPull, t, isLast }) => (
+  <View>
+    <View style={{
+      flexDirection: 'row', alignItems: 'center',
+      paddingVertical: 12, paddingHorizontal: 14,
+    }}>
+      <View style={{ flex: 1 }}>
+        <Text style={{
+          fontSize: 13, fontWeight: '500',
+          color: t.textPrimary || t.text || '#f4f4f5',
+          fontFamily: 'monospace',
+        }}>
+          {preset.name}
+        </Text>
+        <Text style={{
+          fontSize: 11, fontWeight: '400',
+          color: t.textMuted || '#52525b',
+          marginTop: 2,
+        }}>
+          {preset.size} · {preset.maker} · {preset.note}
+        </Text>
+      </View>
+
+      {isInstalled ? (
+        <View style={{
+          paddingHorizontal: 10, paddingVertical: 5,
+          borderRadius: 999, backgroundColor: OLLAMA_DIM,
+          borderWidth: 1, borderColor: OLLAMA_ACCENT + '55',
+        }}>
+          <Text style={{ fontSize: 11, fontWeight: '600', color: OLLAMA_ACCENT }}>instalado</Text>
+        </View>
+      ) : pulling ? (
+        <ActivityIndicator size="small" color={OLLAMA_ACCENT} />
+      ) : (
+        <TouchableOpacity
+          onPress={onPull}
+          activeOpacity={0.75}
+          style={{
+            width: 36, height: 36, borderRadius: 8,
+            backgroundColor: t.overlay || '#1a1a1a',
+            borderWidth: 1, borderColor: t.border,
+            alignItems: 'center', justifyContent: 'center',
+          }}
+        >
+          <Text style={{ fontSize: 16, color: t.textSecond || '#8b949e' }}>↓</Text>
+        </TouchableOpacity>
+      )}
+    </View>
+    {!isLast && <Divider t={t} />}
+  </View>
+);
+
+// ── Pantalla principal ────────────────────────────────────────
+
+export default function OllamaScreen({ navigate, goBack }) {
+  const { theme: t } = useTheme();
+  const { status } = useStatus();
+
+  const ip = status?.ip || '127.0.0.1';
+  const ollamaRunning = status?.modules?.find(m => m.id === 'ollama')?.running ?? false;
+
+  const [models,      setModels]      = useState([]);
+  const [loadingMdl,  setLoadingMdl]  = useState(true);
+  const [numCtx,      setNumCtx]      = useState(2048);
+  const [toggling,    setToggling]    = useState(false);
+  const [pullingMap,  setPullingMap]  = useState({});   // { 'model:tag': true }
+  const [refreshing,  setRefreshing]  = useState(false);
+  const [feedback,    setFeedback]    = useState(null); // { type: 'ok'|'err', msg }
+
+  const feedbackTimer = useRef(null);
+
+  // ── Feedback temporal ──────────────────────────────────────
+
+  const showFeedback = useCallback((type, msg) => {
+    if (feedbackTimer.current) clearTimeout(feedbackTimer.current);
+    setFeedback({ type, msg });
+    feedbackTimer.current = setTimeout(() => setFeedback(null), 3000);
   }, []);
 
-  // ── Carga modelos ────────────────────────────────────────────────
+  useEffect(() => () => {
+    if (feedbackTimer.current) clearTimeout(feedbackTimer.current);
+  }, []);
+
+  // ── Cargar modelos ─────────────────────────────────────────
+
   const loadModels = useCallback(async () => {
-    setModelsLoading(true);
-    setModelsErr(null);
     try {
-      const res = await apiFetch('/api/ollama/models');
-      setModels(res.models || []);
+      const data = await apiFetch(ip, '/api/ollama/models');
+      // data.models: [{ name, size, digest }] o array de strings
+      const raw = data.models || [];
+      const normalized = raw.map(m =>
+        typeof m === 'string'
+          ? { name: m, size: '—' }
+          : { name: m.name || m, size: m.size ? formatSize(m.size) : '—' }
+      );
+      setModels(normalized);
     } catch {
-      setModelsErr('No se pudo conectar con Ollama');
+      // no mostrar error en carga silenciosa
     } finally {
-      setModelsLoading(false);
+      setLoadingMdl(false);
+      setRefreshing(false);
     }
-  }, []);
+  }, [ip]);
 
-  // ── Toggle start/stop ────────────────────────────────────────────
-  const handleToggle = useCallback(async () => {
-    if (toggling) return;
+  useEffect(() => { loadModels(); }, [loadModels]);
+
+  const onRefresh = useCallback(() => {
+    setRefreshing(true);
+    loadModels();
+  }, [loadModels]);
+
+  // ── Toggle Ollama ──────────────────────────────────────────
+
+  const handleToggle = useCallback(async (val) => {
     setToggling(true);
-    const action = isActive ? 'stop' : 'start';
-    await trigger('ollama', action);
-    setToggling(false);
-  }, [toggling, isActive, trigger]);
+    try {
+      const action = val ? 'start_ollama' : 'stop_ollama';
+      await apiFetch(ip, '/api/action', {
+        method: 'POST',
+        body: JSON.stringify({ action }),
+      });
+    } catch (e) {
+      showFeedback('err', 'Error al cambiar estado');
+    } finally {
+      setToggling(false);
+    }
+  }, [ip, showFeedback]);
 
-  // ── Eliminar modelo ──────────────────────────────────────────────
+  // ── Eliminar modelo ────────────────────────────────────────
+
   const handleDelete = useCallback((modelName) => {
     Alert.alert(
       'Eliminar modelo',
-      `¿Eliminar "${modelName}"?\nEsta acción no se puede deshacer.`,
+      `¿Eliminar ${modelName}? No se puede deshacer.`,
       [
         { text: 'Cancelar', style: 'cancel' },
         {
-          text: 'Eliminar',
-          style: 'destructive',
+          text: 'Eliminar', style: 'destructive',
           onPress: async () => {
-            setDeletingId(modelName);
             try {
-              await apiFetch('/api/ollama/delete', {
+              const data = await apiFetch(ip, '/api/ollama/delete', {
                 method: 'POST',
-                body: JSON.stringify({ model: modelName }),
+                body: JSON.stringify({ name: modelName }),
               });
-              setModels(prev => prev.filter(m => m.name !== modelName));
+              if (data.ok) {
+                showFeedback('ok', `✓ ${modelName} eliminado`);
+                loadModels();
+              } else {
+                showFeedback('err', data.error || 'Error al eliminar');
+              }
             } catch {
-              // silencioso — usuario puede recargar
-            } finally {
-              setDeletingId(null);
+              showFeedback('err', 'Sin conexión al dashboard');
             }
           },
         },
       ]
     );
-  }, []);
+  }, [ip, loadModels, showFeedback]);
 
-  // ── Descargar modelo ─────────────────────────────────────────────
-  const handleDownload = useCallback(async (modelId) => {
-    if (downloadingId) return;
-    setDownloadingId(modelId);
-    setDownloadMsg(prev => ({ ...prev, [modelId]: null }));
+  // ── Descargar modelo ───────────────────────────────────────
+
+  const handlePull = useCallback(async (modelName) => {
+    setPullingMap(p => ({ ...p, [modelName]: true }));
     try {
-      const res = await apiFetch('/api/ollama/pull', {
+      const data = await apiFetch(ip, '/api/ollama/pull', {
         method: 'POST',
-        body: JSON.stringify({ model: modelId }),
-      });
-      setDownloadMsg(prev => ({
-        ...prev,
-        [modelId]: { ok: res.ok, text: res.ok ? 'Descarga iniciada en Ollama' : (res.msg || 'Error') },
-      }));
-      if (res.ok) setTimeout(loadModels, 3000);
+        body: JSON.stringify({ name: modelName }),
+      }, 180_000); // 3 min — descarga puede tardar
+      if (data.ok) {
+        showFeedback('ok', `✓ ${modelName} descargado`);
+        loadModels();
+      } else {
+        showFeedback('err', data.error || 'Error al descargar');
+      }
     } catch {
-      setDownloadMsg(prev => ({
-        ...prev,
-        [modelId]: { ok: false, text: 'Sin respuesta del dashboard' },
-      }));
+      showFeedback('err', 'Timeout o sin conexión');
     } finally {
-      setDownloadingId(null);
+      setPullingMap(p => { const n = { ...p }; delete n[modelName]; return n; });
     }
-  }, [downloadingId, loadModels]);
+  }, [ip, loadModels, showFeedback]);
 
-  // ── Ir al Chat ───────────────────────────────────────────────────
-  const handleGoChat = useCallback(() => {
-    navigate(ROUTES.CHAT);
-  }, [navigate]);
+  // ── Ir al chat ─────────────────────────────────────────────
 
-  // ─────────────────────────────────────────────────────────────────
+  const handleGoChat = useCallback((modelName) => {
+    if (!ollamaRunning) {
+      showFeedback('err', 'Inicia Ollama primero');
+      return;
+    }
+    navigate('Chat', { model: modelName, numCtx });
+  }, [ollamaRunning, numCtx, navigate, showFeedback]);
+
+  // ── Render ─────────────────────────────────────────────────
+
+  const s = createStyles(t);
+
+  const installedNames = new Set(models.map(m => m.name));
+
   return (
     <View style={s.root}>
-      {/* TopBar */}
+      {/* ── TopBar ── */}
       <View style={s.topBar}>
-        <TouchableOpacity onPress={goBack} style={s.backBtn} hitSlop={{ top:10, bottom:10, left:10, right:10 }}>
-          <Text style={s.backIcon}>{Icons.back}</Text>
-          <Text style={s.backLabel}>Módulos</Text>
+        <TouchableOpacity onPress={goBack} style={s.backBtn} activeOpacity={0.7}>
+          <Text style={s.backTxt}>‹ Módulos</Text>
         </TouchableOpacity>
-        <View style={s.topBarCenter}>
-          <Text style={s.topBarTitle}>Ollama</Text>
-        </View>
-        <View style={s.topBarRight}>
-          <StatusPill status={ollamaModule?.status ?? 'inactive'} />
-          <TouchableOpacity
-            onPress={handleToggle}
+
+        <Text style={s.topTitle}>Ollama</Text>
+
+        <View style={s.topRight}>
+          {/* Pill estado */}
+          <View style={[s.pill, ollamaRunning ? s.pillActive : s.pillOff]}>
+            <Text style={[s.pillDot, { color: ollamaRunning ? OLLAMA_ACCENT : (t.textMuted || '#52525b') }]}>●</Text>
+            <Text style={[s.pillLbl, { color: ollamaRunning ? OLLAMA_ACCENT : (t.textMuted || '#52525b') }]}>
+              {ollamaRunning ? 'activo' : 'detenido'}
+            </Text>
+          </View>
+
+          {/* Switch */}
+          <Switch
+            value={ollamaRunning}
+            onValueChange={handleToggle}
             disabled={toggling}
-            style={[s.switchBtn, { backgroundColor: isActive ? theme.success + '22' : theme.surface }]}
-            hitSlop={{ top:8, bottom:8, left:8, right:8 }}
-          >
-            {toggling
-              ? <ActivityIndicator size="small" color={theme.accent} />
-              : <Text style={[s.switchText, { color: isActive ? theme.success : theme.textMuted }]}>
-                  {isActive ? 'ON' : 'OFF'}
-                </Text>
-            }
-          </TouchableOpacity>
+            trackColor={{ false: t.border, true: OLLAMA_ACCENT + '66' }}
+            thumbColor={ollamaRunning ? OLLAMA_ACCENT : (t.textMuted || '#52525b')}
+            style={{ marginLeft: 8 }}
+          />
         </View>
       </View>
 
-      <ScrollView
-        style={s.scroll}
-        contentContainerStyle={s.scrollContent}
-        showsVerticalScrollIndicator={false}
-      >
-        {/* ── Sección 1: Modelos instalados ── */}
-        <View style={s.sectionRow}>
-          <SectionLabel>MODELOS INSTALADOS</SectionLabel>
-          <TouchableOpacity onPress={loadModels} hitSlop={{ top:8, bottom:8, left:8, right:8 }}>
-            <Text style={s.refreshBtn}>{Icons.refresh}</Text>
-          </TouchableOpacity>
-        </View>
-
-        <View style={s.card}>
-          {modelsLoading ? (
-            <View style={s.centerRow}>
-              <ActivityIndicator size="small" color={theme.accent} />
-              <Text style={s.loadingText}>Cargando modelos...</Text>
-            </View>
-          ) : modelsErr ? (
-            <View style={s.centerRow}>
-              <Text style={[s.statusText, { color: theme.error }]}>{Icons.error} {modelsErr}</Text>
-            </View>
-          ) : models.length === 0 ? (
-            <Text style={s.emptyText}>No hay modelos instalados</Text>
-          ) : (
-            models.map((model, i) => (
-              <View
-                key={model.name}
-                style={[s.modelRow, i > 0 && { borderTopWidth: 1, borderTopColor: theme.border }]}
-              >
-                <View style={s.modelIconBox}>
-                  <Text style={s.modelIcon}>⬡</Text>
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={s.modelName} numberOfLines={1}>{model.name}</Text>
-                  {model.size && <Text style={s.modelMeta}>{model.size}</Text>}
-                </View>
-                {/* Botón Chat */}
-                <TouchableOpacity
-                  onPress={handleGoChat}
-                  style={s.modelChatBtn}
-                  hitSlop={{ top:6, bottom:6, left:6, right:6 }}
-                >
-                  <Text style={s.modelChatText}>chat →</Text>
-                </TouchableOpacity>
-                {/* Botón Eliminar */}
-                <TouchableOpacity
-                  onPress={() => handleDelete(model.name)}
-                  disabled={deletingId === model.name}
-                  style={s.modelDeleteBtn}
-                  hitSlop={{ top:6, bottom:6, left:6, right:6 }}
-                >
-                  {deletingId === model.name
-                    ? <ActivityIndicator size="small" color={theme.error} />
-                    : <Text style={s.modelDeleteText}>✕</Text>
-                  }
-                </TouchableOpacity>
-              </View>
-            ))
-          )}
-        </View>
-
-        {/* ── Sección 2: num_ctx ── */}
-        <SectionLabel style={{ marginTop: 20 }}>CONTEXTO (num_ctx)</SectionLabel>
-        <View style={s.card}>
-          <Text style={s.ctxHint}>Tokens de contexto por sesión de chat</Text>
-          <View style={s.chipsRow}>
-            {CTX_OPTIONS.map(ctx => (
-              <TouchableOpacity
-                key={ctx}
-                onPress={() => setSelectedCtx(ctx)}
-                style={[
-                  s.chip,
-                  selectedCtx === ctx && { borderColor: theme.accent, backgroundColor: theme.accent + '18' },
-                ]}
-              >
-                <Text style={[s.chipText, selectedCtx === ctx && { color: theme.accent, fontWeight: '700' }]}>
-                  {ctx >= 1024 ? `${ctx / 1024}k` : ctx}
-                </Text>
-              </TouchableOpacity>
-            ))}
-          </View>
-          <Text style={s.ctxNote}>
-            {selectedCtx >= 4096
-              ? `⚠ ${selectedCtx} tokens puede saturar RAM en POCO F5`
-              : `✓ ${selectedCtx} tokens — uso moderado de RAM`}
+      {/* ── Feedback banner ── */}
+      {feedback && (
+        <View style={[s.feedbackBanner, {
+          backgroundColor: feedback.type === 'ok' ? (t.successDim || '#052e16') : (t.errorDim || '#2d0707'),
+          borderColor: feedback.type === 'ok' ? (t.success || '#22c55e') : (t.error || '#ef4444'),
+        }]}>
+          <Text style={{
+            fontSize: 12, fontWeight: '600',
+            color: feedback.type === 'ok' ? (t.success || '#22c55e') : (t.error || '#ef4444'),
+          }}>
+            {feedback.msg}
           </Text>
         </View>
+      )}
 
-        {/* ── Sección 3: Descargar modelo ── */}
-        <SectionLabel style={{ marginTop: 20 }}>DESCARGAR MODELO</SectionLabel>
-        <View style={s.card}>
-          {MODEL_PRESETS.map((preset, i) => {
-            const msg       = downloadMsg[preset.id];
-            const isLoading = downloadingId === preset.id;
-            const installed = models.some(m => m.name === preset.id);
-            return (
-              <View key={preset.id}>
-                {i > 0 && <Divider />}
-                <View style={s.presetRow}>
-                  <View style={{ flex: 1 }}>
-                    <View style={s.presetNameRow}>
-                      <Text style={s.presetName}>{preset.label}</Text>
-                      {installed && (
-                        <View style={s.installedBadge}>
-                          <Text style={s.installedText}>instalado</Text>
-                        </View>
-                      )}
-                    </View>
-                    <Text style={s.presetMeta}>{preset.size} · {preset.note}</Text>
-                    {msg && (
-                      <Text style={[s.presetMsg, { color: msg.ok ? theme.success : theme.error }]}>
-                        {msg.ok ? `${Icons.check} ` : `${Icons.error} `}{msg.text}
-                      </Text>
-                    )}
-                  </View>
-                  <TouchableOpacity
-                    onPress={() => handleDownload(preset.id)}
-                    disabled={isLoading || !!downloadingId || installed}
-                    style={[
-                      s.downloadBtn,
-                      (installed || !!downloadingId) && { opacity: 0.4 },
-                    ]}
-                  >
-                    {isLoading
-                      ? <ActivityIndicator size="small" color={theme.accent} />
-                      : <Text style={s.downloadText}>{installed ? Icons.check : Icons.download}</Text>
-                    }
-                  </TouchableOpacity>
-                </View>
+      <ScrollView
+        style={s.scroll}
+        contentContainerStyle={{ paddingBottom: 32 }}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            tintColor={OLLAMA_ACCENT}
+            colors={[OLLAMA_ACCENT]}
+          />
+        }
+      >
+        {/* ── Sección: Modelos instalados ── */}
+        <View style={s.section}>
+          <SectionLabel t={t}>Modelos instalados</SectionLabel>
+
+          <View style={s.card}>
+            {loadingMdl ? (
+              <View style={s.loadingRow}>
+                <ActivityIndicator size="small" color={OLLAMA_ACCENT} />
+                <Text style={[s.loadingTxt, { color: t.textMuted || '#52525b' }]}>
+                  Consultando Ollama…
+                </Text>
               </View>
-            );
-          })}
+            ) : models.length === 0 ? (
+              <View style={s.emptyRow}>
+                <Text style={{ fontSize: 24, marginBottom: 8 }}>⬡</Text>
+                <Text style={{ fontSize: 13, color: t.textMuted || '#52525b' }}>
+                  No hay modelos instalados
+                </Text>
+                <Text style={{ fontSize: 11, color: t.textMuted || '#52525b', marginTop: 4 }}>
+                  Descarga uno desde la sección inferior
+                </Text>
+              </View>
+            ) : (
+              models.map((m, i) => (
+                <ModelRow
+                  key={m.name}
+                  model={m}
+                  onChat={() => handleGoChat(m.name)}
+                  onDelete={() => handleDelete(m.name)}
+                  t={t}
+                  isLast={i === models.length - 1}
+                />
+              ))
+            )}
+          </View>
         </View>
 
-        {/* ── Botón ir al Chat ── */}
-        <ActionButton
-          label="→ Ir al Chat"
-          onPress={handleGoChat}
-          variant="primary"
-          style={{ marginTop: 20, marginBottom: 4 }}
-        />
+        {/* ── Sección: Contexto num_ctx ── */}
+        <View style={s.section}>
+          <SectionLabel t={t}>Contexto (NUM_CTX)</SectionLabel>
 
-        <View style={{ height: 32 }} />
+          <View style={s.card}>
+            <View style={{ paddingHorizontal: 14, paddingTop: 12, paddingBottom: 4 }}>
+              <Text style={{
+                fontSize: 12, fontWeight: '400',
+                color: t.textSecond || '#8b949e',
+                marginBottom: 12,
+              }}>
+                Tokens de contexto por sesión de chat
+              </Text>
+
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
+                {CTX_OPTIONS.map(opt => (
+                  <CtxChip
+                    key={opt.value}
+                    opt={opt}
+                    selected={numCtx === opt.value}
+                    onPress={() => setNumCtx(opt.value)}
+                    t={t}
+                  />
+                ))}
+              </View>
+
+              <Text style={{
+                fontSize: 11, fontWeight: '500',
+                color: t.textMuted || '#52525b',
+                marginTop: 4, marginBottom: 8,
+              }}>
+                ✓ {numCtx.toLocaleString()} tokens — {ctxNote(numCtx)}
+              </Text>
+            </View>
+          </View>
+        </View>
+
+        {/* ── Sección: Descargar modelo ── */}
+        <View style={s.section}>
+          <SectionLabel t={t}>Descargar modelo</SectionLabel>
+
+          <View style={s.card}>
+            {PRESETS_DESCARGA.map((p, i) => (
+              <PresetRow
+                key={p.name}
+                preset={p}
+                isInstalled={installedNames.has(p.name)}
+                pulling={!!pullingMap[p.name]}
+                onPull={() => handlePull(p.name)}
+                t={t}
+                isLast={i === PRESETS_DESCARGA.length - 1}
+              />
+            ))}
+          </View>
+        </View>
+
+        {/* ── Botón ir al chat ── */}
+        <View style={[s.section, { marginTop: 8 }]}>
+          <TouchableOpacity
+            onPress={() => {
+              const defaultModel = models[0]?.name || 'qwen2.5:0.5b';
+              handleGoChat(defaultModel);
+            }}
+            activeOpacity={0.8}
+            disabled={models.length === 0}
+            style={[s.chatBtn, models.length === 0 && { opacity: 0.4 }]}
+          >
+            <Text style={s.chatBtnTxt}>→ Ir al Chat</Text>
+          </TouchableOpacity>
+        </View>
       </ScrollView>
     </View>
   );
 }
 
-// ─── Estilos ──────────────────────────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────
+
+function formatSize(bytes) {
+  if (!bytes || bytes === 0) return '—';
+  const gb = bytes / 1e9;
+  if (gb >= 1) return `${gb.toFixed(1)} GB`;
+  return `${(bytes / 1e6).toFixed(0)} MB`;
+}
+
+function ctxNote(n) {
+  if (n <= 512)  return 'uso mínimo de RAM';
+  if (n <= 1024) return 'uso bajo de RAM';
+  if (n <= 2048) return 'uso moderado de RAM';
+  if (n <= 4096) return 'uso alto de RAM';
+  return 'uso máximo de RAM';
+}
+
+// ── Estilos ───────────────────────────────────────────────────
+
 function createStyles(t) {
   return StyleSheet.create({
-    root:   { flex: 1, backgroundColor: t.bg },
-
-    // TopBar
+    root: {
+      flex: 1,
+      backgroundColor: t.bg,
+    },
     topBar: {
+      flexDirection: 'row',
+      alignItems: 'center',
       paddingTop: 10,
-      paddingBottom: 10,
-      paddingHorizontal: 14,
+      paddingBottom: 12,
+      paddingHorizontal: 16,
       backgroundColor: t.surface,
       borderBottomWidth: 1,
       borderBottomColor: t.border,
+    },
+    backBtn: {
+      paddingRight: 12,
+      paddingVertical: 4,
+      minWidth: 70,
+    },
+    backTxt: {
+      fontSize: 15,
+      fontWeight: '500',
+      color: OLLAMA_ACCENT,
+    },
+    topTitle: {
+      flex: 1,
+      fontSize: 15,
+      fontWeight: '700',
+      color: t.textPrimary || t.text || '#f4f4f5',
+      textAlign: 'center',
+    },
+    topRight: {
       flexDirection: 'row',
       alignItems: 'center',
+      minWidth: 70,
+      justifyContent: 'flex-end',
     },
-    backBtn:    { flexDirection: 'row', alignItems: 'center', minWidth: 72 },
-    backIcon:   { fontSize: 22, color: t.accent, marginRight: 4, lineHeight: 28 },
-    backLabel:  { fontSize: 13, color: t.accent, fontWeight: '500' },
-    topBarCenter: { flex: 1, alignItems: 'center' },
-    topBarTitle:  { fontSize: 15, fontWeight: '700', color: t.text, letterSpacing: 0.2 },
-    topBarRight:  { flexDirection: 'row', alignItems: 'center', gap: 8 },
-    switchBtn: {
-      paddingHorizontal: 10, paddingVertical: 4,
-      borderRadius: 6, borderWidth: 1, borderColor: t.border,
-      minWidth: 44, alignItems: 'center', justifyContent: 'center', minHeight: 30,
+    pill: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      paddingHorizontal: 8,
+      paddingVertical: 4,
+      borderRadius: 999,
+      borderWidth: 1,
     },
-    switchText: { fontSize: 11, fontWeight: '700', letterSpacing: 0.5 },
-
-    // Scroll
-    scroll:        { flex: 1 },
-    scrollContent: { paddingHorizontal: 14, paddingTop: 16 },
-
-    // Sección row con botón refresh
-    sectionRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 },
-    refreshBtn: { fontSize: 16, color: t.accent, fontWeight: '700' },
-
-    // Card base
+    pillActive: {
+      backgroundColor: OLLAMA_DIM,
+      borderColor: OLLAMA_ACCENT + '55',
+    },
+    pillOff: {
+      backgroundColor: t.overlay || '#1a1a1a',
+      borderColor: t.border,
+    },
+    pillDot: {
+      fontSize: 8,
+      marginRight: 4,
+    },
+    pillLbl: {
+      fontSize: 10,
+      fontWeight: '600',
+      letterSpacing: 0.3,
+    },
+    feedbackBanner: {
+      marginHorizontal: 16,
+      marginTop: 8,
+      paddingHorizontal: 14,
+      paddingVertical: 8,
+      borderRadius: 8,
+      borderWidth: 1,
+    },
+    scroll: {
+      flex: 1,
+    },
+    section: {
+      marginTop: 20,
+      paddingHorizontal: 16,
+    },
     card: {
       backgroundColor: t.card,
       borderRadius: 12,
       borderWidth: 1,
       borderColor: t.border,
-      padding: 14,
-      marginBottom: 4,
+      overflow: 'hidden',
     },
-
-    // Modelos
-    centerRow:   { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 8 },
-    loadingText: { fontSize: 12, color: t.textMuted },
-    statusText:  { fontSize: 12, fontWeight: '500' },
-    emptyText:   { fontSize: 12, color: t.textMuted, textAlign: 'center', paddingVertical: 8 },
-
-    modelRow: {
+    loadingRow: {
       flexDirection: 'row',
       alignItems: 'center',
-      paddingVertical: 10,
-      gap: 10,
+      padding: 20,
+      justifyContent: 'center',
     },
-    modelIconBox: {
-      width: 36, height: 36, borderRadius: 8,
-      backgroundColor: '#1a2a1a',
-      borderWidth: 1, borderColor: '#4ade8033',
-      alignItems: 'center', justifyContent: 'center',
+    loadingTxt: {
+      fontSize: 13,
+      fontWeight: '400',
+      marginLeft: 10,
     },
-    modelIcon:   { fontSize: 15, color: '#4ade80' },
-    modelName:   { fontSize: 13, fontWeight: '600', color: t.text },
-    modelMeta:   { fontSize: 11, color: t.textMuted, marginTop: 1 },
-    modelChatBtn: {
-      paddingHorizontal: 8, paddingVertical: 4,
-      borderRadius: 6, backgroundColor: t.accent + '18',
-      borderWidth: 1, borderColor: t.accent + '44',
+    emptyRow: {
+      alignItems: 'center',
+      padding: 28,
     },
-    modelChatText:  { fontSize: 11, color: t.accent, fontWeight: '600' },
-    modelDeleteBtn: {
-      width: 32, height: 32,
-      borderRadius: 6, backgroundColor: t.surface,
-      borderWidth: 1, borderColor: t.border,
-      alignItems: 'center', justifyContent: 'center',
+    chatBtn: {
+      backgroundColor: OLLAMA_ACCENT,
+      borderRadius: 12,
+      paddingVertical: 16,
+      alignItems: 'center',
     },
-    modelDeleteText: { fontSize: 13, color: t.error, fontWeight: '700' },
-
-    // Chips num_ctx
-    ctxHint:  { fontSize: 12, color: t.textMuted, marginBottom: 10 },
-    chipsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-    chip: {
-      paddingHorizontal: 14, paddingVertical: 7,
-      borderRadius: 20, borderWidth: 1, borderColor: t.border,
-      backgroundColor: t.surface,
+    chatBtnTxt: {
+      fontSize: 15,
+      fontWeight: '700',
+      color: '#000000',
+      letterSpacing: 0.3,
     },
-    chipText: { fontSize: 12, color: t.textSecondary, fontWeight: '500', fontFamily: 'monospace' },
-    ctxNote:  { fontSize: 11, color: t.textMuted, marginTop: 10 },
-
-    // Presets descarga
-    presetRow:     { flexDirection: 'row', alignItems: 'center', paddingVertical: 10, gap: 10 },
-    presetNameRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-    presetName:    { fontSize: 13, fontWeight: '600', color: t.text, fontFamily: 'monospace' },
-    presetMeta:    { fontSize: 11, color: t.textMuted, marginTop: 2 },
-    presetMsg:     { fontSize: 11, fontWeight: '500', marginTop: 4 },
-    installedBadge: {
-      paddingHorizontal: 5, paddingVertical: 1,
-      borderRadius: 4, backgroundColor: t.success + '22',
-      borderWidth: 1, borderColor: t.success + '44',
-    },
-    installedText: { fontSize: 10, color: t.success, fontWeight: '600' },
-    downloadBtn: {
-      width: 36, height: 36,
-      borderRadius: 8, backgroundColor: t.surface,
-      borderWidth: 1, borderColor: t.border,
-      alignItems: 'center', justifyContent: 'center',
-    },
-    downloadText: { fontSize: 15, color: t.accent, fontWeight: '700' },
   });
 }
