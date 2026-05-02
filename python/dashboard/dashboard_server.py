@@ -779,42 +779,43 @@ def find_claude_cli():
 
 def handle_ws_client(conn, addr):
     try:
-        # HTTP upgrade
+        # HTTP upgrade — leer request completo
         request = b""
         while b"\r\n\r\n" not in request:
-            chunk = conn.recv(1024)
+            chunk = conn.recv(4096)
             if not chunk: return
             request += chunk
-        lines = request.decode("utf-8", errors="replace").split("\r\n")
-        ws_key = ""
+
+        req_str = request.decode("utf-8", errors="replace")
+        lines   = req_str.split("\r\n")
+
+        ws_key      = ""
+        project_dir = None
+        cols, rows  = 80, 30
+
+        # Extraer key y query string de la primera línea (GET /ws?project=xxx HTTP/1.1)
+        first_line = lines[0] if lines else ""
+        import urllib.parse as _up
+        if " " in first_line:
+            path_part = first_line.split(" ")[1]  # /ws?project=xxx
+            if "?" in path_part:
+                qs = _up.parse_qs(_up.urlparse(path_part).query)
+                project_dir = qs.get("project", [None])[0]
+                if project_dir: project_dir = project_dir.strip() or None
+                cols = int(qs.get("cols", [80])[0])
+                rows = int(qs.get("rows", [30])[0])
+
         for line in lines:
             if line.lower().startswith("sec-websocket-key:"):
                 ws_key = line.split(":", 1)[1].strip()
                 break
+
         if not ws_key:
             conn.close(); return
+
         ws_handshake(conn, ws_key)
         conn.setblocking(False)
-
-        # Esperar mensaje init del cliente (contiene project_dir y cols/rows)
-        project_dir = None
-        cols, rows = 80, 24
-        deadline = __import__("time").time() + 5  # máx 5s esperando init
-        while __import__("time").time() < deadline:
-            try:
-                r, _, _ = select.select([conn], [], [], 0.2)
-                if r:
-                    opcode, payload = ws_recv_frame(conn)
-                    if opcode == 1 and payload:
-                        try:
-                            msg = json.loads(payload.decode("utf-8"))
-                            if msg.get("type") == "init":
-                                project_dir = msg.get("project_dir", "").strip() or None
-                                cols = int(msg.get("cols", 80))
-                                rows = int(msg.get("rows", 24))
-                                break
-                        except: pass
-            except (BlockingIOError, OSError): pass
+        print(f"[ws-pty] cliente conectado — proyecto: {project_dir!r} cols:{cols} rows:{rows}")
 
         # Resolver comando y directorio de trabajo
         node_bin = "/data/data/com.termux/files/usr/bin/node"

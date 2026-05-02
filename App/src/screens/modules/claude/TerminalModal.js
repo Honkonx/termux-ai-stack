@@ -145,7 +145,10 @@ export function TerminalModal({ visible, onClose, wsUrl, title, projectDir }) {
 
   const connectWs = useCallback(() => {
     if (wsRef.current) { try { wsRef.current.close(); } catch {} }
-    const url = wsUrl || 'ws://127.0.0.1:8081';
+    // Pasar project_dir en query string — el servidor lo lee desde el handshake HTTP
+    const base = wsUrl || 'ws://127.0.0.1:8081';
+    const proj = projectDir ? encodeURIComponent(projectDir) : '';
+    const url  = proj ? `${base}?project=${proj}&cols=80&rows=30` : `${base}?cols=80&rows=30`;
     try {
       const ws = new WebSocket(url);
       wsRef.current = ws;
@@ -153,12 +156,7 @@ export function TerminalModal({ visible, onClose, wsUrl, title, projectDir }) {
       ws.onopen = () => {
         setConnected(true);
         setConnMsg('');
-        ws.send(JSON.stringify({
-          type: 'init',
-          project_dir: projectDir || '',
-          cols: 80,
-          rows: 30,
-        }));
+        // Sin mensaje init — project_dir ya fue enviado en la URL
       };
 
       ws.onmessage = (evt) => appendChunk(evt.data);
