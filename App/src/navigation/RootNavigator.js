@@ -1,30 +1,25 @@
-// src/navigation/RootNavigator.js
-// Navegación con estado React puro — cero dependencias nativas nuevas
+// src/navigation/RootNavigator.js — v3.0.0 S19
+// FIX CRÍTICO: tabs renderizados simultáneamente con display:none
+// Antes: ScreenComponent se recalculaba → ChatScreen se remontaba al cambiar tab
+//        → useChatSession perdía su estado y polls activos → crash + mensajes borrados
+// Ahora: todos los tabs viven en memoria, solo se ocultan visualmente
+//        → ChatScreen mantiene su estado aunque estés en otro tab
+
 import React, { useState, useEffect, useRef } from 'react';
 import { View, BackHandler, StyleSheet, Animated } from 'react-native';
 import { useTheme } from '../theme/ThemeContext';
 import { TabBar } from './TabBar';
 import { ROUTES } from './routes';
 
-// Screens — importadas lazy para evitar errores en Fase 1 base
-// Se descomenta módulo por módulo cuando existan
-import { ModulesScreen } from '../screens/modules/ModulesScreen';
-import { ChatScreen }    from '../screens/chat/ChatScreen';
-import { SystemScreen }  from '../screens/system/SystemScreen';
+import { ModulesScreen }  from '../screens/modules/ModulesScreen';
+import { ChatScreen }     from '../screens/chat/ChatScreen';
+import { SystemScreen }   from '../screens/system/SystemScreen';
 import { SettingsScreen } from '../screens/settings/SettingsScreen';
 
-// Módulo screens
 import { N8nScreen }    from '../screens/modules/n8n/N8nScreen';
 import { OllamaScreen } from '../screens/modules/ollama/OllamaScreen';
 import { ClaudeScreen } from '../screens/modules/claude/ClaudeScreen';
 import { SshScreen }    from '../screens/modules/ssh/SshScreen';
-
-const TAB_SCREENS = {
-  [ROUTES.MODULES]:  ModulesScreen,
-  [ROUTES.CHAT]:     ChatScreen,
-  [ROUTES.SYSTEM]:   SystemScreen,
-  [ROUTES.SETTINGS]: SettingsScreen,
-};
 
 const MODULE_SCREENS = {
   [ROUTES.N8N]:    N8nScreen,
@@ -33,30 +28,22 @@ const MODULE_SCREENS = {
   [ROUTES.SSH]:    SshScreen,
 };
 
+const TABS = [ROUTES.MODULES, ROUTES.CHAT, ROUTES.SYSTEM, ROUTES.SETTINGS];
+
 export function RootNavigator() {
   const { theme } = useTheme();
   const [activeTab, setActiveTab] = useState(ROUTES.MODULES);
-  // Stack independiente por tab: { modules: [{screen, params}], chat: [], ... }
+  // Stack independiente por tab para módulos
   const [stacks, setStacks] = useState({
     [ROUTES.MODULES]:  [],
     [ROUTES.CHAT]:     [],
     [ROUTES.SYSTEM]:   [],
     [ROUTES.SETTINGS]: [],
   });
+  // tabParams: params pasados al tab root (ej: {model, numCtx} para ChatScreen)
+  const [tabParams, setTabParams] = useState({});
 
-  // Fade al cambiar de tab
   const opacity = useRef(new Animated.Value(1)).current;
-
-  // navigateToTab: cambia de tab y opcionalmente pasa params al root del tab
-  // Usado por OllamaScreen para ir al Chat IA con modelo seleccionado
-  const [tabParams, setTabParams] = React.useState({});
-
-  const navigateToTab = (tab, params = {}) => {
-    if (params && Object.keys(params).length > 0) {
-      setTabParams(p => ({ ...p, [tab]: params }));
-    }
-    handleTabPress(tab);
-  };
 
   const push = (screen, params = {}) => {
     setStacks(s => ({ ...s, [activeTab]: [...s[activeTab], { screen, params }] }));
@@ -70,9 +57,17 @@ export function RootNavigator() {
     });
   };
 
+  // navigateToTab: cambia de tab y opcionalmente pasa params al root del tab
+  // Usado por OllamaScreen → ChatScreen con {model, numCtx}
+  const navigateToTab = (tab, params = {}) => {
+    if (params && Object.keys(params).length > 0) {
+      setTabParams(p => ({ ...p, [tab]: params }));
+    }
+    handleTabPress(tab);
+  };
+
   const handleTabPress = (tab) => {
     if (tab === activeTab) {
-      // Tap en tab activo → vuelve a root del tab
       setStacks(s => ({ ...s, [tab]: [] }));
       return;
     }
@@ -86,42 +81,64 @@ export function RootNavigator() {
     });
   };
 
-  // BackHandler hardware
   useEffect(() => {
     const handler = BackHandler.addEventListener('hardwareBackPress', () => {
-      if (stacks[activeTab].length > 0) {
-        pop();
-        return true; // consumido
-      }
-      return false; // permite salir de la app
+      if (stacks[activeTab].length > 0) { pop(); return true; }
+      return false;
     });
     return () => handler.remove();
   }, [activeTab, stacks]);
 
-  // Determinar qué renderizar
-  const stackForTab = stacks[activeTab];
-  const topOfStack  = stackForTab[stackForTab.length - 1];
-
-  let ScreenComponent;
-  let screenParams = {};
-
-  if (topOfStack && MODULE_SCREENS[topOfStack.screen]) {
-    ScreenComponent = MODULE_SCREENS[topOfStack.screen];
-    screenParams    = topOfStack.params || {};
-  } else {
-    ScreenComponent = TAB_SCREENS[activeTab];
-  }
-
   return (
     <View style={[styles.root, { backgroundColor: theme.bg }]}>
       <Animated.View style={[styles.content, { opacity }]}>
-        <ScreenComponent
-          navigate={push}
-          goBack={pop}
-          navigateToTab={navigateToTab}
-          {...(tabParams[activeTab] || {})}
-          {...screenParams}
-        />
+
+        {/* ── Tabs — siempre montados, solo display cambia ── */}
+        {TABS.map(tab => {
+          const stackForTab = stacks[tab];
+          const topOfStack  = stackForTab[stackForTab.length - 1];
+          const isVisible   = tab === activeTab;
+
+          // Si hay una pantalla de módulo en el stack, mostrarla
+          let ScreenComponent;
+          let screenParams = {};
+
+          if (topOfStack && MODULE_SCREENS[topOfStack.screen]) {
+            ScreenComponent = MODULE_SCREENS[topOfStack.screen];
+            screenParams    = topOfStack.params || {};
+          } else {
+            // Tab root — determinar componente
+            const TAB_ROOTS = {
+              [ROUTES.MODULES]:  ModulesScreen,
+              [ROUTES.CHAT]:     ChatScreen,
+              [ROUTES.SYSTEM]:   SystemScreen,
+              [ROUTES.SETTINGS]: SettingsScreen,
+            };
+            ScreenComponent = TAB_ROOTS[tab];
+            // Mezclar tabParams si los hay (ej: modelo desde OllamaScreen)
+            screenParams = tabParams[tab] || {};
+          }
+
+          return (
+            <View
+              key={tab}
+              style={[
+                styles.tabContainer,
+                // display:none preserva el estado del componente en React Native
+                // a diferencia de unmount — ChatScreen NO se reinicia
+                { display: isVisible ? 'flex' : 'none' },
+              ]}
+            >
+              <ScreenComponent
+                navigate={push}
+                goBack={pop}
+                navigateToTab={navigateToTab}
+                {...screenParams}
+              />
+            </View>
+          );
+        })}
+
       </Animated.View>
       <TabBar activeTab={activeTab} onTabPress={handleTabPress} />
     </View>
@@ -129,6 +146,7 @@ export function RootNavigator() {
 }
 
 const styles = StyleSheet.create({
-  root:    { flex: 1 },
-  content: { flex: 1 },
+  root:         { flex: 1 },
+  content:      { flex: 1 },
+  tabContainer: { flex: 1 },
 });
