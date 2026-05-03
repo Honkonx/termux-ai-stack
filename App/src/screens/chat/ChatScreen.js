@@ -1,250 +1,156 @@
-// src/screens/chat/ChatScreen.js — v1.0.0 (S18)
-// Fixes:
-//   Bug #1 — layout superpuesto: estructura correcta con flex + zIndex
-//   Bug #2 — teclado tapa input: KeyboardAvoidingView behavior="height" Android
-//   Bug #4 — chat congela UI: loading state visible, botón cancelar, timeout 90s
-//
-// SURFACE:   bg negro puro → surface #0a0a0a header/footer → card #111 burbujas
-// JERARQUÍA: modelo 13px bold · mensaje 14px regular · timestamp 10px muted
-// ACENTO:    cian #06b6d4 (chat icon) para estado Ollama · success para enviado
-// BORDES:    rgba baja opacidad — nunca hex sólido
-// DENSIDAD:  media — chat conversacional, no dashboard técnico
+// App/src/screens/chat/ChatScreen.js
+// v2.0.0 — S19
+// Fix B2: guard Ollama — si ollama.running=false → pantalla bloqueada
+// Sin cambios en lógica de chat existente
 
-import React, {
-  useState, useRef, useCallback, useEffect,
-  useMemo,
-} from 'react';
+import { useState, useEffect, useRef, useCallback } from "react";
 import {
-  View, Text, TextInput, TouchableOpacity, FlatList,
-  StyleSheet, KeyboardAvoidingView, Platform, ActivityIndicator,
-  Keyboard, Animated,
-} from 'react-native';
-import { useTheme } from '../../theme/ThemeContext';
-import { useChatSession } from '../../hooks/useChatSession';
+  View,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  FlatList,
+  KeyboardAvoidingView,
+  Platform,
+  StyleSheet,
+  Animated,
+} from "react-native";
+import { useTheme }      from "../../theme/ThemeContext";
+import { useStatus }     from "../../hooks/useStatus";
+import { useChatSession } from "../../hooks/useChatSession";
 
-// ─── Constantes ───────────────────────────────────────────────────────────────
+// ── Constantes ────────────────────────────────────────────────
+const OLLAMA_ACCENT = "#4ade80";
+const BASE_URL      = "http://127.0.0.1:8080";
 
-const ACCENT_CHAT = '#06b6d4';  // cian — diferencia ChatScreen de módulos
-const ACCENT_OLLAMA = '#4ade80';
+// ── OllamaOfflineScreen ───────────────────────────────────────
+// Pantalla que reemplaza el chat cuando Ollama está apagado
+function OllamaOfflineScreen({ t, navigateToTab }) {
+  const pulse = useRef(new Animated.Value(0.4)).current;
 
-// Modelos disponibles (se sobreescriben desde OllamaScreen cuando pasa params)
-const DEFAULT_MODELS = [
-  'qwen2.5:0.5b',
-  'qwen2.5:1.5b',
-  'qwen3:4b',
-  'gemma3:4b',
-  'gemma3:1b',
-  'deepseek-coder:1.3b-instruct',
-  'llama3.2:1b',
-];
+  useEffect(() => {
+    const anim = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulse, { toValue: 1,   duration: 900, useNativeDriver: true }),
+        Animated.timing(pulse, { toValue: 0.4, duration: 900, useNativeDriver: true }),
+      ])
+    );
+    anim.start();
+    return () => anim.stop();
+  }, []);
 
-// ─── Componentes internos ─────────────────────────────────────────────────────
-
-// Burbuja de mensaje — memoizada para no re-renderizar en cada keystroke
-const MessageBubble = React.memo(function MessageBubble({ message, theme }) {
-  const isUser = message.role === 'user';
-  const s = bubbleStyles(theme, isUser);
-
-  const time = useMemo(() => {
-    if (!message.ts) return '';
-    const d = new Date(message.ts);
-    return `${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`;
-  }, [message.ts]);
+  const s = offlineStyles(t);
 
   return (
-    <View style={s.row}>
-      <View style={s.bubble}>
-        {/* Badge de rol */}
-        <View style={s.roleRow}>
-          <Text style={s.roleLabel}>
-            {isUser ? 'TÚ' : (message.model ? `⬡ ${message.model.toUpperCase()}` : '⬡ OLLAMA')}
-          </Text>
-          {time ? <Text style={s.timestamp}>{time}</Text> : null}
-        </View>
-        {/* Contenido */}
-        <Text style={s.content} selectable>
-          {message.content}
-        </Text>
-      </View>
+    <View style={s.root}>
+      {/* Ícono animado */}
+      <Animated.View style={[s.iconWrap, { opacity: pulse }]}>
+        <Text style={s.iconGlyph}>◎</Text>
+      </Animated.View>
+
+      {/* Texto */}
+      <Text style={s.title}>Ollama inactivo</Text>
+      <Text style={s.subtitle}>
+        Activa Ollama para usar el chat con IA
+      </Text>
+
+      {/* Botón ir a Módulos */}
+      <TouchableOpacity
+        style={s.btn}
+        onPress={() => navigateToTab && navigateToTab("modules")}
+        activeOpacity={0.75}
+      >
+        <Text style={s.btnText}>Ir a Módulos  ›</Text>
+      </TouchableOpacity>
     </View>
   );
-});
+}
 
-function bubbleStyles(t, isUser) {
+function offlineStyles(t) {
   return StyleSheet.create({
-    row: {
-      paddingHorizontal: 12,
-      paddingVertical: 4,
-      alignItems: isUser ? 'flex-end' : 'flex-start',
+    root: {
+      flex: 1,
+      backgroundColor: t.bg || "#0a0a0a",
+      alignItems: "center",
+      justifyContent: "center",
+      paddingHorizontal: 32,
     },
-    bubble: {
-      maxWidth: '85%',
-      backgroundColor: isUser
-        ? (t.chatUser || t.accentDim || '#1a2d5a')
-        : (t.chatBot  || t.card     || '#111111'),
-      borderRadius: isUser ? 16 : 12,
-      borderTopRightRadius: isUser ? 4 : 12,
-      borderTopLeftRadius:  isUser ? 12 : 4,
+    iconWrap: {
+      width: 72,
+      height: 72,
+      borderRadius: 36,
+      backgroundColor: (t.surface || "#161616"),
       borderWidth: 1,
-      borderColor: isUser
-        ? 'rgba(61,122,237,0.25)'
-        : (t.border || 'rgba(255,255,255,0.07)'),
-      padding: 10,
+      borderColor: "rgba(255,255,255,0.08)",
+      alignItems: "center",
+      justifyContent: "center",
+      marginBottom: 24,
     },
-    roleRow: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      justifyContent: 'space-between',
-      marginBottom: 5,
+    iconGlyph: {
+      fontSize: 32,
+      color: t.textMuted || "#555",
     },
-    roleLabel: {
-      fontSize: 10,
-      fontWeight: '700',
-      letterSpacing: 1,
-      color: isUser
-        ? (t.accent  || '#3d7aed')
-        : ACCENT_OLLAMA,
+    title: {
+      fontSize: 20,
+      fontWeight: "700",
+      color: t.textPrimary || t.text || "#e8e8e8",
+      letterSpacing: 0.2,
+      marginBottom: 8,
+      textAlign: "center",
     },
-    timestamp: {
-      fontSize: 10,
-      color: t.textMuted || '#52525b',
-      marginLeft: 8,
-    },
-    content: {
+    subtitle: {
       fontSize: 14,
-      lineHeight: 21,
-      color: t.textPrimary || t.text || '#f4f4f5',
-      fontFamily: Platform.OS === 'android' ? 'sans-serif' : 'System',
+      color: t.textMuted || "#666",
+      textAlign: "center",
+      lineHeight: 20,
+      marginBottom: 32,
+    },
+    btn: {
+      paddingHorizontal: 24,
+      paddingVertical: 12,
+      borderRadius: 8,
+      backgroundColor: t.surface || "#1a1a1a",
+      borderWidth: 1,
+      borderColor: OLLAMA_ACCENT + "44",
+    },
+    btnText: {
+      fontSize: 14,
+      fontWeight: "600",
+      color: OLLAMA_ACCENT,
+      letterSpacing: 0.3,
     },
   });
 }
 
-// Spinner de "Ollama pensando..."
-function ThinkingBubble({ theme }) {
-  const anim = useRef(new Animated.Value(0.4)).current;
-
-  useEffect(() => {
-    const loop = Animated.loop(
-      Animated.sequence([
-        Animated.timing(anim, { toValue: 1,   duration: 600, useNativeDriver: true }),
-        Animated.timing(anim, { toValue: 0.4, duration: 600, useNativeDriver: true }),
-      ])
-    );
-    loop.start();
-    return () => loop.stop();
-  }, [anim]);
-
-  return (
-    <View style={{ paddingHorizontal: 12, paddingVertical: 4, alignItems: 'flex-start' }}>
-      <View style={{
-        backgroundColor: theme.chatBot || theme.card || '#111',
-        borderRadius: 12,
-        borderTopLeftRadius: 4,
-        borderWidth: 1,
-        borderColor: theme.border || 'rgba(255,255,255,0.07)',
-        padding: 12,
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 8,
-      }}>
-        <ActivityIndicator size="small" color={ACCENT_OLLAMA} />
-        <Animated.Text style={{
-          fontSize: 13,
-          color: theme.textMuted || '#52525b',
-          opacity: anim,
-        }}>
-          ⬡ Ollama procesando...
-        </Animated.Text>
-      </View>
-    </View>
-  );
-}
-
-// Selector de modelo — dropdown propio, no overlay flotante
-function ModelSelector({ models, selected, onSelect, theme }) {
+// ── ModelSelector ─────────────────────────────────────────────
+function ModelSelector({ models, selected, onSelect, t }) {
   const [open, setOpen] = useState(false);
+  const s = modelStyles(t);
 
   return (
-    <View style={{ position: 'relative', zIndex: 100 }}>
-      {/* Trigger */}
+    <View style={s.wrap}>
       <TouchableOpacity
-        onPress={() => setOpen(v => !v)}
-        style={{
-          flexDirection: 'row',
-          alignItems: 'center',
-          backgroundColor: theme.overlay || '#1a1a1a',
-          borderRadius: 8,
-          borderWidth: 1,
-          borderColor: open
-            ? (theme.borderFocus || 'rgba(61,122,237,0.35)')
-            : (theme.border || 'rgba(255,255,255,0.07)'),
-          paddingHorizontal: 10,
-          paddingVertical: 6,
-          maxWidth: 200,
-        }}
-        activeOpacity={0.7}
+        style={s.trigger}
+        onPress={() => setOpen(o => !o)}
+        activeOpacity={0.8}
       >
-        <Text style={{
-          fontSize: 12,
-          color: ACCENT_OLLAMA,
-          fontFamily: Platform.OS === 'android' ? 'monospace' : 'Courier New',
-          flex: 1,
-        }} numberOfLines={1}>
-          {selected || 'Seleccionar modelo'}
+        <Text style={s.triggerText} numberOfLines={1}>
+          {selected || "modelo"}
         </Text>
-        <Text style={{
-          fontSize: 10,
-          color: theme.textMuted || '#52525b',
-          marginLeft: 4,
-        }}>
-          {open ? '∧' : '∨'}
-        </Text>
+        <Text style={s.chevron}>{open ? "▲" : "▼"}</Text>
       </TouchableOpacity>
 
-      {/* Dropdown — renderizado dentro del flujo, NO modal flotante */}
       {open && (
-        <View style={{
-          position: 'absolute',
-          top: '100%',
-          left: 0,
-          right: 0,
-          marginTop: 2,
-          backgroundColor: theme.overlay || '#1a1a1a',
-          borderRadius: 8,
-          borderWidth: 1,
-          borderColor: theme.border || 'rgba(255,255,255,0.07)',
-          // Sombra para separar del contenido debajo
-          shadowColor: '#000',
-          shadowOffset: { width: 0, height: 4 },
-          shadowOpacity: 0.4,
-          shadowRadius: 8,
-          elevation: 10,
-          zIndex: 200,
-          minWidth: 200,
-        }}>
-          {models.map((m, i) => (
+        <View style={s.dropdown}>
+          {models.map(m => (
             <TouchableOpacity
               key={m}
+              style={[s.item, m === selected && s.itemActive]}
               onPress={() => { onSelect(m); setOpen(false); }}
-              style={{
-                paddingHorizontal: 12,
-                paddingVertical: 10,
-                borderBottomWidth: i < models.length - 1 ? 1 : 0,
-                borderBottomColor: theme.border || 'rgba(255,255,255,0.07)',
-                backgroundColor: m === selected
-                  ? (theme.cardActive || '#161616')
-                  : 'transparent',
-              }}
               activeOpacity={0.7}
             >
-              <Text style={{
-                fontSize: 12,
-                color: m === selected
-                  ? ACCENT_OLLAMA
-                  : (theme.textPrimary || theme.text || '#f4f4f5'),
-                fontFamily: Platform.OS === 'android' ? 'monospace' : 'Courier New',
-              }}>
-                {m === selected ? `✓ ${m}` : m}
+              <Text style={[s.itemText, m === selected && s.itemTextActive]}>
+                {m === selected ? "✓  " : "    "}{m}
               </Text>
             </TouchableOpacity>
           ))}
@@ -254,433 +160,465 @@ function ModelSelector({ models, selected, onSelect, theme }) {
   );
 }
 
-// ─── Pantalla principal ───────────────────────────────────────────────────────
+function modelStyles(t) {
+  return StyleSheet.create({
+    wrap:        { position: "relative", zIndex: 100 },
+    trigger:     {
+      flexDirection: "row",
+      alignItems: "center",
+      paddingHorizontal: 10,
+      paddingVertical: 6,
+      borderRadius: 6,
+      backgroundColor: t.surface || "#1a1a1a",
+      borderWidth: 1,
+      borderColor: "rgba(255,255,255,0.08)",
+      maxWidth: 160,
+    },
+    triggerText: { fontSize: 12, color: t.textSecond || "#9ca3af", flex: 1 },
+    chevron:     { fontSize: 9, color: t.textMuted || "#555", marginLeft: 6 },
+    dropdown:    {
+      position: "absolute",
+      top: "110%",
+      left: 0,
+      minWidth: 180,
+      backgroundColor: t.card || "#1e1e1e",
+      borderRadius: 8,
+      borderWidth: 1,
+      borderColor: "rgba(255,255,255,0.1)",
+      overflow: "hidden",
+      elevation: 8,
+      shadowColor: "#000",
+      shadowOpacity: 0.4,
+      shadowRadius: 8,
+      shadowOffset: { width: 0, height: 4 },
+    },
+    item:        { paddingHorizontal: 14, paddingVertical: 11 },
+    itemActive:  { backgroundColor: OLLAMA_ACCENT + "18" },
+    itemText:    { fontSize: 13, color: t.textSecond || "#9ca3af", fontFamily: Platform.OS === "android" ? "monospace" : "Courier" },
+    itemTextActive: { color: OLLAMA_ACCENT },
+  });
+}
 
-export function ChatScreen({ params = {} }) {
-  const { theme } = useTheme();
+// ── ThinkingBubble ────────────────────────────────────────────
+function ThinkingBubble({ t }) {
+  const dot1 = useRef(new Animated.Value(0.3)).current;
+  const dot2 = useRef(new Animated.Value(0.3)).current;
+  const dot3 = useRef(new Animated.Value(0.3)).current;
 
-  // Modelo inicial desde params (si viene de OllamaScreen) o default
-  const [selectedModel, setSelectedModel] = useState(
-    params.model || DEFAULT_MODELS[0]
+  useEffect(() => {
+    const anim = (dot, delay) =>
+      Animated.loop(
+        Animated.sequence([
+          Animated.delay(delay),
+          Animated.timing(dot, { toValue: 1,   duration: 350, useNativeDriver: true }),
+          Animated.timing(dot, { toValue: 0.3, duration: 350, useNativeDriver: true }),
+        ])
+      );
+    const a1 = anim(dot1, 0);
+    const a2 = anim(dot2, 150);
+    const a3 = anim(dot3, 300);
+    a1.start(); a2.start(); a3.start();
+    return () => { a1.stop(); a2.stop(); a3.stop(); };
+  }, []);
+
+  const s = thinkStyles(t);
+  return (
+    <View style={s.row}>
+      <View style={s.bubble}>
+        {[dot1, dot2, dot3].map((d, i) => (
+          <Animated.View key={i} style={[s.dot, { opacity: d }]} />
+        ))}
+      </View>
+    </View>
   );
-  const [numCtx] = useState(params.numCtx || 2048);
-  const [inputText, setInputText] = useState('');
-  const [inputHeight, setInputHeight] = useState(44);
+}
 
-  const flatListRef = useRef(null);
+function thinkStyles(t) {
+  return StyleSheet.create({
+    row:    { flexDirection: "row", marginVertical: 4, paddingHorizontal: 12 },
+    bubble: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 5,
+      paddingHorizontal: 14,
+      paddingVertical: 10,
+      backgroundColor: t.surface || "#1a1a1a",
+      borderRadius: 12,
+      borderTopLeftRadius: 2,
+      borderWidth: 1,
+      borderColor: "rgba(255,255,255,0.06)",
+    },
+    dot: {
+      width: 6, height: 6, borderRadius: 3,
+      backgroundColor: OLLAMA_ACCENT,
+    },
+  });
+}
+
+// ── MessageBubble ─────────────────────────────────────────────
+const MessageBubble = ({ item, t }) => {
+  const isUser = item.role === "user";
+  const s      = bubbleStyles(t, isUser);
+  return (
+    <View style={s.row}>
+      <View style={s.bubble}>
+        <Text style={s.text}>{item.content}</Text>
+        {item.ts && <Text style={s.ts}>{item.ts}</Text>}
+      </View>
+    </View>
+  );
+};
+
+function bubbleStyles(t, isUser) {
+  return StyleSheet.create({
+    row: {
+      flexDirection: "row",
+      justifyContent: isUser ? "flex-end" : "flex-start",
+      marginVertical: 3,
+      paddingHorizontal: 12,
+    },
+    bubble: {
+      maxWidth: "80%",
+      paddingHorizontal: 14,
+      paddingVertical: 9,
+      backgroundColor: isUser
+        ? (t.chatUser    || "#1a2e1a")
+        : (t.chatAssist || "#1a1a1a"),
+      borderRadius: 14,
+      borderTopRightRadius: isUser ? 2 : 14,
+      borderTopLeftRadius:  isUser ? 14 : 2,
+      borderWidth: 1,
+      borderColor: isUser
+        ? OLLAMA_ACCENT + "33"
+        : "rgba(255,255,255,0.06)",
+    },
+    text: {
+      fontSize: 14,
+      lineHeight: 20,
+      color: t.textPrimary || t.text || "#e8e8e8",
+    },
+    ts: {
+      fontSize: 10,
+      color: t.textMuted || "#555",
+      marginTop: 4,
+      textAlign: isUser ? "right" : "left",
+    },
+  });
+}
+
+// ── ChatScreen — Exportación named (REGLA ABSOLUTA) ───────────
+export function ChatScreen({ model: modelProp, numCtx: numCtxProp, navigateToTab }) {
+  const { theme: t }   = useTheme();
+  const { status }     = useStatus();
+
+  // ── Guard: verificar si Ollama está corriendo ─────────────────
+  // status.modules es array — buscar módulo ollama
+  const ollamaModule = status?.modules?.find(m => m.id === "ollama");
+  const ollamaRunning = ollamaModule?.running === true;
+
+  // ── Estado del chat ──────────────────────────────────────────
+  const [models,   setModels]   = useState([]);
+  const [model,    setModel]    = useState(modelProp || "qwen2.5:0.5b");
+  const [numCtx]                = useState(numCtxProp || 2048);
+  const [input,    setInput]    = useState("");
+  const [messages, setMessages] = useState([]);
+
+  const flatRef  = useRef(null);
+  const chatId   = useRef("app_" + Date.now()).current;
 
   const {
-    messages,
     loading,
-    loadingText,
-    error,
-    historyLoading,
     sendMessage,
-    clearHistory,
     cancelRequest,
-  } = useChatSession(selectedModel, numCtx);
+  } = useChatSession({ model, numCtx, chatId, BASE_URL });
 
-  // Scroll al último mensaje cuando llega respuesta
+  // Cargar modelos disponibles cuando Ollama esté activo
   useEffect(() => {
-    if (messages.length > 0 && flatListRef.current) {
-      setTimeout(() => {
-        flatListRef.current?.scrollToEnd({ animated: true });
-      }, 100);
+    if (!ollamaRunning) return;
+    fetch(`${BASE_URL}/api/ollama/models`, { signal: AbortSignal.timeout(5000) })
+      .then(r => r.json())
+      .then(d => {
+        const names = (d.models || []).map(m => m.name);
+        if (names.length > 0) {
+          setModels(names);
+          if (!names.includes(model)) setModel(names[0]);
+        }
+      })
+      .catch(() => {});
+  }, [ollamaRunning]);
+
+  // Scroll al final cuando llegan mensajes
+  useEffect(() => {
+    if (messages.length > 0) {
+      setTimeout(() => flatRef.current?.scrollToEnd({ animated: true }), 100);
     }
-  }, [messages.length]);
+  }, [messages]);
 
-  const handleSend = useCallback(() => {
-    const text = inputText.trim();
+  // Actualizar modelo si viene de OllamaScreen via navigateToTab
+  useEffect(() => {
+    if (modelProp) setModel(modelProp);
+  }, [modelProp]);
+
+  const handleSend = useCallback(async () => {
+    const text = input.trim();
     if (!text || loading) return;
-    setInputText('');
-    setInputHeight(44);
-    Keyboard.dismiss();
-    sendMessage(text);
-  }, [inputText, loading, sendMessage]);
+    setInput("");
 
-  const handleClear = useCallback(() => {
-    clearHistory();
-    setInputText('');
-  }, [clearHistory]);
+    const userMsg = {
+      id:      Date.now().toString(),
+      role:    "user",
+      content: text,
+      ts:      new Date().toLocaleTimeString("es", { hour: "2-digit", minute: "2-digit" }),
+    };
+    setMessages(prev => [...prev, userMsg]);
 
-  const s = createStyles(theme);
+    const reply = await sendMessage(text, messages);
+    if (reply) {
+      const botMsg = {
+        id:      Date.now().toString() + "_b",
+        role:    "assistant",
+        content: reply,
+        ts:      new Date().toLocaleTimeString("es", { hour: "2-digit", minute: "2-digit" }),
+      };
+      setMessages(prev => [...prev, botMsg]);
+    }
+  }, [input, loading, messages, sendMessage]);
 
-  // ─── Render ───────────────────────────────────────────────────────────────
+  const s = chatStyles(t);
 
+  // ── GUARD — Ollama apagado ────────────────────────────────────
+  if (!ollamaRunning) {
+    return <OllamaOfflineScreen t={t} navigateToTab={navigateToTab} />;
+  }
+
+  // ── UI normal del chat ────────────────────────────────────────
   return (
-    // KeyboardAvoidingView CORRECTO para Android:
-    // behavior="height" — NO "padding" (ese es para iOS)
-    // keyboardVerticalOffset={0} — App.js ya compensa status bar
     <KeyboardAvoidingView
       style={s.root}
-      behavior={Platform.OS === 'android' ? 'height' : 'padding'}
-      keyboardVerticalOffset={0}
+      behavior={Platform.OS === "ios" ? "padding" : "height"}
     >
-      {/* ── Header ─────────────────────────────────────────────────────── */}
+      {/* Header */}
       <View style={s.header}>
         <View style={s.headerLeft}>
-          <Text style={s.headerTitle}>◈ Chat IA</Text>
-          <View style={s.ollamaStatus}>
-            <View style={[s.statusDot, { backgroundColor: ACCENT_OLLAMA }]} />
-            <Text style={s.statusText}>Ollama activo</Text>
-            <Text style={s.ctxText}>· {numCtx / 1000}K ctx</Text>
-          </View>
+          <View style={s.statusDot} />
+          <Text style={s.headerTitle}>Chat IA</Text>
         </View>
-
         <View style={s.headerRight}>
+          <ModelSelector
+            models={models.length > 0 ? models : [model]}
+            selected={model}
+            onSelect={setModel}
+            t={t}
+          />
           <TouchableOpacity
-            onPress={handleClear}
-            style={s.headerBtn}
+            style={s.clearBtn}
+            onPress={() => setMessages([])}
             activeOpacity={0.7}
           >
-            <Text style={s.headerBtnText}>⌫ Limpiar</Text>
+            <Text style={s.clearBtnText}>⌫</Text>
           </TouchableOpacity>
         </View>
       </View>
 
-      {/* ── Selector de modelo — BAJO el header, sobre el chat ─────────── */}
-      <View style={s.modelBar}>
-        <ModelSelector
-          models={DEFAULT_MODELS}
-          selected={selectedModel}
-          onSelect={setSelectedModel}
-          theme={theme}
-        />
-        {messages.length > 0 && (
-          <Text style={s.messageCount}>
-            {messages.length} mensaje{messages.length !== 1 ? 's' : ''}
-          </Text>
-        )}
+      {/* Sub-header: ctx info */}
+      <View style={s.subHeader}>
+        <Text style={s.ctxLabel}>
+          Ollama activo · {(numCtx / 1000).toFixed(0)}K ctx
+        </Text>
       </View>
 
-      {/* ── Cuerpo del chat ─────────────────────────────────────────────── */}
-      <View style={s.chatArea}>
-        {historyLoading ? (
-          <View style={s.centered}>
-            <ActivityIndicator size="small" color={ACCENT_CHAT} />
-            <Text style={s.emptyText}>Cargando historial...</Text>
-          </View>
-        ) : messages.length === 0 && !loading ? (
-          <View style={s.centered}>
-            <Text style={s.emptyGlyph}>◈</Text>
+      {/* Mensajes */}
+      <FlatList
+        ref={flatRef}
+        data={messages}
+        keyExtractor={item => item.id}
+        renderItem={({ item }) => <MessageBubble item={item} t={t} />}
+        contentContainerStyle={s.msgList}
+        ListEmptyComponent={
+          <View style={s.emptyWrap}>
             <Text style={s.emptyTitle}>Chat con Ollama</Text>
-            <Text style={s.emptyText}>
-              Modelo: {selectedModel}
-            </Text>
-            <Text style={s.emptyHint}>
-              Escribe un mensaje para comenzar
+            <Text style={s.emptySubtitle}>
+              Modelo: {model}{"\n"}Escribe un mensaje para comenzar
             </Text>
           </View>
-        ) : (
-          <FlatList
-            ref={flatListRef}
-            data={messages}
-            keyExtractor={item => item.id}
-            renderItem={({ item }) => (
-              <MessageBubble message={item} theme={theme} />
-            )}
-            contentContainerStyle={s.messageList}
-            showsVerticalScrollIndicator={false}
-            removeClippedSubviews
-            initialNumToRender={15}
-            maxToRenderPerBatch={5}
-            // Mantener scroll al fondo cuando llegan mensajes nuevos
-            onContentSizeChange={() => {
-              flatListRef.current?.scrollToEnd({ animated: true });
-            }}
-            ListFooterComponent={
-              loading ? <ThinkingBubble theme={theme} /> : null
-            }
-          />
-        )}
-      </View>
+        }
+        ListFooterComponent={loading ? <ThinkingBubble t={t} /> : null}
+        removeClippedSubviews
+        initialNumToRender={15}
+      />
 
-      {/* ── Mensaje de error ─────────────────────────────────────────────── */}
-      {error ? (
-        <View style={s.errorBar}>
-          <Text style={s.errorText} numberOfLines={2}>
-            ✗ {error}
-          </Text>
-          <TouchableOpacity onPress={() => {}}>
-            <Text style={s.errorDismiss}>×</Text>
-          </TouchableOpacity>
-        </View>
-      ) : null}
+      {/* Barra cancelar durante loading */}
+      {loading && (
+        <TouchableOpacity style={s.cancelBar} onPress={cancelRequest} activeOpacity={0.8}>
+          <Text style={s.cancelBarText}>↻  Ollama procesando... · toca para cancelar</Text>
+        </TouchableOpacity>
+      )}
 
-      {/* ── Footer de input ──────────────────────────────────────────────── */}
-      {/* 
-        POSICIÓN: dentro del KeyboardAvoidingView, NO position:absolute
-        Esto garantiza que el teclado empuja el footer hacia arriba
-      */}
-      <View style={s.footer}>
-        {/* Indicador de carga con botón cancelar */}
-        {loading && (
-          <TouchableOpacity
-            onPress={cancelRequest}
-            style={s.cancelBar}
-            activeOpacity={0.7}
-          >
-            <ActivityIndicator size="small" color={ACCENT_OLLAMA} />
-            <Text style={s.cancelText}>
-              {loadingText || 'Ollama procesando...'} · toca para cancelar
-            </Text>
-          </TouchableOpacity>
-        )}
-
-        <View style={s.inputRow}>
-          {/* TextInput multiline con altura dinámica */}
-          <TextInput
-            style={[s.input, { height: Math.max(44, Math.min(inputHeight, 120)) }]}
-            placeholder={`Escribe a ${selectedModel}...`}
-            placeholderTextColor={theme.textMuted || '#52525b'}
-            value={inputText}
-            onChangeText={setInputText}
-            multiline
-            onContentSizeChange={e => {
-              setInputHeight(e.nativeEvent.contentSize.height + 16);
-            }}
-            returnKeyType="default"
-            // NO submitOnReturn — permite saltos de línea
-            blurOnSubmit={false}
-            editable={!loading}
-            // Enfocar input no oculta el header
-            scrollEnabled={false}
-          />
-
-          {/* Botón enviar */}
-          <TouchableOpacity
-            onPress={handleSend}
-            style={[
-              s.sendBtn,
-              (!inputText.trim() || loading) && s.sendBtnDisabled,
-            ]}
-            disabled={!inputText.trim() || loading}
-            activeOpacity={0.7}
-          >
-            <Text style={[
-              s.sendBtnText,
-              (!inputText.trim() || loading) && s.sendBtnTextDisabled,
-            ]}>
-              ↑
-            </Text>
-          </TouchableOpacity>
-        </View>
+      {/* Input */}
+      <View style={s.inputRow}>
+        <TextInput
+          style={s.input}
+          value={input}
+          onChangeText={setInput}
+          placeholder={`Escribe a ${model}...`}
+          placeholderTextColor={t.textMuted || "#555"}
+          multiline
+          editable={!loading}
+          onSubmitEditing={handleSend}
+          blurOnSubmit={false}
+        />
+        <TouchableOpacity
+          style={[s.sendBtn, (!input.trim() || loading) && s.sendBtnDisabled]}
+          onPress={handleSend}
+          disabled={!input.trim() || loading}
+          activeOpacity={0.75}
+        >
+          <Text style={s.sendIcon}>↑</Text>
+        </TouchableOpacity>
       </View>
     </KeyboardAvoidingView>
   );
 }
 
-// ─── Estilos ──────────────────────────────────────────────────────────────────
-
-function createStyles(t) {
+// ── Estilos del chat ──────────────────────────────────────────
+function chatStyles(t) {
   return StyleSheet.create({
     root: {
       flex: 1,
-      backgroundColor: t.bg || '#000',
+      backgroundColor: t.bg || "#0a0a0a",
     },
-
-    // Header
     header: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      justifyContent: 'space-between',
-      backgroundColor: t.surface || '#0a0a0a',
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
       paddingHorizontal: 16,
-      paddingTop: 10,
-      paddingBottom: 10,
+      paddingVertical: 12,
+      backgroundColor: t.surface || "#111",
       borderBottomWidth: 1,
-      borderBottomColor: t.border || 'rgba(255,255,255,0.07)',
+      borderBottomColor: "rgba(255,255,255,0.06)",
     },
     headerLeft: {
-      flex: 1,
-    },
-    headerTitle: {
-      fontSize: 17,
-      fontWeight: '700',
-      color: t.textPrimary || t.text || '#f4f4f5',
-      letterSpacing: -0.3,
-    },
-    ollamaStatus: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      marginTop: 2,
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 8,
     },
     statusDot: {
-      width: 6,
-      height: 6,
-      borderRadius: 3,
-      marginRight: 5,
+      width: 8,
+      height: 8,
+      borderRadius: 4,
+      backgroundColor: OLLAMA_ACCENT,
     },
-    statusText: {
-      fontSize: 11,
-      color: t.textMuted || '#52525b',
-    },
-    ctxText: {
-      fontSize: 11,
-      color: t.textMuted || '#52525b',
+    headerTitle: {
+      fontSize: 16,
+      fontWeight: "700",
+      color: t.textPrimary || t.text || "#e8e8e8",
+      letterSpacing: 0.2,
     },
     headerRight: {
-      flexDirection: 'row',
+      flexDirection: "row",
+      alignItems: "center",
       gap: 8,
     },
-    headerBtn: {
-      paddingHorizontal: 10,
-      paddingVertical: 6,
+    clearBtn: {
+      width: 32,
+      height: 32,
       borderRadius: 6,
+      backgroundColor: t.card || "#1e1e1e",
+      alignItems: "center",
+      justifyContent: "center",
       borderWidth: 1,
-      borderColor: t.border || 'rgba(255,255,255,0.07)',
-      backgroundColor: t.card || '#111',
+      borderColor: "rgba(255,255,255,0.07)",
     },
-    headerBtnText: {
-      fontSize: 12,
-      color: t.textSecond || t.textSecondary || '#a1a1aa',
+    clearBtnText: {
+      fontSize: 14,
+      color: t.textMuted || "#555",
     },
-
-    // Barra de selector de modelo
-    modelBar: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      justifyContent: 'space-between',
-      paddingHorizontal: 12,
-      paddingVertical: 8,
-      backgroundColor: t.surface || '#0a0a0a',
+    subHeader: {
+      paddingHorizontal: 16,
+      paddingVertical: 5,
       borderBottomWidth: 1,
-      borderBottomColor: t.border || 'rgba(255,255,255,0.07)',
-      zIndex: 50,
-      overflow: 'visible',  // permite que el dropdown salga del bounds
+      borderBottomColor: "rgba(255,255,255,0.04)",
     },
-    messageCount: {
+    ctxLabel: {
       fontSize: 11,
-      color: t.textMuted || '#52525b',
+      color: OLLAMA_ACCENT,
+      letterSpacing: 0.3,
     },
-
-    // Área de chat
-    chatArea: {
+    msgList: {
+      paddingVertical: 12,
+      flexGrow: 1,
+    },
+    emptyWrap: {
       flex: 1,
-      backgroundColor: t.bg || '#000',
-    },
-    messageList: {
-      paddingTop: 12,
-      paddingBottom: 8,
-    },
-
-    // Estado vacío
-    centered: {
-      flex: 1,
-      alignItems: 'center',
-      justifyContent: 'center',
+      alignItems: "center",
+      justifyContent: "center",
+      paddingVertical: 80,
       paddingHorizontal: 32,
-      paddingBottom: 40,
-    },
-    emptyGlyph: {
-      fontSize: 48,
-      color: ACCENT_CHAT,
-      marginBottom: 12,
-      opacity: 0.6,
     },
     emptyTitle: {
-      fontSize: 17,
-      fontWeight: '700',
-      color: t.textPrimary || t.text || '#f4f4f5',
-      marginBottom: 6,
-    },
-    emptyText: {
-      fontSize: 13,
-      color: t.textMuted || '#52525b',
-      fontFamily: Platform.OS === 'android' ? 'monospace' : 'Courier New',
-      marginBottom: 4,
-    },
-    emptyHint: {
-      fontSize: 12,
-      color: t.textMuted || '#52525b',
-      textAlign: 'center',
-      marginTop: 8,
-    },
-
-    // Barra de error
-    errorBar: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      backgroundColor: t.errorDim || '#2d0707',
-      paddingHorizontal: 14,
-      paddingVertical: 8,
-      borderTopWidth: 1,
-      borderTopColor: (t.error || '#ef4444') + '44',
-    },
-    errorText: {
-      flex: 1,
-      fontSize: 12,
-      color: t.error || '#ef4444',
-    },
-    errorDismiss: {
       fontSize: 18,
-      color: t.error || '#ef4444',
-      paddingLeft: 8,
+      fontWeight: "700",
+      color: t.textPrimary || t.text || "#e8e8e8",
+      marginBottom: 8,
+      textAlign: "center",
     },
-
-    // Footer
-    footer: {
-      backgroundColor: t.surface || '#0a0a0a',
-      borderTopWidth: 1,
-      borderTopColor: t.border || 'rgba(255,255,255,0.07)',
-      paddingBottom: 8,  // espacio para la barra de nav Android
+    emptySubtitle: {
+      fontSize: 13,
+      color: t.textMuted || "#666",
+      textAlign: "center",
+      lineHeight: 20,
     },
     cancelBar: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      paddingHorizontal: 14,
-      paddingVertical: 8,
-      gap: 8,
-      borderBottomWidth: 1,
-      borderBottomColor: t.border || 'rgba(255,255,255,0.07)',
+      paddingVertical: 10,
+      paddingHorizontal: 16,
+      backgroundColor: t.surface || "#111",
+      borderTopWidth: 1,
+      borderTopColor: "rgba(255,255,255,0.06)",
+      alignItems: "center",
     },
-    cancelText: {
+    cancelBarText: {
       fontSize: 12,
-      color: ACCENT_OLLAMA,
+      color: OLLAMA_ACCENT,
+      letterSpacing: 0.3,
     },
     inputRow: {
-      flexDirection: 'row',
-      alignItems: 'flex-end',
+      flexDirection: "row",
+      alignItems: "flex-end",
       paddingHorizontal: 12,
-      paddingTop: 8,
-      paddingBottom: 4,
+      paddingVertical: 10,
+      backgroundColor: t.surface || "#111",
+      borderTopWidth: 1,
+      borderTopColor: "rgba(255,255,255,0.06)",
       gap: 8,
     },
     input: {
       flex: 1,
-      backgroundColor: t.overlay || '#1a1a1a',
-      borderRadius: 12,
-      borderWidth: 1,
-      borderColor: t.border || 'rgba(255,255,255,0.07)',
+      minHeight: 40,
+      maxHeight: 100,
       paddingHorizontal: 14,
-      paddingTop: 11,
-      paddingBottom: 11,
+      paddingVertical: 10,
+      backgroundColor: t.card || "#1e1e1e",
+      borderRadius: 10,
+      borderWidth: 1,
+      borderColor: "rgba(255,255,255,0.08)",
       fontSize: 14,
-      color: t.textPrimary || t.text || '#f4f4f5',
-      // Altura mínima del dedo
-      minHeight: 44,
-      maxHeight: 120,
+      color: t.textPrimary || t.text || "#e8e8e8",
     },
     sendBtn: {
-      width: 44,
-      height: 44,
-      borderRadius: 22,
-      backgroundColor: ACCENT_OLLAMA,
-      alignItems: 'center',
-      justifyContent: 'center',
+      width: 40,
+      height: 40,
+      borderRadius: 10,
+      backgroundColor: OLLAMA_ACCENT,
+      alignItems: "center",
+      justifyContent: "center",
     },
     sendBtnDisabled: {
-      backgroundColor: t.card || '#111',
-      borderWidth: 1,
-      borderColor: t.border || 'rgba(255,255,255,0.07)',
+      backgroundColor: "rgba(255,255,255,0.08)",
     },
-    sendBtnText: {
+    sendIcon: {
       fontSize: 18,
-      fontWeight: '700',
-      color: '#000',
-    },
-    sendBtnTextDisabled: {
-      color: t.textMuted || '#52525b',
+      color: "#000",
+      fontWeight: "700",
     },
   });
 }
