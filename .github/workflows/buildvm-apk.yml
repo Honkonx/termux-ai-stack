@@ -1,0 +1,51 @@
+# .github/workflows/build-apk.yml
+name: Build APK Android
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Instalar dependencias
+        working-directory: App
+        run: npm install
+
+      - name: Instalar Expo CLI
+        run: npm install -g @expo/cli
+
+      - name: Generar carpeta android con prebuild
+        working-directory: App
+        run: npx expo prebuild --platform android --no-install
+
+      - name: Crear local.properties
+        working-directory: App/android
+        run: echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
+
+      - name: Permisos gradlew
+        working-directory: App/android
+        run: chmod +x gradlew
+
+      - name: Build APK debug
+        working-directory: App/android
+        run: ./gradlew assembleDebug --no-daemon
+
+      - name: Subir APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-debug
+          path: App/android/app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 7
