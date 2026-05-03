@@ -229,7 +229,7 @@ const PresetRow = ({ preset, isInstalled, pulling, onPull, t, isLast }) => (
 
 // ── Pantalla principal ────────────────────────────────────────
 
-export function OllamaScreen({ navigate, goBack }) {
+export function OllamaScreen({ navigate, goBack, navigateToTab }) {
   const { theme: t } = useTheme();
   const { status } = useStatus();
 
@@ -291,11 +291,14 @@ export function OllamaScreen({ navigate, goBack }) {
   const handleToggle = useCallback(async (val) => {
     setToggling(true);
     try {
-      const action = val ? 'start_ollama' : 'stop_ollama';
-      await apiFetch(ip, '/api/action', {
+      const action = val ? 'start' : 'stop';
+      const data = await apiFetch(ip, '/api/action', {
         method: 'POST',
-        body: JSON.stringify({ action }),
+        body: JSON.stringify({ action, module: 'ollama' }),
       });
+      if (!data.ok) {
+        showFeedback('err', data.msg || 'Error al cambiar estado');
+      }
     } catch (e) {
       showFeedback('err', 'Error al cambiar estado');
     } finally {
@@ -363,7 +366,11 @@ export function OllamaScreen({ navigate, goBack }) {
       showFeedback('err', 'Inicia Ollama primero');
       return;
     }
-    navigate('Chat', { model: modelName, numCtx });
+    if (navigateToTab) {
+      navigateToTab('chat', { model: modelName, numCtx });
+    } else {
+      navigate('chat', { model: modelName, numCtx });
+    }
   }, [ollamaRunning, numCtx, navigate, showFeedback]);
 
   // ── Render ─────────────────────────────────────────────────

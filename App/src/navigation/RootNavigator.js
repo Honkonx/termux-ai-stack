@@ -47,6 +47,17 @@ export function RootNavigator() {
   // Fade al cambiar de tab
   const opacity = useRef(new Animated.Value(1)).current;
 
+  // navigateToTab: cambia de tab y opcionalmente pasa params al root del tab
+  // Usado por OllamaScreen para ir al Chat IA con modelo seleccionado
+  const [tabParams, setTabParams] = React.useState({});
+
+  const navigateToTab = (tab, params = {}) => {
+    if (params && Object.keys(params).length > 0) {
+      setTabParams(p => ({ ...p, [tab]: params }));
+    }
+    handleTabPress(tab);
+  };
+
   const push = (screen, params = {}) => {
     setStacks(s => ({ ...s, [activeTab]: [...s[activeTab], { screen, params }] }));
   };
@@ -107,6 +118,8 @@ export function RootNavigator() {
         <ScreenComponent
           navigate={push}
           goBack={pop}
+          navigateToTab={navigateToTab}
+          {...(tabParams[activeTab] || {})}
           {...screenParams}
         />
       </Animated.View>

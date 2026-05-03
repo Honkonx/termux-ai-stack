@@ -1,11 +1,10 @@
-// src/theme/ThemeContext.js — v2.2.0
-// - Sin expo-file-system (puede fallar en runtime)
-// - Sin AsyncStorage (no está en package.json)
-// - Persistencia via dashboard API (mismo fetch que usa toda la app)
-// - Exporta setThemeName para compatibilidad con SettingsScreen.js
-// - NUNCA retorna null — evita crash de árbol de componentes
+// src/theme/ThemeContext.js — v2.3.0
+// Persistencia con expo-secure-store (incluido en Expo SDK ~50.0.0)
+// Si SecureStore falla → persiste solo en sesión, no crashea
+// NUNCA retorna null — sin crash de árbol de componentes
 
 import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
+import * as SecureStore from 'expo-secure-store';
 import { ThemeNoche, ThemeOceano, ThemeDia } from './themes';
 
 const THEMES = {
@@ -14,69 +13,49 @@ const THEMES = {
   dia:    { ...ThemeDia,    name: 'dia'    },
 };
 
-const DASHBOARD = 'http://127.0.0.1:8080';
+const STORE_KEY     = 'ui_theme';
 const DEFAULT_THEME = 'noche';
 
 const ThemeContext = createContext(null);
 
+// Cache en memoria — acceso síncrono sin latencia
+let _cachedTheme = DEFAULT_THEME;
+
 export function ThemeProvider({ children }) {
-  const [themeName, setThemeState] = useState(DEFAULT_THEME);
+  const [themeName, setThemeState] = useState(_cachedTheme);
   const mountedRef = useRef(true);
 
   useEffect(() => {
     mountedRef.current = true;
-    // Cargar tema guardado del dashboard al iniciar
-    loadTheme();
+    // Cargar tema guardado al iniciar — async, no bloquea render
+    SecureStore.getItemAsync(STORE_KEY)
+      .then(saved => {
+        if (saved && THEMES[saved] && mountedRef.current) {
+          _cachedTheme = saved;
+          setThemeState(saved);
+        }
+      })
+      .catch(() => {
+        // SecureStore no disponible — usar default
+      });
     return () => { mountedRef.current = false; };
   }, []);
 
-  async function loadTheme() {
-    try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 3000);
-      const res = await fetch(`${DASHBOARD}/api/prefs`, { signal: controller.signal });
-      clearTimeout(timer);
-      if (res.ok) {
-        const data = await res.json();
-        if (data.theme && THEMES[data.theme] && mountedRef.current) {
-          setThemeState(data.theme);
-        }
-      }
-    } catch {
-      // Dashboard no responde → usar default — no crashear
-    }
-  }
-
-  async function saveTheme(name) {
-    try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 3000);
-      await fetch(`${DASHBOARD}/api/prefs`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ theme: name }),
-        signal: controller.signal,
-      });
-      clearTimeout(timer);
-    } catch {
-      // No es crítico — silenciar
-    }
-  }
-
-  // setThemeName — nombre idéntico al que usa SettingsScreen.js
   const setThemeName = (name) => {
     if (!THEMES[name]) return;
+    _cachedTheme = name;
     setThemeState(name);
-    saveTheme(name);
+    // Guardar async — no bloquea ni crashea si falla
+    SecureStore.setItemAsync(STORE_KEY, name).catch(() => {});
   };
 
-  // NUNCA retornar null — siempre renderizar con el tema disponible
+  // NUNCA retornar null
   return (
     <ThemeContext.Provider value={{
       theme: THEMES[themeName],
       themeName,
-      setThemeName,   // ← compatible con SettingsScreen.js existente
-      setTheme: setThemeName,  // ← alias por si algo lo usa
+      setThemeName,          // ← SettingsScreen usa este
+      setTheme: setThemeName, // ← alias por compatibilidad
     }}>
       {children}
     </ThemeContext.Provider>

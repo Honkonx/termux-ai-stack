@@ -256,14 +256,14 @@ function ModelSelector({ models, selected, onSelect, theme }) {
 
 // ─── Pantalla principal ───────────────────────────────────────────────────────
 
-export default function ChatScreen({ params = {} }) {
+export function ChatScreen({ params = {}, model: modelProp, numCtx: numCtxProp, navigate, goBack }) {
   const { theme } = useTheme();
 
   // Modelo inicial desde params (si viene de OllamaScreen) o default
   const [selectedModel, setSelectedModel] = useState(
-    params.model || DEFAULT_MODELS[0]
+    modelProp || params.model || DEFAULT_MODELS[0]
   );
-  const [numCtx] = useState(params.numCtx || 2048);
+  const [numCtx] = useState(numCtxProp || params.numCtx || 2048);
   const [inputText, setInputText] = useState('');
   const [inputHeight, setInputHeight] = useState(44);
 
