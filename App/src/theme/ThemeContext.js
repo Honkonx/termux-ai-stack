@@ -1,10 +1,17 @@
-// src/theme/ThemeContext.js — v2.3.0
-// Persistencia con expo-secure-store (incluido en Expo SDK ~50.0.0)
-// Si SecureStore falla → persiste solo en sesión, no crashea
-// NUNCA retorna null — sin crash de árbol de componentes
+// src/theme/ThemeContext.js — v3.0.0 FINAL
+// ════════════════════════════════════════════════════════════
+// REGLA: package.json solo tiene expo, expo-build-properties,
+//        expo-status-bar, react, react-native — NADA MÁS.
+//
+// SOLUCIÓN: persistencia via dashboard /api/prefs (HTTP fetch
+// builtin — ya funciona en toda la app) + cache en variable
+// de módulo para acceso síncrono entre renders.
+//
+// Sin imports externos. Sin AsyncStorage. Sin SecureStore.
+// Sin expo-file-system. Solo fetch nativo de React Native.
+// ════════════════════════════════════════════════════════════
 
 import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
-import * as SecureStore from 'expo-secure-store';
 import { ThemeNoche, ThemeOceano, ThemeDia } from './themes';
 
 const THEMES = {
@@ -13,49 +20,75 @@ const THEMES = {
   dia:    { ...ThemeDia,    name: 'dia'    },
 };
 
-const STORE_KEY     = 'ui_theme';
-const DEFAULT_THEME = 'noche';
+const DASHBOARD    = 'http://127.0.0.1:8080';
+const DEFAULT      = 'noche';
+const TIMEOUT_MS   = 3000;
+
+// Cache de módulo — persiste mientras la app está en memoria
+// y da acceso síncrono sin latencia en renders subsiguientes
+let _memTheme = DEFAULT;
 
 const ThemeContext = createContext(null);
 
-// Cache en memoria — acceso síncrono sin latencia
-let _cachedTheme = DEFAULT_THEME;
-
 export function ThemeProvider({ children }) {
-  const [themeName, setThemeState] = useState(_cachedTheme);
+  const [themeName, setThemeState] = useState(_memTheme);
   const mountedRef = useRef(true);
 
   useEffect(() => {
     mountedRef.current = true;
-    // Cargar tema guardado al iniciar — async, no bloquea render
-    SecureStore.getItemAsync(STORE_KEY)
-      .then(saved => {
-        if (saved && THEMES[saved] && mountedRef.current) {
-          _cachedTheme = saved;
-          setThemeState(saved);
-        }
-      })
-      .catch(() => {
-        // SecureStore no disponible — usar default
-      });
+    _loadFromDashboard();
     return () => { mountedRef.current = false; };
   }, []);
 
+  async function _loadFromDashboard() {
+    try {
+      const ctrl  = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
+      const res   = await fetch(`${DASHBOARD}/api/prefs`, { signal: ctrl.signal });
+      clearTimeout(timer);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.theme && THEMES[data.theme] && mountedRef.current) {
+          _memTheme = data.theme;
+          setThemeState(data.theme);
+        }
+      }
+    } catch {
+      // Dashboard no disponible → usar cache/default. No crashear.
+    }
+  }
+
+  async function _saveToDashboard(name) {
+    try {
+      const ctrl  = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
+      await fetch(`${DASHBOARD}/api/prefs`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ theme: name }),
+        signal:  ctrl.signal,
+      });
+      clearTimeout(timer);
+    } catch {
+      // No crítico — el tema ya cambió en UI
+    }
+  }
+
+  // setThemeName — nombre exacto que usa SettingsScreen.js
   const setThemeName = (name) => {
     if (!THEMES[name]) return;
-    _cachedTheme = name;
+    _memTheme = name;
     setThemeState(name);
-    // Guardar async — no bloquea ni crashea si falla
-    SecureStore.setItemAsync(STORE_KEY, name).catch(() => {});
+    _saveToDashboard(name);
   };
 
-  // NUNCA retornar null
+  // NUNCA retornar null — evita crash de árbol de componentes
   return (
     <ThemeContext.Provider value={{
-      theme: THEMES[themeName],
+      theme:       THEMES[themeName],
       themeName,
-      setThemeName,          // ← SettingsScreen usa este
-      setTheme: setThemeName, // ← alias por compatibilidad
+      setThemeName,
+      setTheme:    setThemeName, // alias por compatibilidad
     }}>
       {children}
     </ThemeContext.Provider>
