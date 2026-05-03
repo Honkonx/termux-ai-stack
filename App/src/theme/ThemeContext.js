@@ -1,10 +1,11 @@
-// src/theme/ThemeContext.js — v2.1.0
-// Fix Bug #3: Persistencia de tema con expo-file-system
-// expo-file-system YA ESTÁ incluido en Expo SDK ~50.0.0 — sin instalar nada
-// NO usa @react-native-async-storage (no está en package.json → rompe build)
+// src/theme/ThemeContext.js — v2.2.0
+// - Sin expo-file-system (puede fallar en runtime)
+// - Sin AsyncStorage (no está en package.json)
+// - Persistencia via dashboard API (mismo fetch que usa toda la app)
+// - Exporta setThemeName para compatibilidad con SettingsScreen.js
+// - NUNCA retorna null — evita crash de árbol de componentes
 
 import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
-import * as FileSystem from 'expo-file-system';
 import { ThemeNoche, ThemeOceano, ThemeDia } from './themes';
 
 const THEMES = {
@@ -13,66 +14,69 @@ const THEMES = {
   dia:    { ...ThemeDia,    name: 'dia'    },
 };
 
-// Guardar fuera de /tmp (noexec en Android 15) — regla del proyecto
-const PREFS_PATH = FileSystem.documentDirectory + 'ui_prefs.json';
+const DASHBOARD = 'http://127.0.0.1:8080';
 const DEFAULT_THEME = 'noche';
 
 const ThemeContext = createContext(null);
 
 export function ThemeProvider({ children }) {
-  const [themeName, setThemeName] = useState(DEFAULT_THEME);
-  const [loaded, setLoaded] = useState(false);
+  const [themeName, setThemeState] = useState(DEFAULT_THEME);
   const mountedRef = useRef(true);
 
   useEffect(() => {
     mountedRef.current = true;
+    // Cargar tema guardado del dashboard al iniciar
     loadTheme();
     return () => { mountedRef.current = false; };
   }, []);
 
   async function loadTheme() {
     try {
-      const info = await FileSystem.getInfoAsync(PREFS_PATH);
-      if (info.exists) {
-        const raw = await FileSystem.readAsStringAsync(PREFS_PATH);
-        const prefs = JSON.parse(raw);
-        if (prefs.theme && THEMES[prefs.theme] && mountedRef.current) {
-          setThemeName(prefs.theme);
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 3000);
+      const res = await fetch(`${DASHBOARD}/api/prefs`, { signal: controller.signal });
+      clearTimeout(timer);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.theme && THEMES[data.theme] && mountedRef.current) {
+          setThemeState(data.theme);
         }
       }
     } catch {
-      // Archivo no existe o JSON inválido → usar default noche
-    } finally {
-      if (mountedRef.current) setLoaded(true);
+      // Dashboard no responde → usar default — no crashear
     }
   }
 
   async function saveTheme(name) {
     try {
-      await FileSystem.writeAsStringAsync(
-        PREFS_PATH,
-        JSON.stringify({ theme: name }),
-        { encoding: FileSystem.EncodingType.UTF8 }
-      );
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 3000);
+      await fetch(`${DASHBOARD}/api/prefs`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ theme: name }),
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
     } catch {
       // No es crítico — silenciar
     }
   }
 
-  const setTheme = (name) => {
+  // setThemeName — nombre idéntico al que usa SettingsScreen.js
+  const setThemeName = (name) => {
     if (!THEMES[name]) return;
-    setThemeName(name);
+    setThemeState(name);
     saveTheme(name);
   };
 
-  // Evitar flash de tema incorrecto antes de leer el archivo
-  if (!loaded) return null;
-
+  // NUNCA retornar null — siempre renderizar con el tema disponible
   return (
     <ThemeContext.Provider value={{
       theme: THEMES[themeName],
       themeName,
-      setTheme,
+      setThemeName,   // ← compatible con SettingsScreen.js existente
+      setTheme: setThemeName,  // ← alias por si algo lo usa
     }}>
       {children}
     </ThemeContext.Provider>
