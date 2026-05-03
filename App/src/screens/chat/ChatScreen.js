@@ -256,14 +256,14 @@ function ModelSelector({ models, selected, onSelect, theme }) {
 
 // ─── Pantalla principal ───────────────────────────────────────────────────────
 
-export function ChatScreen({ params = {}, model: modelProp, numCtx: numCtxProp, navigate, goBack }) {
+export default function ChatScreen({ params = {} }) {
   const { theme } = useTheme();
 
   // Modelo inicial desde params (si viene de OllamaScreen) o default
   const [selectedModel, setSelectedModel] = useState(
-    modelProp || params.model || DEFAULT_MODELS[0]
+    params.model || DEFAULT_MODELS[0]
   );
-  const [numCtx] = useState(numCtxProp || params.numCtx || 2048);
+  const [numCtx] = useState(params.numCtx || 2048);
   const [inputText, setInputText] = useState('');
   const [inputHeight, setInputHeight] = useState(44);
 
@@ -272,6 +272,7 @@ export function ChatScreen({ params = {}, model: modelProp, numCtx: numCtxProp, 
   const {
     messages,
     loading,
+    loadingText,
     error,
     historyLoading,
     sendMessage,
@@ -421,7 +422,7 @@ export function ChatScreen({ params = {}, model: modelProp, numCtx: numCtxProp, 
           >
             <ActivityIndicator size="small" color={ACCENT_OLLAMA} />
             <Text style={s.cancelText}>
-              Ollama procesando... · toca para cancelar
+              {loadingText || 'Ollama procesando...'} · toca para cancelar
             </Text>
           </TouchableOpacity>
         )}
@@ -545,8 +546,8 @@ function createStyles(t) {
       backgroundColor: t.surface || '#0a0a0a',
       borderBottomWidth: 1,
       borderBottomColor: t.border || 'rgba(255,255,255,0.07)',
-      // zIndex alto para que el dropdown de ModelSelector quede encima del chat
       zIndex: 50,
+      overflow: 'visible',  // permite que el dropdown salga del bounds
     },
     messageCount: {
       fontSize: 11,
@@ -622,6 +623,7 @@ function createStyles(t) {
       backgroundColor: t.surface || '#0a0a0a',
       borderTopWidth: 1,
       borderTopColor: t.border || 'rgba(255,255,255,0.07)',
+      paddingBottom: 8,  // espacio para la barra de nav Android
     },
     cancelBar: {
       flexDirection: 'row',
@@ -640,7 +642,8 @@ function createStyles(t) {
       flexDirection: 'row',
       alignItems: 'flex-end',
       paddingHorizontal: 12,
-      paddingVertical: 10,
+      paddingTop: 8,
+      paddingBottom: 4,
       gap: 8,
     },
     input: {

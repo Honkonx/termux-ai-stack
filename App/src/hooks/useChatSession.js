@@ -1,70 +1,144 @@
-// src/hooks/useChatSession.js — v2.0.0
-// Fix Bug #4: timeout largo + estado loading visible + no bloquea poll de status
-//
-// REGLAS APLICADAS:
-// - HTTP: fetch builtin con AbortController (NO axios, NO requests)
-// - SQLite: datos via API del dashboard (NO AsyncStorage para historial)
-// - useEffect siempre con cleanup
+// src/hooks/useChatSession.js — v3.0.0 S19
+// Chat async: POST /api/chat → job_id → polling GET /api/chat/status/<id>
+// La app NO se congela — Ollama corre en hilo separado del dashboard
 
 import { useState, useRef, useCallback, useEffect } from 'react';
 
-const DASHBOARD_URL = 'http://127.0.0.1:8080';
-// Ollama local puede tardar 60s+ en responder — timeout generoso
-const CHAT_TIMEOUT_MS = 90_000;
-// Timeout para cargar historial
-const HISTORY_TIMEOUT_MS = 10_000;
+const DASHBOARD       = 'http://127.0.0.1:8080';
+const POLL_INTERVAL   = 2000;   // poll cada 2s
+const POLL_MAX        = 90;     // máximo 90 intentos = 3 min
+const FETCH_TIMEOUT   = 8000;   // timeout para cada fetch individual
+
+async function apiFetch(path, opts = {}) {
+  const ctrl  = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT);
+  try {
+    const res = await fetch(`${DASHBOARD}${path}`, {
+      ...opts,
+      signal: ctrl.signal,
+    });
+    clearTimeout(timer);
+    return res;
+  } catch (e) {
+    clearTimeout(timer);
+    throw e;
+  }
+}
 
 export function useChatSession(model, numCtx = 2048) {
-  const [messages, setMessages]   = useState([]);
-  const [loading, setLoading]     = useState(false);  // true mientras Ollama procesa
-  const [error, setError]         = useState(null);
-  const [chatId, setChatId]       = useState(null);
-  const [historyLoading, setHistoryLoading] = useState(true);
+  const [messages, setMessages]         = useState([]);
+  const [loading, setLoading]           = useState(false);
+  const [loadingText, setLoadingText]   = useState('');
+  const [error, setError]               = useState(null);
+  const [historyLoading, setHistLoad]   = useState(true);
+  const [chatId]                        = useState(() => `chat_${Date.now()}`);
 
-  // Ref para que el poll de useStatus.js sepa no marcar connErr durante chat
-  const loadingRef = useRef(false);
-  const abortRef   = useRef(null);
+  const pollTimerRef  = useRef(null);
+  const pollCountRef  = useRef(0);
+  const cancelledRef  = useRef(false);
+  const mountedRef    = useRef(true);
 
-  // Sincronizar ref con estado
   useEffect(() => {
-    loadingRef.current = loading;
-  }, [loading]);
-
-  // Inicializar chat_id al montar (un UUID simple basado en timestamp)
-  useEffect(() => {
-    const id = `chat_${Date.now()}`;
-    setChatId(id);
-    loadHistory(id);
-
+    mountedRef.current = true;
+    loadHistory();
     return () => {
-      // Cancelar request en vuelo si el componente se desmonta
-      if (abortRef.current) abortRef.current.abort();
+      mountedRef.current = false;
+      _stopPoll();
     };
   }, []);
 
-  const loadHistory = useCallback(async (id) => {
-    setHistoryLoading(true);
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), HISTORY_TIMEOUT_MS);
+  function _stopPoll() {
+    if (pollTimerRef.current) {
+      clearTimeout(pollTimerRef.current);
+      pollTimerRef.current = null;
+    }
+  }
 
+  async function loadHistory() {
+    setHistLoad(true);
     try {
-      const res = await fetch(
-        `${DASHBOARD_URL}/api/chat/history?chat_id=${id}`,
-        { signal: controller.signal }
-      );
+      const res = await apiFetch(`/api/chat/history?chat_id=${chatId}`);
       if (res.ok) {
         const data = await res.json();
-        if (data.messages && Array.isArray(data.messages)) {
-          setMessages(data.messages);
+        if (data.messages && mountedRef.current) {
+          setMessages(data.messages.map((m, i) => ({
+            id:      `h_${i}`,
+            role:    m.rol || m.role,
+            content: m.content,
+            ts:      Date.now(),
+          })));
         }
       }
-    } catch {
-      // Historial no crítico — continuar sin él
-    } finally {
-      clearTimeout(timer);
-      setHistoryLoading(false);
-    }
-  }, []);
+    } catch { /* historial no crítico */ }
+    finally { if (mountedRef.current) setHistLoad(false); }
+  }
+
+  // Polling de estado del job
+  function _startPoll(jobId) {
+    pollCountRef.current = 0;
+    cancelledRef.current = false;
+
+    const poll = async () => {
+      if (!mountedRef.current || cancelledRef.current) return;
+
+      pollCountRef.current += 1;
+
+      if (pollCountRef.current > POLL_MAX) {
+        _stopPoll();
+        if (mountedRef.current) {
+          setLoading(false);
+          setError('Timeout — Ollama tardó más de 3 minutos.');
+        }
+        return;
+      }
+
+      try {
+        const res  = await apiFetch(`/api/chat/status/${jobId}`);
+        const data = await res.json();
+
+        if (!mountedRef.current || cancelledRef.current) return;
+
+        if (data.status === 'done') {
+          _stopPoll();
+          const botMsg = {
+            id:      `b_${Date.now()}`,
+            role:    'assistant',
+            content: data.response || '(sin respuesta)',
+            ts:      Date.now(),
+            model,
+          };
+          setMessages(prev => [...prev, botMsg]);
+          setLoading(false);
+          setLoadingText('');
+          setError(null);
+
+        } else if (data.status === 'error') {
+          _stopPoll();
+          setLoading(false);
+          setLoadingText('');
+          setError(`Error Ollama: ${data.error}`);
+
+        } else if (data.status === 'not_found') {
+          _stopPoll();
+          setLoading(false);
+          setError('Job no encontrado — dashboard reiniciado?');
+
+        } else {
+          // 'processing' → seguir esperando
+          const secs = pollCountRef.current * (POLL_INTERVAL / 1000);
+          setLoadingText(`Ollama procesando... ${secs}s`);
+          pollTimerRef.current = setTimeout(poll, POLL_INTERVAL);
+        }
+
+      } catch {
+        if (!mountedRef.current || cancelledRef.current) return;
+        // Error de red → reintentar
+        pollTimerRef.current = setTimeout(poll, POLL_INTERVAL);
+      }
+    };
+
+    pollTimerRef.current = setTimeout(poll, POLL_INTERVAL);
+  }
 
   const sendMessage = useCallback(async (text) => {
     if (!text.trim() || loading) return;
@@ -78,86 +152,69 @@ export function useChatSession(model, numCtx = 2048) {
 
     setMessages(prev => [...prev, userMsg]);
     setLoading(true);
+    setLoadingText('Enviando...');
     setError(null);
-
-    // Cancelar request anterior si hubiera
-    if (abortRef.current) abortRef.current.abort();
-    const controller = new AbortController();
-    abortRef.current = controller;
-
-    const timer = setTimeout(() => controller.abort(), CHAT_TIMEOUT_MS);
+    cancelledRef.current = false;
 
     try {
-      const res = await fetch(`${DASHBOARD_URL}/api/chat`, {
+      const res = await apiFetch('/api/chat', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({
-          message:  text.trim(),
-          model:    model,
-          num_ctx:  numCtx,
-          chat_id:  chatId,
+          message: text.trim(),
+          model,
+          num_ctx: numCtx,
+          chat_id: chatId,
         }),
-        signal: controller.signal,
       });
-
-      clearTimeout(timer);
-
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status}`);
-      }
 
       const data = await res.json();
 
-      const botMsg = {
-        id:      `b_${Date.now()}`,
-        role:    'assistant',
-        content: data.response || '(sin respuesta)',
-        ts:      Date.now(),
-        model:   model,
-      };
+      if (!mountedRef.current) return;
 
-      setMessages(prev => [...prev, botMsg]);
-      setError(null);
-
-    } catch (err) {
-      clearTimeout(timer);
-
-      if (err.name === 'AbortError') {
-        setError('timeout — Ollama tardó más de 90s. Intenta con un modelo más pequeño.');
+      if (data.ok && data.job_id) {
+        setLoadingText('Ollama procesando... 0s');
+        _startPoll(data.job_id);
       } else {
-        setError(`Error: ${err.message}`);
+        setLoading(false);
+        setLoadingText('');
+        setError(data.error || 'Error al enviar');
       }
-    } finally {
+
+    } catch (e) {
+      if (!mountedRef.current) return;
       setLoading(false);
-      abortRef.current = null;
+      setLoadingText('');
+      setError(e.name === 'AbortError'
+        ? 'Sin respuesta del dashboard (¿está corriendo?)'
+        : `Error: ${e.message}`);
     }
   }, [loading, model, numCtx, chatId]);
 
-  const clearHistory = useCallback(async () => {
-    setMessages([]);
-    setError(null);
-    // Generar nuevo chat_id para nueva sesión limpia
-    const newId = `chat_${Date.now()}`;
-    setChatId(newId);
+  const cancelRequest = useCallback(() => {
+    cancelledRef.current = true;
+    _stopPoll();
+    setLoading(false);
+    setLoadingText('');
+    setError('Cancelado');
   }, []);
 
-  const cancelRequest = useCallback(() => {
-    if (abortRef.current) {
-      abortRef.current.abort();
-      abortRef.current = null;
-      setLoading(false);
-      setError('Cancelado');
-    }
+  const clearHistory = useCallback(() => {
+    setMessages([]);
+    setError(null);
+    cancelledRef.current = true;
+    _stopPoll();
+    setLoading(false);
   }, []);
 
   return {
     messages,
     loading,
+    loadingText,
     error,
     historyLoading,
     sendMessage,
-    clearHistory,
     cancelRequest,
-    loadingRef,   // exportar para que useStatus.js no marque connErr durante chat
+    clearHistory,
   };
 }
