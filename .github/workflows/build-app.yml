@@ -1,0 +1,153 @@
+# ============================================================
+#  termux-ai-stack · .github/workflows/build-apk.yml
+#  Build APK Android sin EAS cloud
+#
+#  RUTA EN REPO: .github/workflows/build-apk.yml
+#
+#  CÓMO USAR:
+#    GitHub → pestaña Actions → "Build APK Android"
+#    → Run workflow → esperar ~15 min
+#    → descargar APK desde sección Artifacts
+#
+#  EXPO SDK: ~50.0.0  |  RN: 0.73.6  |  Node: 20 LTS
+# ============================================================
+
+name: Build APK Android
+
+on:
+  workflow_dispatch:   # botón manual en GitHub Actions
+  push:
+    branches: [main]
+    paths:
+      - 'App/**'       # solo buildea si cambió algo en App/
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+
+      # ── 1. Clonar repo completo ───────────────────────────
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      # ── 2. Node.js 20 LTS (igual que en Termux proot) ────
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: App/package-lock.json
+
+      # ── 3. Java 17 (requerido por Gradle + Expo SDK 50) ──
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      # ── 4. Instalar dependencias npm ──────────────────────
+      - name: Instalar dependencias
+        working-directory: App
+        run: npm install
+
+      # ── 5. Instalar Expo CLI ──────────────────────────────
+      - name: Instalar Expo CLI
+        run: npm install -g @expo/cli@latest
+
+      # ── 6. Crear metro.config.js (faltaba → crash Metro) ─
+      - name: Crear metro.config.js
+        working-directory: App
+        run: |
+          if [ ! -f metro.config.js ]; then
+            cat > metro.config.js << 'EOF'
+const { getDefaultConfig } = require('expo/metro-config');
+module.exports = getDefaultConfig(__dirname);
+EOF
+            echo "[OK] metro.config.js creado"
+          else
+            echo "[OK] metro.config.js ya existe"
+          fi
+
+      # ── 7. Crear index.js si no existe ───────────────────
+      - name: Verificar index.js
+        working-directory: App
+        run: |
+          if [ ! -f index.js ]; then
+            echo "import 'expo/AppEntry';" > index.js
+            echo "[OK] index.js creado"
+          else
+            echo "[OK] index.js ya existe"
+          fi
+
+      # ── 8. Generar carpeta android/ con prebuild ──────────
+      #    Equivale a tener android/ sin subirla al repo
+      - name: Expo prebuild (genera android/)
+        working-directory: App
+        run: |
+          npx expo prebuild \
+            --platform android \
+            --no-install \
+            --clean
+        env:
+          EXPO_NO_TELEMETRY: 1
+
+      # ── 9. Apuntar SDK → variable de GitHub Ubuntu ───────
+      #    ANDROID_SDK_ROOT ya está definida en ubuntu-latest
+      - name: Configurar local.properties
+        working-directory: App/android
+        run: |
+          echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
+          echo "[OK] local.properties → $ANDROID_SDK_ROOT"
+
+      # ── 10. Permisos gradlew ──────────────────────────────
+      - name: Permisos gradlew
+        working-directory: App/android
+        run: chmod +x gradlew
+
+      # ── 11. Empaquetar JS bundle dentro del APK ──────────
+      #    Sin esto el APK busca Metro al abrir → pantalla roja
+      - name: Bundle JS (fix pantalla roja)
+        working-directory: App
+        run: |
+          mkdir -p android/app/src/main/assets
+          npx react-native bundle \
+            --platform android \
+            --dev false \
+            --entry-file index.js \
+            --bundle-output android/app/src/main/assets/index.android.bundle \
+            --assets-dest android/app/src/main/res
+          echo "[OK] Bundle generado"
+
+      # ── 12. Build APK debug ───────────────────────────────
+      #    Debug no requiere keystore — listo para instalar y probar
+      - name: Build APK debug
+        working-directory: App/android
+        run: |
+          ./gradlew assembleDebug \
+            --no-daemon \
+            --stacktrace
+        env:
+          GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx4g -Dorg.gradle.daemon=false"
+
+      # ── 13. Verificar que el APK existe ──────────────────
+      - name: Verificar APK
+        run: |
+          APK_PATH="App/android/app/build/outputs/apk/debug/app-debug.apk"
+          if [ -f "$APK_PATH" ]; then
+            SIZE=$(du -sh "$APK_PATH" | cut -f1)
+            echo "[OK] APK generado: $APK_PATH ($SIZE)"
+          else
+            echo "[ERROR] APK no encontrado"
+            find App/android/app/build/outputs/ -name "*.apk" 2>/dev/null || echo "Sin outputs"
+            exit 1
+          fi
+
+      # ── 14. Subir APK como Artifact ───────────────────────
+      #    Disponible 7 días en pestaña Actions → run → Artifacts
+      - name: Subir APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: termux-ai-stack-debug
+          path: App/android/app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 7
