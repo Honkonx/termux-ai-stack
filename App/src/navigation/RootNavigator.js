@@ -1,4 +1,5 @@
-// src/navigation/RootNavigator.js — v3.0.0 S19
+// src/navigation/RootNavigator.js — v3.1.0 S19
+// S19: PythonScreen agregada — ROUTES.PYTHON en MODULE_SCREENS
 // FIX CRÍTICO: tabs renderizados simultáneamente con display:none
 // Antes: ScreenComponent se recalculaba → ChatScreen se remontaba al cambiar tab
 //        → useChatSession perdía su estado y polls activos → crash + mensajes borrados
@@ -16,16 +17,18 @@ import { ChatScreen }     from '../screens/chat/ChatScreen';
 import { SystemScreen }   from '../screens/system/SystemScreen';
 import { SettingsScreen } from '../screens/settings/SettingsScreen';
 
-import { N8nScreen }    from '../screens/modules/n8n/N8nScreen';
-import { OllamaScreen } from '../screens/modules/ollama/OllamaScreen';
-import { ClaudeScreen } from '../screens/modules/claude/ClaudeScreen';
-import { SshScreen }    from '../screens/modules/ssh/SshScreen';
+import { N8nScreen }      from '../screens/modules/n8n/N8nScreen';
+import { OllamaScreen }   from '../screens/modules/ollama/OllamaScreen';
+import { ClaudeScreen }   from '../screens/modules/claude/ClaudeScreen';
+import { SshScreen }      from '../screens/modules/ssh/SshScreen';
+import { PythonScreen }   from '../screens/modules/python/PythonScreen';
 
 const MODULE_SCREENS = {
   [ROUTES.N8N]:    N8nScreen,
   [ROUTES.OLLAMA]: OllamaScreen,
   [ROUTES.CLAUDE]: ClaudeScreen,
   [ROUTES.SSH]:    SshScreen,
+  [ROUTES.PYTHON]: PythonScreen,
 };
 
 const TABS = [ROUTES.MODULES, ROUTES.CHAT, ROUTES.SYSTEM, ROUTES.SETTINGS];

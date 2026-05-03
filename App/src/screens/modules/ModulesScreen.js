@@ -111,7 +111,7 @@ export function ModulesScreen({ navigate }) {
     || { actionState:'idle', trigger:()=>{} });
 
   const handleSubMenu = useCallback((id) => {
-    const r = { n8n:ROUTES.N8N, ollama:ROUTES.OLLAMA, claude:ROUTES.CLAUDE, ssh:ROUTES.SSH }[id];
+    const r = { n8n:ROUTES.N8N, ollama:ROUTES.OLLAMA, claude:ROUTES.CLAUDE, ssh:ROUTES.SSH, python:ROUTES.PYTHON }[id];
     if (r) navigate(r);
   }, [navigate]);
 

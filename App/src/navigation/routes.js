@@ -1,25 +1,24 @@
-// src/navigation/routes.js — constantes UPPER_SNAKE_CASE
+// App/src/navigation/routes.js
+// v1.1.0 — S19: agregado ROUTES.PYTHON
 
 export const ROUTES = {
-  // Tabs principales
+  // Tabs raíz
   MODULES:  'modules',
   CHAT:     'chat',
   SYSTEM:   'system',
   SETTINGS: 'settings',
 
-  // Pantallas de módulo (stack sobre tab)
+  // Pantallas de módulo (se apilan sobre el tab MODULES)
   N8N:    'n8n',
   OLLAMA: 'ollama',
   CLAUDE: 'claude',
   SSH:    'ssh',
-
-  // Modal
-  LOGS:   'logs',
+  PYTHON: 'python',   // ← nuevo S19
 };
 
 export const TAB_LABELS = {
-  [ROUTES.MODULES]:  { label: 'Módulos',  icon: '⊞' },
-  [ROUTES.CHAT]:     { label: 'Chat IA',  icon: '◈' },
-  [ROUTES.SYSTEM]:   { label: 'Sistema',  icon: '◉' },
-  [ROUTES.SETTINGS]: { label: 'Config',   icon: '⚙' },
+  [ROUTES.MODULES]:  'Módulos',
+  [ROUTES.CHAT]:     'Chat IA',
+  [ROUTES.SYSTEM]:   'Sistema',
+  [ROUTES.SETTINGS]: 'Config',
 };
