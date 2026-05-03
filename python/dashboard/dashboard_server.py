@@ -17,6 +17,7 @@ PORT          = 8080
 PORT_WS       = 8081  # WebSocket PTY server
 
 BOT_HISTORY_DB = os.path.join(HOME, "bot_history.db")
+PREFS_FILE     = os.path.join(HOME, "ui_prefs.json")
 _cmd_log       = collections.deque(maxlen=30)
 
 # ── Utilidades ────────────────────────────────────────────────
@@ -360,6 +361,27 @@ def chat_save(chat_id, model, user_text, bot_text):
     except:
         pass
 
+
+# ── Preferencias UI ───────────────────────────────────────────
+def load_prefs():
+    try:
+        if os.path.exists(PREFS_FILE):
+            with open(PREFS_FILE, 'r') as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return {'theme': 'noche'}
+
+def save_prefs(data):
+    try:
+        existing = load_prefs()
+        existing.update(data)
+        with open(PREFS_FILE, 'w') as f:
+            json.dump(existing, f)
+        return True
+    except Exception:
+        return False
+
 # ── HTTP Handler ──────────────────────────────────────────────
 
 class Handler(BaseHTTPRequestHandler):
@@ -508,6 +530,10 @@ class Handler(BaseHTTPRequestHandler):
                     self.wfile.write(f.read())
             else:
                 self.wfile.write(b"<h1>Dashboard API v2.0.0</h1>")
+
+        # ── /api/prefs ────────────────────────────────────
+        elif path == "/api/prefs":
+            self.send_json(load_prefs())
 
         else:
             self.send_json({"error": "not found"}, 404)
@@ -678,6 +704,15 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json({"ok": True, "msg": f"Symlink eliminado: {name}"})
                 else:
                     self.send_json({"ok": False, "msg": "No es un symlink"})
+            except Exception as e:
+                self.send_json({"ok": False, "msg": str(e)}, 500)
+
+        # ── /api/prefs ────────────────────────────────────
+        elif path == "/api/prefs":
+            try:
+                data = json.loads(body)
+                save_prefs(data)
+                self.send_json({"ok": True})
             except Exception as e:
                 self.send_json({"ok": False, "msg": str(e)}, 500)
 
