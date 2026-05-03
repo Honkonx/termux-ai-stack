@@ -256,7 +256,7 @@ function ModelSelector({ models, selected, onSelect, theme }) {
 
 // ─── Pantalla principal ───────────────────────────────────────────────────────
 
-export default function ChatScreen({ params = {} }) {
+export function ChatScreen({ params = {} }) {
   const { theme } = useTheme();
 
   // Modelo inicial desde params (si viene de OllamaScreen) o default
