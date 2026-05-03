@@ -34,7 +34,7 @@ function ModuleRow({ mod, onSubMenu, onToggle, actionState, theme }) {
   const s      = rowStyles(theme);
   const status = getModuleStatus(mod);
   const hasMenu = mod.installed &&
-    ['n8n', 'ollama', 'claude', 'ssh'].includes(mod.id);
+    ['n8n', 'ollama', 'claude', 'ssh', 'python'].includes(mod.id);
   const isService = mod.running !== undefined;
 
   return (
