@@ -1,0 +1,169 @@
+name: Build APK Android
+
+on:
+  push:
+    branches: [main, test]
+    paths: ['App/**']
+
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: 'Tipo de build'
+        required: true
+        default: 'debug-arm64'
+        type: choice
+        options:
+          - debug-arm64
+          - debug-universal
+          - release-arm64
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    name: Build (${{ github.event.inputs.build_type || 'debug-arm64' }})
+
+    steps:
+
+      - name: Resolver variante de build
+        id: vars
+        run: |
+          BUILD_TYPE="${{ github.event.inputs.build_type || 'debug-arm64' }}"
+          echo "build_type=$BUILD_TYPE" >> $GITHUB_OUTPUT
+          case "$BUILD_TYPE" in
+            debug-arm64)
+              echo "gradle_task=assembleDebug"    >> $GITHUB_OUTPUT
+              echo "abi_filter=arm64-v8a"         >> $GITHUB_OUTPUT
+              echo "is_release=false"             >> $GITHUB_OUTPUT
+              echo "apk_path=app/build/outputs/apk/debug/app-debug.apk" >> $GITHUB_OUTPUT
+              echo "artifact_name=apk-debug-arm64" >> $GITHUB_OUTPUT
+              ;;
+            debug-universal)
+              echo "gradle_task=assembleDebug"    >> $GITHUB_OUTPUT
+              echo "abi_filter="                  >> $GITHUB_OUTPUT
+              echo "is_release=false"             >> $GITHUB_OUTPUT
+              echo "apk_path=app/build/outputs/apk/debug/app-debug.apk" >> $GITHUB_OUTPUT
+              echo "artifact_name=apk-debug-universal" >> $GITHUB_OUTPUT
+              ;;
+            release-arm64)
+              echo "gradle_task=assembleRelease"  >> $GITHUB_OUTPUT
+              echo "abi_filter=arm64-v8a"         >> $GITHUB_OUTPUT
+              echo "is_release=true"              >> $GITHUB_OUTPUT
+              echo "apk_path=app/build/outputs/apk/release/app-release-unsigned.apk" >> $GITHUB_OUTPUT
+              echo "artifact_name=apk-release-arm64" >> $GITHUB_OUTPUT
+              ;;
+          esac
+
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Instalar dependencias npm
+        working-directory: App
+        run: npm install
+
+      - name: Instalar Expo CLI
+        run: npm install -g @expo/cli@latest
+
+      - name: Crear metro.config.js
+        working-directory: App
+        run: |
+          if [ ! -f metro.config.js ]; then
+            echo "const { getDefaultConfig } = require('expo/metro-config');" > metro.config.js
+            echo "module.exports = getDefaultConfig(__dirname);" >> metro.config.js
+          fi
+
+      - name: Verificar index.js
+        working-directory: App
+        run: |
+          if [ ! -f index.js ]; then
+            echo "import 'expo/AppEntry';" > index.js
+          fi
+
+      - name: Expo prebuild
+        working-directory: App
+        run: npx expo prebuild --platform android --no-install --clean
+        env:
+          EXPO_NO_TELEMETRY: 1
+
+      - name: Aplicar ABI filter
+        working-directory: App/android
+        run: |
+          ABI="${{ steps.vars.outputs.abi_filter }}"
+          if [ -n "$ABI" ]; then
+            sed -i '/defaultConfig {/a\            ndk { abiFilters "'"$ABI"'" }' app/build.gradle
+          fi
+
+      - name: Configurar local.properties
+        working-directory: App/android
+        run: echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
+
+      - name: Permisos gradlew
+        working-directory: App/android
+        run: chmod +x gradlew
+
+      - name: Crear carpeta assets
+        working-directory: App
+        run: mkdir -p android/app/src/main/assets
+
+      - name: Bundle JS
+        working-directory: App
+        run: |
+          npx react-native bundle \
+            --platform android \
+            --dev false \
+            --entry-file index.js \
+            --bundle-output android/app/src/main/assets/index.android.bundle \
+            --assets-dest android/app/src/main/res
+          SIZE=$(du -sh android/app/src/main/assets/index.android.bundle | cut -f1)
+          echo "[OK] Bundle generado: $SIZE"
+
+      - name: Configurar keystore (solo release)
+        if: steps.vars.outputs.is_release == 'true'
+        working-directory: App/android
+        run: |
+          if [ -n "${{ secrets.KEYSTORE_BASE64 }}" ]; then
+            echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > app/release.keystore
+            cat >> gradle.properties << KEOF
+          MYAPP_UPLOAD_STORE_FILE=release.keystore
+          MYAPP_UPLOAD_KEY_ALIAS=${{ secrets.KEY_ALIAS }}
+          MYAPP_UPLOAD_STORE_PASSWORD=${{ secrets.KEYSTORE_PASSWORD }}
+          MYAPP_UPLOAD_KEY_PASSWORD=${{ secrets.KEY_PASSWORD }}
+          KEOF
+          fi
+
+      - name: Build APK
+        working-directory: App/android
+        run: |
+          ./gradlew ${{ steps.vars.outputs.gradle_task }} \
+            -x createBundleReleaseJsAndAssets \
+            --no-daemon
+        env:
+          GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx4g -Dorg.gradle.daemon=false"
+
+      - name: Verificar APK
+        working-directory: App/android
+        run: |
+          APK="${{ steps.vars.outputs.apk_path }}"
+          if [ -f "$APK" ]; then
+            echo "[OK] APK: $(du -sh $APK | cut -f1)"
+          else
+            find app/build/outputs/ -name "*.apk" 2>/dev/null || echo "Sin APKs"
+            exit 1
+          fi
+
+      - name: Subir APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.vars.outputs.artifact_name }}
+          path: App/android/${{ steps.vars.outputs.apk_path }}
+          retention-days: 7
