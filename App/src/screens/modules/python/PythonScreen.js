@@ -9,7 +9,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
   View, Text, TouchableOpacity, ScrollView,
-  StyleSheet, Platform, Clipboard,
+  StyleSheet, Platform,
 } from 'react-native';
 import { useTheme }  from '../../../theme/ThemeContext';
 import { useStatus } from '../../../hooks/useStatus';
@@ -81,48 +81,6 @@ function PackageChip({ name, desc, installed, t }) {
       <Text style={{ fontSize: 10, color: t.textMuted || '#52525b', marginTop: 1 }}>
         {installed ? desc : '—'}
       </Text>
-    </View>
-  );
-}
-
-// ── CopyBox ───────────────────────────────────────────────────
-function CopyBox({ value, label, t }) {
-  const [copied, setCopied] = useState(false);
-  const handleCopy = () => {
-    Clipboard.setString(value);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1800);
-  };
-  return (
-    <View style={{ marginBottom: 8 }}>
-      {label && (
-        <Text style={{ fontSize: 11, color: t.textMuted || '#52525b',
-                       letterSpacing: 0.8, textTransform: 'uppercase', marginBottom: 5 }}>
-          {label}
-        </Text>
-      )}
-      <View style={{
-        flexDirection: 'row', alignItems: 'center',
-        backgroundColor: t.card || '#111', borderRadius: 8,
-        borderWidth: 1, borderColor: 'rgba(255,255,255,0.07)', overflow: 'hidden',
-      }}>
-        <Text style={{
-          flex: 1, paddingHorizontal: 12, paddingVertical: 11,
-          fontSize: 12, color: PY_ACCENT,
-          fontFamily: Platform.OS === 'android' ? 'monospace' : 'Courier New',
-        }} numberOfLines={1} selectable>
-          {value}
-        </Text>
-        <TouchableOpacity
-          style={{ paddingHorizontal: 14, paddingVertical: 11,
-                   borderLeftWidth: 1, borderLeftColor: 'rgba(255,255,255,0.07)' }}
-          onPress={handleCopy} activeOpacity={0.7}
-        >
-          <Text style={{ fontSize: 16, color: copied ? PY_ACCENT : (t.textMuted || '#52525b') }}>
-            {copied ? '✓' : '⧉'}
-          </Text>
-        </TouchableOpacity>
-      </View>
     </View>
   );
 }
@@ -206,20 +164,6 @@ export function PythonScreen({ goBack }) {
           </View>
         </View>
 
-        {/* ── Reglas ARM64 ─── */}
-        <View style={s.card}>
-          <SLabel text="Reglas ARM64 Termux" t={t} />
-          <CopyBox label="Instalar paquete" value="pip install PAQUETE --break-system-packages" t={t} />
-          <CopyBox label="Ejecutar script"  value="python3 ~/script.py" t={t} />
-          <View style={s.rulesBox}>
-            <RuleRow icon="✗" text="NUNCA requests → usar urllib.request" color="#ef4444" t={t} />
-            <RuleRow icon="✗" text="NUNCA /tmp/ → guardar en $HOME/" color="#ef4444" t={t} />
-            <RuleRow icon="✗" text="NUNCA datetime('now') en SQLite → usar datetime.now()" color="#ef4444" t={t} />
-            <RuleRow icon="✓" text="Pillow funciona: pip install Pillow --break-system-packages" color={PY_ACCENT} t={t} />
-            <RuleRow icon="✓" text="pandas + matplotlib instalan en ARM64 POCO F5" color={PY_ACCENT} t={t} />
-          </View>
-        </View>
-
         {/* ── Scripts detectados ─── */}
         {scripts.length > 0 && (
           <View style={s.card}>
@@ -274,16 +218,6 @@ export function PythonScreen({ goBack }) {
   );
 }
 
-function RuleRow({ icon, text, color, t }) {
-  return (
-    <View style={{ flexDirection: 'row', gap: 8, marginBottom: 6 }}>
-      <Text style={{ fontSize: 13, color, fontWeight: '700', width: 14 }}>{icon}</Text>
-      <Text style={{ flex: 1, fontSize: 12, color: t.textSecond || '#a1a1aa', lineHeight: 18 }}>
-        {text}
-      </Text>
-    </View>
-  );
-}
 
 function styles(t) {
   return StyleSheet.create({
@@ -317,6 +251,5 @@ function styles(t) {
     chipsGrid: {
       flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 2,
     },
-    rulesBox: { marginTop: 12 },
   });
 }

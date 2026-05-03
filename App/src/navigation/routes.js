@@ -1,5 +1,5 @@
 // App/src/navigation/routes.js
-// v1.1.0 — S19: agregado ROUTES.PYTHON
+// v1.2.0 — S19: TAB_LABELS con {label, icon} para TabBar
 
 export const ROUTES = {
   // Tabs raíz
@@ -13,12 +13,12 @@ export const ROUTES = {
   OLLAMA: 'ollama',
   CLAUDE: 'claude',
   SSH:    'ssh',
-  PYTHON: 'python',   // ← nuevo S19
+  PYTHON: 'python',
 };
 
 export const TAB_LABELS = {
-  [ROUTES.MODULES]:  'Módulos',
-  [ROUTES.CHAT]:     'Chat IA',
-  [ROUTES.SYSTEM]:   'Sistema',
-  [ROUTES.SETTINGS]: 'Config',
+  [ROUTES.MODULES]:  { label: 'Módulos',  icon: '⊞' },
+  [ROUTES.CHAT]:     { label: 'Chat IA',  icon: '◇' },
+  [ROUTES.SYSTEM]:   { label: 'Sistema',  icon: '⊙' },
+  [ROUTES.SETTINGS]: { label: 'Config',   icon: '⚙' },
 };
