@@ -19,6 +19,7 @@ PORT_WS       = 8081  # WebSocket PTY server
 BOT_HISTORY_DB = os.path.join(HOME, "bot_history.db")
 PREFS_FILE     = os.path.join(HOME, "ui_prefs.json")
 _cmd_log       = collections.deque(maxlen=30)
+_chat_jobs     = {}   # {job_id: {status, response, error}}
 
 # ── Utilidades ────────────────────────────────────────────────
 
@@ -363,24 +364,39 @@ def chat_save(chat_id, model, user_text, bot_text):
 
 
 # ── Preferencias UI ───────────────────────────────────────────
+
 def load_prefs():
     try:
         if os.path.exists(PREFS_FILE):
-            with open(PREFS_FILE, 'r') as f:
+            with open(PREFS_FILE, "r") as f:
                 return json.load(f)
     except Exception:
         pass
-    return {'theme': 'noche'}
+    return {"theme": "noche"}
 
 def save_prefs(data):
     try:
         existing = load_prefs()
         existing.update(data)
-        with open(PREFS_FILE, 'w') as f:
+        with open(PREFS_FILE, "w") as f:
             json.dump(existing, f)
-        return True
     except Exception:
-        return False
+        pass
+
+# ── Chat asíncrono ────────────────────────────────────────────
+
+def _run_chat_job(job_id, model, messages, num_ctx, chat_id, user_text):
+    """Ejecuta ollama_chat en un hilo separado — no bloquea el servidor HTTP"""
+    _chat_jobs[job_id] = {"status": "processing", "response": None, "error": None}
+    try:
+        ok, response = ollama_chat(model, messages, num_ctx)
+        if ok:
+            chat_save(chat_id, model, user_text, response)
+            _chat_jobs[job_id] = {"status": "done", "response": response, "error": None}
+        else:
+            _chat_jobs[job_id] = {"status": "error", "response": None, "error": response}
+    except Exception as e:
+        _chat_jobs[job_id] = {"status": "error", "response": None, "error": str(e)}
 
 # ── HTTP Handler ──────────────────────────────────────────────
 
@@ -531,7 +547,19 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self.wfile.write(b"<h1>Dashboard API v2.0.0</h1>")
 
-        # ── /api/prefs ────────────────────────────────────
+        # ── /api/chat/status/<job_id> ─────────────
+        elif path.startswith("/api/chat/status/"):
+            job_id = path.split("/api/chat/status/")[-1]
+            job    = _chat_jobs.get(job_id)
+            if not job:
+                self.send_json({"status": "not_found"}, 404)
+            else:
+                self.send_json(job)
+                # Limpiar jobs completados después de entregarlos
+                if job["status"] in ("done", "error"):
+                    _chat_jobs.pop(job_id, None)
+
+        # ── /api/prefs ────────────────────────────
         elif path == "/api/prefs":
             self.send_json(load_prefs())
 
@@ -568,6 +596,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"ok": ok, "msg": msg})
 
         # ── /api/chat ─────────────────────────────
+        # Ahora async: responde inmediato con job_id
+        # La app hace polling a GET /api/chat/status/<job_id>
         elif path == "/api/chat":
             model   = body.get("model", "qwen2.5:0.5b")
             message = body.get("message", "")
@@ -578,17 +608,37 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"ok": False, "error": "message vacío"}, 400)
                 return
 
-            # Recuperar historial
-            history = chat_history(chat_id, limit=10)
+            # Generar job_id único — datetime sin /tmp ni os.urandom
+            job_id = "job_" + datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+
+            # Recuperar historial y preparar mensajes
+            history  = chat_history(chat_id, limit=10)
             messages = [{"role": r["rol"], "content": r["content"]} for r in history]
             messages.append({"role": "user", "content": message})
 
-            ok, response = ollama_chat(model, messages, num_ctx)
-            if ok:
-                chat_save(chat_id, model, message, response)
-                self.send_json({"ok": True, "response": response})
-            else:
-                self.send_json({"ok": False, "error": response}, 500)
+            # Guardar el mensaje del usuario en SQLite inmediatamente
+            ts   = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            try:
+                conn = sqlite3.connect(BOT_HISTORY_DB)
+                conn.execute(
+                    "INSERT INTO historial (chat_id, rol, content, modelo, fecha) VALUES (?,?,?,?,?)",
+                    (chat_id, "user", message, model, ts)
+                )
+                conn.commit()
+                conn.close()
+            except Exception:
+                pass
+
+            # Lanzar ollama en hilo separado — no bloquea el servidor
+            t = threading.Thread(
+                target=_run_chat_job,
+                args=(job_id, model, messages, num_ctx, chat_id, message),
+                daemon=True
+            )
+            t.start()
+
+            # Responder inmediato — la app hace polling
+            self.send_json({"ok": True, "job_id": job_id, "status": "processing"})
 
         # ── /api/chat/clear ───────────────────────
         elif path == "/api/chat/clear":
@@ -707,11 +757,10 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 self.send_json({"ok": False, "msg": str(e)}, 500)
 
-        # ── /api/prefs ────────────────────────────────────
+        # ── /api/prefs ────────────────────────────
         elif path == "/api/prefs":
             try:
-                data = json.loads(body)
-                save_prefs(data)
+                save_prefs(body)
                 self.send_json({"ok": True})
             except Exception as e:
                 self.send_json({"ok": False, "msg": str(e)}, 500)
