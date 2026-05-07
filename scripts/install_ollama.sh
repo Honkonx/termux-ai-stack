@@ -28,7 +28,7 @@
 #    Ollama v0.11.5+ tiene regresión de rendimiento en Termux ARM64
 #    (bug #27290 en termux-packages). Pendiente fix oficial.
 #
-#  VERSIÓN: 2.1.0 | Abril 2026
+#  VERSIÓN: 3.0.0 | Mayo 2026
 # ============================================================
 
 TERMUX_PREFIX="/data/data/com.termux/files/usr"
@@ -98,13 +98,117 @@ if command -v ollama &>/dev/null; then
   echo -e "  Versión actual: ${CYAN}${CURRENT_VER}${NC}"
   echo ""
   echo -n "  ¿Reinstalar/actualizar? (s/n): "
-  read -r REINSTALL
+  read -r REINSTALL < /dev/tty
   [ "$REINSTALL" != "s" ] && [ "$REINSTALL" != "S" ] && {
     info "Nada que hacer. Saliendo."
     exit 0
   }
   rm -f "$CHECKPOINT"
 fi
+
+# ============================================================
+# DETECCIÓN DE HARDWARE — GPU + CPU features
+# ============================================================
+titulo "DETECCIÓN DE HARDWARE"
+
+detect_gpu() {
+  # 1. Intentar vulkaninfo nativo
+  local info=""
+  if command -v vulkaninfo &>/dev/null; then
+    info=$(vulkaninfo 2>/dev/null | grep -i "deviceName" | head -1)
+  fi
+
+  # 2. Fallback: librerías del sistema Android
+  if [ -z "$info" ]; then
+    info=$(LD_LIBRARY_PATH=/system/lib64 vulkaninfo 2>/dev/null \
+      | grep -i "deviceName" | head -1)
+    [ -n "$info" ] && GPU_SRC="system_lib"
+  fi
+
+  if echo "$info" | grep -qi "adreno"; then
+    echo "adreno"
+  elif echo "$info" | grep -qi "mali"; then
+    echo "mali"
+  elif echo "$info" | grep -qi "swiftshader\|llvmpipe"; then
+    echo "software"
+  elif [ -n "$info" ]; then
+    echo "vulkan_system"
+  else
+    # 3. Fallback sin vulkaninfo: leer /proc/cpuinfo vendor
+    local vendor
+    vendor=$(cat /proc/cpuinfo 2>/dev/null | grep -i "Hardware\|model name" | head -1 | tr '[:upper:]' '[:lower:]')
+    if echo "$vendor" | grep -qi "qualcomm\|snapdragon"; then
+      echo "adreno_no_vulkan"
+    elif echo "$vendor" | grep -qi "mediatek\|dimensity\|helio\|mali"; then
+      echo "mali_no_vulkan"
+    else
+      echo "none"
+    fi
+  fi
+}
+
+detect_vulkan_type() {
+  local vk_type=""
+  if command -v vulkaninfo &>/dev/null; then
+    vk_type=$(vulkaninfo 2>/dev/null | grep "deviceType" | head -1)
+  fi
+  [ -z "$vk_type" ] && \
+    vk_type=$(LD_LIBRARY_PATH=/system/lib64 vulkaninfo 2>/dev/null \
+      | grep "deviceType" | head -1)
+  echo "$vk_type"
+}
+
+detect_cpu_features() {
+  local features result="base"
+  features=$(grep -m1 "Features" /proc/cpuinfo 2>/dev/null)
+  echo "$features" | grep -q "i8mm"    && result="i8mm"
+  echo "$features" | grep -q "dotprod" && result="${result}+dotprod"
+  echo "$features" | grep -q "sve"     && result="${result}+sve"
+  echo "$result"
+}
+
+HW_GPU=$(detect_gpu)
+HW_CPU=$(detect_cpu_features)
+HW_VK_TYPE=$(detect_vulkan_type)
+
+# Determinar modo recomendado
+HW_MODE="cpu_standard"
+HW_GPU_AVAILABLE=false
+
+case "$HW_GPU" in
+  adreno)
+    if echo "$HW_VK_TYPE" | grep -qi "INTEGRATED_GPU\|DISCRETE_GPU"; then
+      HW_MODE="gpu_vulkan"
+      HW_GPU_AVAILABLE=true
+    else
+      HW_MODE="cpu_optimized"
+      [ "$HW_CPU" != "base" ] || HW_MODE="cpu_standard"
+    fi
+    ;;
+  mali)
+    # Mali real detectado en Vulkan → usualmente llvmpipe sin root
+    HW_MODE="cpu_optimized"
+    [ "$HW_CPU" = "base" ] && HW_MODE="cpu_standard"
+    ;;
+  adreno_no_vulkan)
+    # Snapdragon pero sin vulkaninfo disponible — puede tener GPU pero no confirmado
+    HW_MODE="cpu_optimized"
+    [ "$HW_CPU" = "base" ] && HW_MODE="cpu_standard"
+    ;;
+  mali_no_vulkan|software|none)
+    HW_MODE="cpu_optimized"
+    [ "$HW_CPU" = "base" ] && HW_MODE="cpu_standard"
+    ;;
+esac
+
+echo "  ┌─────────────────────────────────────────┐"
+echo "  │  HARDWARE DETECTADO                     │"
+echo "  ├─────────────────────────────────────────┤"
+printf "  │  GPU: %-34s│\n" "$HW_GPU"
+printf "  │  CPU: %-34s│\n" "$HW_CPU"
+printf "  │  Modo recomendado: %-22s│\n" "$HW_MODE"
+echo "  └─────────────────────────────────────────┘"
+echo ""
 
 echo ""
 echo "  Este script instalará:"
@@ -120,7 +224,7 @@ echo "  Funciona correctamente — solo más lento en algunos dispositivos."
 echo "  Estado: pendiente fix oficial en termux-packages."
 echo ""
 echo -n "  ¿Continuar? (s/n): "
-read -r CONFIRM
+read -r CONFIRM < /dev/tty
 [ "$CONFIRM" != "s" ] && [ "$CONFIRM" != "S" ] && { echo "Cancelado."; exit 0; }
 
 # ============================================================
@@ -300,23 +404,50 @@ fi
 # ============================================================
 titulo "PASO 5 — Modelo inicial (opcional)"
 
-echo "  Modelos recomendados para POCO F5 (12GB RAM):"
+echo "  Hardware: GPU=${HW_GPU} · CPU=${HW_CPU}"
 echo ""
-echo "  [1] qwen:0.5b    ~395MB  — Más liviano, respuestas rápidas"
-echo "  [2] qwen:1.8b    ~1.1GB  — Balance velocidad/calidad"
-echo "  [3] phi3:mini    ~2.3GB  — Mejor calidad (recomendado si tienes tiempo)"
-echo "  [4] llama3.2:1b  ~1.3GB  — Buena calidad, liviano"
-echo "  [5] Omitir       — Lo haré después manualmente"
+echo "  Modelos de texto recomendados:"
+echo "  [1] qwen2.5:0.5b  ~395MB  — Más liviano, respuestas rápidas"
+echo "  [2] qwen2.5:1.5b  ~1.0GB  — Balance velocidad/calidad"
+echo "  [3] phi3:mini      ~2.3GB  — Mejor calidad"
+echo "  [4] llama3.2:1b   ~1.3GB  — Buena calidad, liviano"
 echo ""
-echo -n "  Elige modelo [1-5]: "
-read -r MODEL_CHOICE
+echo "  Modelos de visión (análisis de imágenes):"
+echo "  [5] moondream:1.8b ~1.1GB — Visión ligero (recomendado)"
+echo "  [6] llava:7b       ~4.7GB — Visión calidad (requiere RAM)"
+echo ""
+
+# Opciones GPU solo si hay hardware compatible
+if $HW_GPU_AVAILABLE; then
+  echo -e "  ${GREEN}GPU Vulkan detectada ✅ — modelos GPU disponibles:${NC}"
+  echo "  [7] llama3.2:3b   ~2.0GB — CPU/GPU híbrido"
+  echo "  [8] qwen2.5:3b    ~2.0GB — CPU/GPU híbrido"
+  echo ""
+elif [ "$HW_GPU" = "adreno" ] || [ "$HW_GPU" = "adreno_no_vulkan" ]; then
+  echo -e "  ${YELLOW}Adreno detectado — GPU Vulkan no confirmada.${NC}"
+  echo -e "  ${YELLOW}Se usará CPU optimizada (${HW_CPU}).${NC}"
+  echo ""
+elif [ "$HW_GPU" = "mali" ] || [ "$HW_GPU" = "mali_no_vulkan" ]; then
+  echo -e "  ${CYAN}Mali detectado — GPU offload no disponible sin root.${NC}"
+  echo -e "  ${CYAN}Se usará CPU optimizada (${HW_CPU}).${NC}"
+  echo ""
+fi
+
+echo "  [0] Omitir — lo haré después manualmente"
+echo ""
+echo -n "  Elige modelo: "
+read -r MODEL_CHOICE < /dev/tty
 
 SELECTED_MODEL=""
 case "$MODEL_CHOICE" in
-  1) SELECTED_MODEL="qwen:0.5b" ;;
-  2) SELECTED_MODEL="qwen:1.8b" ;;
+  1) SELECTED_MODEL="qwen2.5:0.5b" ;;
+  2) SELECTED_MODEL="qwen2.5:1.5b" ;;
   3) SELECTED_MODEL="phi3:mini" ;;
   4) SELECTED_MODEL="llama3.2:1b" ;;
+  5) SELECTED_MODEL="moondream:1.8b" ;;
+  6) SELECTED_MODEL="llava:7b" ;;
+  7) $HW_GPU_AVAILABLE && SELECTED_MODEL="llama3.2:3b" || warn "GPU no disponible — elige otra opción" ;;
+  8) $HW_GPU_AVAILABLE && SELECTED_MODEL="qwen2.5:3b"  || warn "GPU no disponible — elige otra opción" ;;
   *) SELECTED_MODEL="" ;;
 esac
 
@@ -341,7 +472,7 @@ if [ -n "$SELECTED_MODEL" ]; then
     warn "Error descargando modelo. Puedes hacerlo después con: ollama pull $SELECTED_MODEL"
   fi
 else
-  info "Modelo omitido. Puedes descargarlo después con: ollama pull qwen:0.5b"
+  info "Modelo omitido. Puedes descargarlo después con: ollama pull qwen2.5:0.5b"
 fi
 
 # ============================================================
@@ -640,7 +771,7 @@ if python3 -c "from PIL import Image" 2>/dev/null; then
 else
   warn "Pillow no instalado — imágenes no se redimensionarán (posible timeout)"
   echo -n "  ¿Instalar Pillow y deps visión ahora? (s/n): "
-  read -r INSTALL_PILLOW
+  read -r INSTALL_PILLOW < /dev/tty
   if [ "$INSTALL_PILLOW" = "s" ] || [ "$INSTALL_PILLOW" = "S" ]; then
     pkg install libjpeg-turbo libpng zlib -y \
       -o Dpkg::Options::="--force-confdef" \
