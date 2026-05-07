@@ -111,42 +111,6 @@ fi
 # ============================================================
 titulo "DETECCIÓN DE HARDWARE"
 
-detect_gpu() {
-  # 1. Intentar vulkaninfo nativo
-  local info=""
-  if command -v vulkaninfo &>/dev/null; then
-    info=$(vulkaninfo 2>/dev/null | grep -i "deviceName" | head -1)
-  fi
-
-  # 2. Fallback: librerías del sistema Android
-  if [ -z "$info" ]; then
-    info=$(LD_LIBRARY_PATH=/system/lib64 vulkaninfo 2>/dev/null \
-      | grep -i "deviceName" | head -1)
-    [ -n "$info" ] && GPU_SRC="system_lib"
-  fi
-
-  if echo "$info" | grep -qi "adreno"; then
-    echo "adreno"
-  elif echo "$info" | grep -qi "mali"; then
-    echo "mali"
-  elif echo "$info" | grep -qi "swiftshader\|llvmpipe"; then
-    echo "software"
-  elif [ -n "$info" ]; then
-    echo "vulkan_system"
-  else
-    # 3. Fallback sin vulkaninfo: leer /proc/cpuinfo vendor
-    local vendor
-    vendor=$(cat /proc/cpuinfo 2>/dev/null | grep -i "Hardware\|model name" | head -1 | tr '[:upper:]' '[:lower:]')
-    if echo "$vendor" | grep -qi "qualcomm\|snapdragon"; then
-      echo "adreno_no_vulkan"
-    elif echo "$vendor" | grep -qi "mediatek\|dimensity\|helio\|mali"; then
-      echo "mali_no_vulkan"
-    else
-      echo "none"
-    fi
-  fi
-}
-
 detect_vulkan_type() {
   local vk_type=""
   if command -v vulkaninfo &>/dev/null; then
@@ -160,11 +124,56 @@ detect_vulkan_type() {
 
 detect_cpu_features() {
   local features result="base"
-  features=$(grep -m1 "Features" /proc/cpuinfo 2>/dev/null)
+  # ARM64 puede usar "Features" o "CPU features" según el kernel/vendor
+  features=$(grep -m1 -i "^Features\|^CPU features" /proc/cpuinfo 2>/dev/null)
+  # Fallback: buscar en todo el archivo si el campo no es la primera línea
+  [ -z "$features" ] && features=$(grep -i "features" /proc/cpuinfo 2>/dev/null | head -1)
   echo "$features" | grep -q "i8mm"    && result="i8mm"
   echo "$features" | grep -q "dotprod" && result="${result}+dotprod"
   echo "$features" | grep -q "sve"     && result="${result}+sve"
   echo "$result"
+}
+
+# detect_gpu — sin requerir vulkaninfo instalado
+detect_gpu() {
+  local info=""
+  if command -v vulkaninfo &>/dev/null; then
+    info=$(vulkaninfo 2>/dev/null | grep -i "deviceName" | head -1)
+  fi
+  if [ -z "$info" ]; then
+    info=$(LD_LIBRARY_PATH=/system/lib64 vulkaninfo 2>/dev/null \
+      | grep -i "deviceName" | head -1)
+    [ -n "$info" ] && GPU_SRC="system_lib"
+  fi
+
+  if echo "$info" | grep -qi "adreno"; then
+    echo "adreno"
+    return
+  elif echo "$info" | grep -qi "mali"; then
+    echo "mali"
+    return
+  elif echo "$info" | grep -qi "swiftshader\|llvmpipe"; then
+    echo "software"
+    return
+  elif [ -n "$info" ]; then
+    echo "vulkan_system"
+    return
+  fi
+
+  # Fallback sin vulkaninfo — /proc/cpuinfo Hardware field
+  # Dimensity 9200 = MT6989, otros MTK = MT*, Snapdragon = SM*
+  local hw
+  hw=$(grep -m1 "^Hardware" /proc/cpuinfo 2>/dev/null | tr '[:upper:]' '[:lower:]')
+  if echo "$hw" | grep -qi "qualcomm\|snapdragon\|sm[0-9]"; then
+    echo "adreno_no_vulkan"
+  elif echo "$hw" | grep -qi "mediatek\|dimensity\|helio\|mt[0-9]"; then
+    echo "mali_no_vulkan"
+  else
+    # Último fallback: leer /sys/class/misc/mali0 o kgsl
+    [ -e /dev/mali0 ] || [ -e /sys/class/misc/mali0 ] && echo "mali_no_vulkan" && return
+    [ -e /dev/kgsl-3d0 ] && echo "adreno_no_vulkan" && return
+    echo "none"
+  fi
 }
 
 HW_GPU=$(detect_gpu)
@@ -172,33 +181,25 @@ HW_CPU=$(detect_cpu_features)
 HW_VK_TYPE=$(detect_vulkan_type)
 
 # Determinar modo recomendado
+# CPU optimizada se ofrece siempre que haya i8mm o dotprod — independiente de GPU
 HW_MODE="cpu_standard"
 HW_GPU_AVAILABLE=false
+[ "$HW_CPU" != "base" ] && HW_MODE="cpu_optimized"
 
 case "$HW_GPU" in
   adreno)
     if echo "$HW_VK_TYPE" | grep -qi "INTEGRATED_GPU\|DISCRETE_GPU"; then
       HW_MODE="gpu_vulkan"
       HW_GPU_AVAILABLE=true
-    else
-      HW_MODE="cpu_optimized"
-      [ "$HW_CPU" != "base" ] || HW_MODE="cpu_standard"
     fi
     ;;
-  mali)
-    # Mali real detectado en Vulkan → usualmente llvmpipe sin root
-    HW_MODE="cpu_optimized"
-    [ "$HW_CPU" = "base" ] && HW_MODE="cpu_standard"
-    ;;
   adreno_no_vulkan)
-    # Snapdragon pero sin vulkaninfo disponible — puede tener GPU pero no confirmado
-    HW_MODE="cpu_optimized"
-    [ "$HW_CPU" = "base" ] && HW_MODE="cpu_standard"
+    # Snapdragon sin vulkaninfo — CPU optimizada si hay features, si no estándar
+    : # HW_MODE ya seteado arriba según CPU
     ;;
-  mali_no_vulkan|software|none)
-    HW_MODE="cpu_optimized"
-    [ "$HW_CPU" = "base" ] && HW_MODE="cpu_standard"
-    ;;
+  mali|mali_no_vulkan|software|vulkan_system|none)
+    # Sin GPU offload — HW_MODE depende solo de CPU features (ya seteado arriba)
+    : ;;
 esac
 
 echo "  ┌─────────────────────────────────────────┐"
