@@ -124,13 +124,17 @@ detect_vulkan_type() {
 
 detect_cpu_features() {
   local features result="base"
-  # ARM64 puede usar "Features" o "CPU features" según el kernel/vendor
-  features=$(grep -m1 -i "^Features\|^CPU features" /proc/cpuinfo 2>/dev/null)
-  # Fallback: buscar en todo el archivo si el campo no es la primera línea
+  features=$(grep -m1 -i "^Features" /proc/cpuinfo 2>/dev/null)
   [ -z "$features" ] && features=$(grep -i "features" /proc/cpuinfo 2>/dev/null | head -1)
-  echo "$features" | grep -q "i8mm"    && result="i8mm"
-  echo "$features" | grep -q "dotprod" && result="${result}+dotprod"
-  echo "$features" | grep -q "sve"     && result="${result}+sve"
+
+  # i8mm — multiplicación de matrices int8 (ARMv8.6+)
+  echo "$features" | grep -q "i8mm" && result="i8mm"
+  # dotprod — "asimddp" es el nombre ARM oficial de dotprod en kernels Android
+  echo "$features" | grep -qE "dotprod|asimddp" && {
+    [ "$result" = "base" ] && result="dotprod" || result="${result}+dotprod"
+  }
+  # sve — Scalable Vector Extension
+  echo "$features" | grep -q "sve" && result="${result}+sve"
   echo "$result"
 }
 
@@ -160,19 +164,28 @@ detect_gpu() {
     return
   fi
 
-  # Fallback sin vulkaninfo — /proc/cpuinfo Hardware field
-  # Dimensity 9200 = MT6989, otros MTK = MT*, Snapdragon = SM*
-  local hw
-  hw=$(grep -m1 "^Hardware" /proc/cpuinfo 2>/dev/null | tr '[:upper:]' '[:lower:]')
-  if echo "$hw" | grep -qi "qualcomm\|snapdragon\|sm[0-9]"; then
+  # Fallback sin vulkaninfo — getprop (más confiable que /proc/cpuinfo en HyperOS)
+  local hw_prop
+  hw_prop=$(getprop ro.hardware 2>/dev/null | tr '[:upper:]' '[:lower:]')
+  [ -z "$hw_prop" ] && hw_prop=$(getprop ro.board.platform 2>/dev/null | tr '[:upper:]' '[:lower:]')
+
+  if echo "$hw_prop" | grep -qE "^sm[0-9]|qualcomm|snapdragon"; then
     echo "adreno_no_vulkan"
-  elif echo "$hw" | grep -qi "mediatek\|dimensity\|helio\|mt[0-9]"; then
+  elif echo "$hw_prop" | grep -qE "^mt[0-9]|mediatek|dimensity|helio"; then
     echo "mali_no_vulkan"
   else
-    # Último fallback: leer /sys/class/misc/mali0 o kgsl
-    [ -e /dev/mali0 ] || [ -e /sys/class/misc/mali0 ] && echo "mali_no_vulkan" && return
-    [ -e /dev/kgsl-3d0 ] && echo "adreno_no_vulkan" && return
-    echo "none"
+    # Último fallback: /proc/cpuinfo Hardware field
+    local hw_cpu
+    hw_cpu=$(grep -m1 "^Hardware" /proc/cpuinfo 2>/dev/null | tr '[:upper:]' '[:lower:]')
+    if echo "$hw_cpu" | grep -qE "qualcomm|snapdragon|sm[0-9]"; then
+      echo "adreno_no_vulkan"
+    elif echo "$hw_cpu" | grep -qE "mediatek|dimensity|helio|mt[0-9]"; then
+      echo "mali_no_vulkan"
+    else
+      [ -e /dev/mali0 ] || [ -e /sys/class/misc/mali0 ] && echo "mali_no_vulkan" && return
+      [ -e /dev/kgsl-3d0 ] && echo "adreno_no_vulkan" && return
+      echo "none"
+    fi
   fi
 }
 
