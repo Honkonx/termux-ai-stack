@@ -1,12 +1,6 @@
 #!/usr/bin/env python3
 # termux-ai-stack · dashboard_server.py
-# v2.10.0 | Mayo 2026
-# S19: do_start restaurada (se perdió en edición anterior)
-# S19: get_ip() usa ifconfig+ip addr — ip route bloqueado en Android 15 HyperOS
-# S19: do_stop fix — n8n usa stop_servidor.sh, ollama SIGTERM→SIGKILL+verify
-# S19: n8n_running() — tmux has-session
-# S19: build_status() en hilo background con caché
-# S19: python_info() — /api/python/info endpoint
+# v2.3.0 | Mayo 2026
 # S14: /api/claude/projects
 # S15: WebSocket PTY (:8081) + /api/claude/download-dirs + /api/claude/project/create + delete
 
@@ -26,11 +20,6 @@ BOT_HISTORY_DB = os.path.join(HOME, "bot_history.db")
 PREFS_FILE     = os.path.join(HOME, "ui_prefs.json")
 _cmd_log       = collections.deque(maxlen=30)
 _chat_jobs     = {}   # {job_id: {status, response, error}}
-
-# ── Caché de status — se actualiza en background cada 4s ──────
-# Evita que port_open() bloquee el hilo HTTP principal
-_status_cache      = {}
-_status_cache_lock = threading.Lock()
 
 # ── Utilidades ────────────────────────────────────────────────
 
@@ -98,100 +87,15 @@ def proc_running(pattern):
         pass
     return False
 
-def port_open(host, port, timeout=1.0):
-    """Verifica si un puerto TCP acepta conexiones — más confiable que pgrep para servicios."""
-    import socket
-    try:
-        with socket.create_connection((host, port), timeout=timeout):
-            return True
-    except:
-        return False
-
-def n8n_running():
-    """n8n corre dentro de proot Debian — su puerto NO es accesible desde Termux nativo.
-    La fuente de verdad real es la sesión tmux que lo contiene."""
-    try:
-        r = subprocess.run(
-            ["tmux", "has-session", "-t", "n8n-server"],
-            capture_output=True, timeout=3
-        )
-        return r.returncode == 0
-    except:
-        return False
-
-
 def get_ip():
-    # Método 1: ifconfig — recorre todas las interfaces
     try:
-        r = subprocess.run(["ifconfig"], capture_output=True, text=True, timeout=3)
-        for line in r.stdout.split("\n"):
-            if "inet " in line and "127." not in line and "addr" not in line.lower().split("inet")[0][-5:]:
-                parts = line.strip().split()
-                for i, p in enumerate(parts):
-                    if p == "inet" and i + 1 < len(parts):
-                        ip = parts[i + 1].split('/')[0]
-                        if ip.startswith("192.") or ip.startswith("10.") or ip.startswith("172."):
-                            return ip
-    except:
-        pass
-    # Método 2: ip addr
-    try:
-        r = subprocess.run(["ip", "addr"], capture_output=True, text=True, timeout=3)
-        for line in r.stdout.split("\n"):
-            if "inet " in line and "127." not in line:
-                parts = line.strip().split()
-                for i, p in enumerate(parts):
-                    if p == "inet" and i + 1 < len(parts):
-                        ip = parts[i + 1].split('/')[0]
-                        if ip.startswith("192.") or ip.startswith("10.") or ip.startswith("172."):
-                            return ip
-    except:
-        pass
-    # Método 3: ifconfig wlan0 específico
-    try:
-        r = subprocess.run(["ifconfig", "wlan0"], capture_output=True, text=True, timeout=3)
+        r = subprocess.run(["ifconfig", "wlan0"], capture_output=True, text=True)
         for line in r.stdout.split("\n"):
             if "inet " in line:
-                parts = line.strip().split()
-                for i, p in enumerate(parts):
-                    if p == "inet" and i + 1 < len(parts):
-                        return parts[i + 1].split('/')[0]
+                return line.split()[1]
     except:
         pass
     return "127.0.0.1"
-
-# ── Acciones start / stop ─────────────────────────────────────
-
-def do_start(module_id):
-    if module_id == "ssh":
-        try:
-            subprocess.Popen(
-                [os.path.join(TERMUX_PREFIX, "bin", "sshd")],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
-            log_action(module_id, "start", True)
-            return True, "sshd iniciado"
-        except Exception as e:
-            log_action(module_id, "start", False, str(e))
-            return False, str(e)
-
-    scripts = {
-        "n8n":    os.path.join(HOME, "start_servidor.sh"),
-        "ollama": os.path.join(HOME, "ollama_start.sh"),
-    }
-    script = scripts.get(module_id)
-    if not script or not os.path.exists(script):
-        msg = f"Script de inicio no encontrado para {module_id}"
-        log_action(module_id, "start", False, msg)
-        return False, msg
-    try:
-        subprocess.Popen(["bash", script], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        log_action(module_id, "start", True)
-        return True, f"{module_id} iniciando..."
-    except Exception as e:
-        log_action(module_id, "start", False, str(e))
-        return False, str(e)
-
 
 def get_ram():
     try:
@@ -237,20 +141,10 @@ def build_status():
     ram = get_ram()
     ip  = get_ip()
 
-    def module(mid, name, inst_keys, ver_keys, is_service=False, pattern=None, port=None, custom_fn=None):
+    def module(mid, name, inst_keys, ver_keys, is_service=False, pattern=None):
         installed = any(reg(d, k) for k in inst_keys)
         version   = reg(d, *ver_keys)
-        if is_service:
-            if custom_fn is not None:
-                running = custom_fn()
-            elif port is not None:
-                running = port_open("127.0.0.1", port)
-            elif pattern:
-                running = proc_running(pattern)
-            else:
-                running = False
-        else:
-            running = None
+        running   = proc_running(pattern) if (is_service and pattern) else None
         m = {
             "id":        mid,
             "name":      name,
@@ -262,10 +156,8 @@ def build_status():
         return m
 
     modules = [
-        # n8n: tmux has-session — su puerto está dentro del proot, no accesible desde Termux
-        module("n8n",    "n8n",         ["n8n.installed"],          ["n8n.version","n8n_version"],     True, custom_fn=n8n_running),
-        # Ollama: port_open(:11434) — corre en Termux nativo, puerto accesible
-        module("ollama", "Ollama",       ["ollama.installed"],       ["ollama.version","ollama_version"],True, port=11434),
+        module("n8n",    "n8n",         ["n8n.installed"],          ["n8n.version","n8n_version"],     True, "node.*n8n"),
+        module("ollama", "Ollama",       ["ollama.installed"],       ["ollama.version","ollama_version"],True, "ollama serve"),
         module("claude", "Claude Code",  ["claude_code.installed"],  ["claude_code.version","claude_version"]),
         module("eas",    "Expo / EAS",   ["expo.installed","eas.installed"], ["expo.version","eas_version"]),
         module("python", "Python",       ["python.installed"],       ["python.version","python_version"]),
@@ -362,32 +254,7 @@ def ssh_info():
 
 # ── Acciones start / stop ─────────────────────────────────────
 
-def python_info():
-    """Detecta paquetes Python instalados y scripts en ~/python/"""
-    packages = {}
-    # Builtins siempre presentes
-    packages["sqlite3"] = True
-    packages["urllib"]  = True
-    # Detectar paquetes instalados via pip show
-    for pkg in ["pillow", "requests", "flask", "numpy", "pandas", "matplotlib"]:
-        try:
-            r = subprocess.run(
-                ["pip", "show", pkg],
-                capture_output=True, text=True, timeout=4
-            )
-            packages[pkg] = r.returncode == 0
-        except:
-            packages[pkg] = False
-    # Scripts en ~/python/
-    scripts = []
-    py_dir = os.path.join(HOME, "python")
-    if os.path.isdir(py_dir):
-        for f in sorted(os.listdir(py_dir)):
-            if f.endswith(".py"):
-                scripts.append(f)
-    return {"packages": packages, "scripts": scripts}
-
-
+def do_start(module_id):
     scripts = {
         "n8n":    os.path.join(HOME, "start_servidor.sh"),
         "ollama": os.path.join(HOME, "ollama_start.sh"),
@@ -419,70 +286,18 @@ def python_info():
         return False, str(e)
 
 def do_stop(module_id):
-    # ── n8n: corre dentro de proot + tmux → usar stop_servidor.sh ──
-    if module_id == "n8n":
-        script = os.path.join(HOME, "stop_servidor.sh")
-        if not os.path.exists(script):
-            msg = "stop_servidor.sh no encontrado en ~/"
-            log_action(module_id, "stop", False, msg)
-            return False, msg
-        try:
-            r = subprocess.run(
-                ["bash", script],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                timeout=15
-            )
-            ok = r.returncode == 0
-            msg = "n8n detenido" if ok else f"stop_servidor.sh retornó {r.returncode}"
-            log_action(module_id, "stop", ok, msg)
-            return ok, msg
-        except Exception as e:
-            log_action(module_id, "stop", False, str(e))
-            return False, str(e)
-
-    # ── Ollama: pkill + verificar que murió + SIGKILL si persiste ──
-    if module_id == "ollama":
-        try:
-            # SIGTERM primero
-            subprocess.run(["pkill", "-SIGTERM", "-f", "ollama serve"],
-                           timeout=5, capture_output=True)
-            # Esperar hasta 3s a que muera
-            import time
-            for _ in range(6):
-                time.sleep(0.5)
-                r = subprocess.run(["pgrep", "-f", "ollama serve"],
-                                   capture_output=True, timeout=2)
-                if r.returncode != 0:
-                    # Proceso muerto — confirmar
-                    log_action(module_id, "stop", True, "ollama detenido (SIGTERM)")
-                    return True, "ollama detenido"
-            # Sigue vivo → SIGKILL
-            subprocess.run(["pkill", "-SIGKILL", "-f", "ollama serve"],
-                           timeout=5, capture_output=True)
-            time.sleep(1)
-            r = subprocess.run(["pgrep", "-f", "ollama serve"],
-                               capture_output=True, timeout=2)
-            if r.returncode != 0:
-                log_action(module_id, "stop", True, "ollama detenido (SIGKILL)")
-                return True, "ollama detenido"
-            msg = "No se pudo detener ollama — mátalo manualmente con: pkill -f 'ollama serve'"
-            log_action(module_id, "stop", False, msg)
-            return False, msg
-        except Exception as e:
-            log_action(module_id, "stop", False, str(e))
-            return False, str(e)
-
-    # ── SSH ──
-    if module_id == "ssh":
-        try:
-            subprocess.run(["pkill", "-f", "sshd"], timeout=5, capture_output=True)
-            log_action(module_id, "stop", True)
-            return True, "sshd detenido"
-        except Exception as e:
-            log_action(module_id, "stop", False, str(e))
-            return False, str(e)
-
-    return False, "Módulo no controlable"
+    # Patrones específicos — evitan matar procesos no relacionados
+    patterns = {"n8n": "node.*n8n", "ollama": "ollama serve", "ssh": "sshd"}
+    pattern  = patterns.get(module_id)
+    if not pattern:
+        return False, "Módulo no controlable"
+    try:
+        subprocess.run(["pkill", "-f", pattern], timeout=5)
+        log_action(module_id, "stop", True)
+        return True, f"{module_id} detenido"
+    except Exception as e:
+        log_action(module_id, "stop", False, str(e))
+        return False, str(e)
 
 def do_backup():
     script = os.path.join(HOME, "backup.sh")
@@ -623,12 +438,7 @@ class Handler(BaseHTTPRequestHandler):
 
         # ── /api/status ───────────────────────────
         if path == "/api/status":
-            with _status_cache_lock:
-                data = dict(_status_cache)
-            # Si caché vacío (primera fracción de segundo), llamar directo
-            if not data:
-                data = build_status()
-            self.send_json(data)
+            self.send_json(build_status())
 
         # ── /api/logs ─────────────────────────────
         elif path == "/api/logs":
@@ -641,10 +451,6 @@ class Handler(BaseHTTPRequestHandler):
         # ── /api/ssh/info ─────────────────────────
         elif path == "/api/ssh/info":
             self.send_json(ssh_info())
-
-        # ── /api/python/info ──────────────────────
-        elif path == "/api/python/info":
-            self.send_json(python_info())
 
         # ── /api/n8n/url ──────────────────────────
         elif path == "/api/n8n/url":
@@ -1207,31 +1013,7 @@ def start_ws_server():
 
 
 if __name__ == "__main__":
-    print(f"[dashboard] v2.10.0 iniciando en puerto {PORT}...")
-
-    # ── Hilo background: actualiza build_status() cada 4s en caché ──
-    # Evita que port_open() (timeout 1s) bloquee el hilo HTTP principal.
-    # El handler GET /api/status lee de _status_cache sin esperar.
-    def _status_refresh_loop():
-        import time
-        while True:
-            try:
-                data = build_status()
-                with _status_cache_lock:
-                    _status_cache.clear()
-                    _status_cache.update(data)
-            except Exception as e:
-                print(f"[status-bg] Error: {e}")
-            time.sleep(4)
-
-    # Primer refresh síncrono para que el caché no esté vacío al arrancar
-    try:
-        _status_cache.update(build_status())
-    except:
-        pass
-
-    threading.Thread(target=_status_refresh_loop, daemon=True).start()
-
+    print(f"[dashboard] v2.3.0 iniciando en puerto {PORT}...")
     # Iniciar WebSocket PTY en hilo separado
     ws_thread = threading.Thread(target=start_ws_server, daemon=True)
     ws_thread.start()
