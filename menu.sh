@@ -1809,7 +1809,7 @@ _oc_web_start() {
   sleep 1
   # Lanzar en foreground pero con & — el usuario ve el output del servidor
   # incluyendo el logo y la URL, luego presiona ENTER para volver al menú
-  proot-distro login debian -- bash -c     "source ~/.bashrc 2>/dev/null; opencode web --port 3000 --hostname 127.0.0.1 --cwd \"${cwd}\"" &
+  proot-distro login debian -- bash -c     "source ~/.bashrc 2>/dev/null; BROWSER= opencode web --port 3000 --hostname 127.0.0.1 --cwd \"${cwd}\"" &
   echo $! > "$HOME/.opencode_web.pid"
 }
 
@@ -1887,7 +1887,7 @@ submenu_opencode() {
           echo -e "  ${CYAN}Iniciando OpenCode Web...${NC}"
           echo -e "  ${DIM}Cuando veas la URL presiona ENTER para volver al menú${NC}"
           echo -e "  ${DIM}El servidor quedará corriendo en background${NC}"; echo ""
-          proot-distro login debian -- bash -c             'source ~/.bashrc 2>/dev/null; opencode web --port 3000 --hostname 127.0.0.1' &
+          proot-distro login debian -- bash -c             'source ~/.bashrc 2>/dev/null; BROWSER= opencode web --port 3000 --hostname 127.0.0.1' &
           echo $! > "$HOME/.opencode_web.pid"
           echo ""
           echo -n "  Presiona ENTER cuando veas 'Web interface: http://127.0.0.1:3000'..."
@@ -1895,7 +1895,7 @@ submenu_opencode() {
           echo ""
           echo -e "  ${GREEN}URL:${NC} http://127.0.0.1:3000"
           echo -e "  ${DIM}Abre en Brave o Chrome${NC}"
-          echo ""; read -r _ < /dev/tty
+          echo ""
         fi ;;
 
       3) # Abrir proyecto — elegir TUI o Web
@@ -1954,7 +1954,7 @@ submenu_opencode() {
             echo ""
             echo -e "  ${CYAN}Iniciando servidor en proyecto...${NC}"
             echo -e "  ${DIM}Cuando veas la URL presiona ENTER para volver al menú${NC}"; echo ""
-            proot-distro login debian -- bash -c               "source ~/.bashrc 2>/dev/null; opencode web --port 3000 --hostname 127.0.0.1 --cwd '$REAL_PATH'" &
+            proot-distro login debian -- bash -c               "source ~/.bashrc 2>/dev/null; BROWSER= opencode web --port 3000 --hostname 127.0.0.1 --cwd '$REAL_PATH'" &
             echo $! > "$HOME/.opencode_web.pid"
             echo ""
             echo -n "  Presiona ENTER cuando veas 'Web interface: http://127.0.0.1:3000'..."
