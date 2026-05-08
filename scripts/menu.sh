@@ -1798,22 +1798,35 @@ submenu_claude() {
 # ════════════════════════════════════════════
 #  SUBMENÚ OPENCODE
 # ════════════════════════════════════════════
-# Helper: verifica si opencode web está corriendo (proceso en proot)
+# Helper: verifica si opencode web está corriendo (puerto responde)
 _oc_web_running() {
-  # El proceso corre dentro de proot — verificar via puerto, no tmux
   curl -sf http://127.0.0.1:3000 &>/dev/null
 }
 
-# Helper: lanzar servidor web opencode en background desde Termux
+# Helper: lanzar servidor web con nohup — PID guardado en ~/.opencode_web.pid
 _oc_web_start() {
   local cwd="${1:-/root}"
-  # Matar sesión y proceso anterior
-  tmux kill-session -t "opencode-web" 2>/dev/null
+  # Matar proceso anterior si existe
+  if [ -f "$HOME/.opencode_web.pid" ]; then
+    kill "$(cat "$HOME/.opencode_web.pid")" 2>/dev/null
+    rm -f "$HOME/.opencode_web.pid"
+    sleep 1
+  fi
   pkill -f "opencode web" 2>/dev/null
   sleep 1
-  # Lanzar en tmux de Termux — escapar cwd correctamente
-  local CMD="proot-distro login debian -- bash -c 'source ~/.bashrc 2>/dev/null; opencode web --port 3000 --hostname 127.0.0.1 --cwd "${cwd}" 2>&1'"
-  tmux new-session -d -s "opencode-web" "$CMD" 2>/dev/null
+  # Lanzar con nohup — proceso queda vivo en Termux nativo
+  nohup proot-distro login debian -- bash -c     "source ~/.bashrc 2>/dev/null; opencode web --port 3000 --hostname 127.0.0.1 --cwd "${cwd}""     > "$HOME/opencode_web.log" 2>&1 &
+  echo $! > "$HOME/.opencode_web.pid"
+}
+
+# Helper: detener servidor web
+_oc_web_stop() {
+  if [ -f "$HOME/.opencode_web.pid" ]; then
+    kill "$(cat "$HOME/.opencode_web.pid")" 2>/dev/null
+    rm -f "$HOME/.opencode_web.pid"
+  fi
+  pkill -f "opencode web" 2>/dev/null
+  echo -e "  ${GREEN}[OK]${NC} Servidor detenido"
 }
 
 submenu_opencode() {
@@ -2021,55 +2034,82 @@ submenu_opencode() {
       7) # Configurar Ollama como provider local
         clear; echo ""
         echo -e "  ${CYAN}${BOLD}Configurar Ollama en OpenCode${NC}"; echo ""
+        echo -e "  ${DIM}[r] Quitar Ollama (volver al provider por defecto)${NC}"; echo ""
 
-        # Verificar que Ollama esté corriendo
+        # Verificar Ollama corriendo
         if ! curl -sf http://127.0.0.1:11434 &>/dev/null; then
           echo -e "  ${YELLOW}[AVISO]${NC} Ollama no está corriendo en :11434"
-          echo -e "  ${DIM}Inícialo primero con: ollama-start${NC}"; echo ""
+          echo -e "  ${DIM}Inícialo con: ollama-start${NC}"; echo ""
           echo -n "  ¿Continuar de todas formas? (s/n): "
           read -r _OL < /dev/tty
           [ "$_OL" != "s" ] && [ "$_OL" != "S" ] && { echo ""; read -r _ < /dev/tty; continue; }
         fi
 
-        # Listar modelos disponibles en Ollama
-        echo -e "  ${CYAN}Modelos en Ollama:${NC}"; echo ""
-        OL_MODELS=$(curl -sf http://127.0.0.1:11434/api/tags 2>/dev/null |           python3 -c "
-import sys, json
+        # Obtener modelos como array indexado
+        mapfile -t OL_MODEL_LIST < <(
+          curl -sf http://127.0.0.1:11434/api/tags 2>/dev/null | \
+          python3 -c "
+import sys,json
 try:
-    d = json.load(sys.stdin)
-    models = [m['name'] for m in d.get('models', [])]
-    for i, m in enumerate(models, 1):
-        print(f'    [{i}] {m}')
-    if not models:
-        print('    (ninguno instalado)')
-except:
-    print('    (error leyendo modelos)')
+  d=json.load(sys.stdin)
+  [print(m['name']) for m in d.get('models',[])]
+except: pass
 " 2>/dev/null)
-        echo "$OL_MODELS"
-        echo ""
-        echo -n "  Nombre del modelo (ej: qwen2.5:0.5b): "
-        read -r OL_MODEL < /dev/tty
-        [ -z "$OL_MODEL" ] && { echo -e "  ${YELLOW}Cancelado${NC}"; echo ""; read -r _ < /dev/tty; continue; }
 
-        # Escribir config de OpenCode en Debian proot
-        # OpenCode config: ~/.config/opencode/config.json
-        proot-distro login debian -- bash -c "
-mkdir -p /root/.config/opencode
-cat > /root/.config/opencode/config.json << 'OCCONF'
-{
+        echo -e "  ${CYAN}Modelos instalados:${NC}"; echo ""
+        if [ ${#OL_MODEL_LIST[@]} -eq 0 ]; then
+          echo -e "  ${YELLOW}(ninguno — instala con ollama pull)${NC}"
+        else
+          for i in "${!OL_MODEL_LIST[@]}"; do
+            printf "    [%d] %s\n" "$((i+1))" "${OL_MODEL_LIST[$i]}"
+          done
+        fi
+        echo ""
+        echo -n "  Número o nombre ([r] quitar, ENTER cancela): "
+        read -r OL_INPUT < /dev/tty
+
+        # [r] = quitar config Ollama
+        if [ "$OL_INPUT" = "r" ] || [ "$OL_INPUT" = "R" ]; then
+          proot-distro login debian -- bash -c \
+            'rm -f /root/.config/opencode/config.json && echo ok' 2>/dev/null
+          echo -e "  ${GREEN}[OK]${NC} Config eliminado — OpenCode usará provider por defecto"
+          echo ""; read -r _ < /dev/tty; continue
+        fi
+
+        # ENTER vacío = cancelar
+        [ -z "$OL_INPUT" ] && { echo -e "  ${YELLOW}Cancelado${NC}"; echo ""; read -r _ < /dev/tty; continue; }
+
+        # Número → nombre real
+        OL_MODEL=""
+        if [[ "$OL_INPUT" =~ ^[0-9]+$ ]] && \
+           [ "$OL_INPUT" -ge 1 ] && \
+           [ "$OL_INPUT" -le "${#OL_MODEL_LIST[@]}" ]; then
+          OL_MODEL="${OL_MODEL_LIST[$((OL_INPUT-1))]}"
+        else
+          OL_MODEL="$OL_INPUT"
+        fi
+
+        echo -e "  Configurando: ${CYAN}${OL_MODEL}${NC}"; echo ""
+
+        # Generar JSON válido con Python y pasarlo por stdin a proot
+        python3 - << PYEOF | proot-distro login debian -- bash -c \
+          'mkdir -p /root/.config/opencode && cat > /root/.config/opencode/config.json' \
+          2>/dev/null && OC_CFG_OK=true || OC_CFG_OK=false
+import json
+print(json.dumps({
   "model": "ollama/${OL_MODEL}",
   "providers": {
-    "ollama": {
-      "apiUrl": "http://127.0.0.1:11434"
-    }
+    "ollama": {"apiUrl": "http://127.0.0.1:11434"}
   }
-}
-OCCONF
-echo ok" 2>/dev/null &&           echo -e "  ${GREEN}[OK]${NC} Ollama configurado: ${OL_MODEL}" ||           echo -e "  ${RED}[ERROR]${NC} No se pudo escribir config"
+}, indent=2))
+PYEOF
 
-        echo ""
-        echo -e "  ${DIM}Config: /root/.config/opencode/config.json${NC}"
-        echo -e "  ${DIM}Reinicia el servidor web para aplicar cambios${NC}"
+        if $OC_CFG_OK; then
+          echo -e "  ${GREEN}[OK]${NC} Ollama configurado: ${OL_MODEL}"
+          echo -e "  ${DIM}Reinicia el servidor: [5] detener → [2] iniciar${NC}"
+        else
+          echo -e "  ${RED}[ERROR]${NC} No se pudo escribir config"
+        fi
         echo ""; read -r _ < /dev/tty ;;
 
       b|B|"") break ;;
