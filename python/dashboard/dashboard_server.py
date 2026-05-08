@@ -176,8 +176,9 @@ def do_start(module_id):
             return False, str(e)
 
     scripts = {
-        "n8n":    os.path.join(HOME, "start_servidor.sh"),
-        "ollama": os.path.join(HOME, "ollama_start.sh"),
+        "n8n":      os.path.join(HOME, "start_servidor.sh"),
+        "ollama":   os.path.join(HOME, "ollama_start.sh"),
+        "openclaw": os.path.join(HOME, "openclaw_start.sh"),
     }
     script = scripts.get(module_id)
     if not script or not os.path.exists(script):
@@ -206,6 +207,60 @@ def get_ram():
     except:
         pass
     return {"total_mb": 0, "available_mb": 0}
+
+def get_system_info():
+    """RAM, disco, uptime, IP y últimas líneas del log del dashboard"""
+    ram  = get_ram()
+    ip   = get_ip()
+
+    # Disco — usar df sobre $HOME
+    disk = {"total_mb": 0, "used_mb": 0, "free_mb": 0}
+    try:
+        r = subprocess.run(["df", "-m", HOME], capture_output=True, text=True, timeout=3)
+        lines = r.stdout.strip().split("\n")
+        if len(lines) >= 2:
+            parts = lines[1].split()
+            if len(parts) >= 4:
+                disk = {
+                    "total_mb": int(parts[1]),
+                    "used_mb":  int(parts[2]),
+                    "free_mb":  int(parts[3]),
+                }
+    except:
+        pass
+
+    # Uptime del sistema
+    uptime_str = ""
+    try:
+        r = subprocess.run(["uptime", "-p"], capture_output=True, text=True, timeout=3)
+        uptime_str = r.stdout.strip()
+    except:
+        try:
+            with open("/proc/uptime") as f:
+                secs = float(f.read().split()[0])
+            h, m = divmod(int(secs) // 60, 60)
+            uptime_str = f"up {h}h {m}m"
+        except:
+            pass
+
+    # Últimas 30 líneas del log del dashboard
+    logs = []
+    log_path = os.path.join(HOME, ".dashboard.log")
+    try:
+        with open(log_path) as f:
+            lines = f.readlines()
+        logs = [l.rstrip() for l in lines[-30:]]
+    except:
+        pass
+
+    return {
+        "ram":    ram,
+        "disk":   disk,
+        "uptime": uptime_str,
+        "ip":     ip,
+        "time":   datetime.now().strftime("%H:%M:%S"),
+        "logs":   logs,
+    }
 
 def get_n8n_url():
     for path in [os.path.join(HOME, ".last_cf_url"), os.path.join(HOME, ".env_n8n")]:
@@ -270,6 +325,7 @@ def build_status():
         module("eas",    "Expo / EAS",   ["expo.installed","eas.installed"], ["expo.version","eas_version"]),
         module("python", "Python",       ["python.installed"],       ["python.version","python_version"]),
         module("ssh",    "SSH",          ["ssh.installed"],          ["ssh.version","ssh_version"],     True, "sshd"),
+        module("openclaw", "OpenClaw",   ["openclaw.installed"],     ["openclaw.version"],              True, custom_fn=get_openclaw_status),
     ]
 
     # Claude config extra
@@ -388,35 +444,44 @@ def python_info():
     return {"packages": packages, "scripts": scripts}
 
 
-    scripts = {
-        "n8n":    os.path.join(HOME, "start_servidor.sh"),
-        "ollama": os.path.join(HOME, "ollama_start.sh"),
-        "ssh":    None,
-    }
-    if module_id == "ssh":
-        try:
-            subprocess.Popen(
-                [os.path.join(TERMUX_PREFIX, "bin", "sshd")],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
-            log_action(module_id, "start", True)
-            return True, "sshd iniciado"
-        except Exception as e:
-            log_action(module_id, "start", False, str(e))
-            return False, str(e)
+# ── OpenClaw helpers ─────────────────────────────────────────
 
-    script = scripts.get(module_id)
-    if not script or not os.path.exists(script):
-        msg = f"Script de inicio no encontrado para {module_id}"
-        log_action(module_id, "start", False, msg)
-        return False, msg
+OPENCLAW_CFG = "/data/data/com.termux/files/usr/var/lib/proot-distro/installed-rootfs/debian/root/.openclaw/openclaw.json"
+
+def get_openclaw_status():
+    """Verifica si el gateway OpenClaw responde en :18789"""
+    return port_open("127.0.0.1", 18789, timeout=2.0)
+
+def get_openclaw_token():
+    """Lee el token de auth desde openclaw.json en el proot"""
     try:
-        subprocess.Popen(["bash", script], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        log_action(module_id, "start", True)
-        return True, f"{module_id} iniciando..."
-    except Exception as e:
-        log_action(module_id, "start", False, str(e))
-        return False, str(e)
+        with open(OPENCLAW_CFG) as f:
+            d = json.load(f)
+        return d.get("gateway", {}).get("auth", {}).get("token", "")
+    except:
+        return ""
+
+def get_openclaw_model():
+    """Lee el modelo activo desde openclaw.json"""
+    try:
+        with open(OPENCLAW_CFG) as f:
+            d = json.load(f)
+        return d.get("model", "")
+    except:
+        return ""
+
+def openclaw_info():
+    running = get_openclaw_status()
+    token   = get_openclaw_token()
+    model   = get_openclaw_model()
+    url     = f"http://127.0.0.1:18789/#token={token}" if token else "http://127.0.0.1:18789"
+    return {
+        "running": running,
+        "token":   token,
+        "model":   model,
+        "url":     url,
+        "port":    18789,
+    }
 
 def do_stop(module_id):
     # ── n8n: corre dentro de proot + tmux → usar stop_servidor.sh ──
@@ -468,6 +533,30 @@ def do_stop(module_id):
             msg = "No se pudo detener ollama — mátalo manualmente con: pkill -f 'ollama serve'"
             log_action(module_id, "stop", False, msg)
             return False, msg
+        except Exception as e:
+            log_action(module_id, "stop", False, str(e))
+            return False, str(e)
+
+    # ── OpenClaw: matar via PID guardado en ~/.openclaw_gateway.pid ──
+    if module_id == "openclaw":
+        script = os.path.join(HOME, "openclaw_stop.sh")
+        if os.path.exists(script):
+            try:
+                subprocess.Popen(["bash", script],
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                log_action(module_id, "stop", True, "openclaw_stop.sh ejecutado")
+                return True, "OpenClaw detenido"
+            except Exception as e:
+                log_action(module_id, "stop", False, str(e))
+                return False, str(e)
+        # Fallback: matar por PID file
+        pid_file = os.path.join(HOME, ".openclaw_gateway.pid")
+        try:
+            with open(pid_file) as f:
+                pid = int(f.read().strip())
+            os.kill(pid, signal.SIGTERM)
+            log_action(module_id, "stop", True, f"SIGTERM a PID {pid}")
+            return True, "OpenClaw detenido"
         except Exception as e:
             log_action(module_id, "stop", False, str(e))
             return False, str(e)
@@ -630,6 +719,10 @@ class Handler(BaseHTTPRequestHandler):
                 data = build_status()
             self.send_json(data)
 
+        # ── /api/system ───────────────────────────
+        elif path == "/api/system":
+            self.send_json(get_system_info())
+
         # ── /api/logs ─────────────────────────────
         elif path == "/api/logs":
             self.send_json({"logs": list(_cmd_log)})
@@ -752,6 +845,10 @@ class Handler(BaseHTTPRequestHandler):
                 # Limpiar jobs completados después de entregarlos
                 if job["status"] in ("done", "error"):
                     _chat_jobs.pop(job_id, None)
+
+        # ── /api/openclaw/info ────────────────────
+        elif path == "/api/openclaw/info":
+            self.send_json(openclaw_info())
 
         # ── /api/prefs ────────────────────────────
         elif path == "/api/prefs":

@@ -942,7 +942,7 @@ try:
         data=payload,
         headers={"Content-Type": "application/json"}
     )
-    with ureq.urlopen(req, timeout=120) as resp:
+    with ureq.urlopen(req, timeout=600) as resp:
         response = json.loads(resp.read()).get("response", "").strip()
 except Exception as e:
     response = "[ERROR] " + str(e)
@@ -1107,7 +1107,7 @@ try:
     req = ureq.Request(url + "/api/generate",
                        data=payload,
                        headers={"Content-Type": "application/json"})
-    with ureq.urlopen(req, timeout=120) as resp:
+    with ureq.urlopen(req, timeout=600) as resp:
         response = json.loads(resp.read()).get("response", "").strip()
 except Exception as e:
     response = "[ERROR] " + str(e)
@@ -1271,7 +1271,7 @@ try:
     req = ureq.Request(url + '/api/generate',
                        data=payload,
                        headers={'Content-Type': 'application/json'})
-    with ureq.urlopen(req, timeout=300) as resp:
+    with ureq.urlopen(req, timeout=600) as resp:
         response = json.loads(resp.read()).get('response','').strip()
 except Exception as e:
     response = '[ERROR] ' + str(e)
@@ -2476,6 +2476,16 @@ except: pass
         fi
 
         echo -e "  Configurando: ${CYAN}${OL_MODEL}${NC}"; echo ""
+
+        # Advertencia modelos sin tool calling — incompatibles con modo Build
+        _OC_NO_TOOLS="gemma3 gemma2 mistral"
+        _OC_BASE="${OL_MODEL%%:*}"
+        if echo "$_OC_NO_TOOLS" | grep -qw "$_OC_BASE"; then
+          echo -e "  ${YELLOW}[AVISO]${NC} ${OL_MODEL} no soporta tool calling"
+          echo -e "  ${DIM}Solo funciona en modo Chat — no en modo Build${NC}"
+          echo -e "  ${DIM}Modelos recomendados: qwen2.5, llama3.2, phi3${NC}"
+          echo ""
+        fi
 
         # Generar JSON válido con Python y pasarlo por stdin a proot
         # Schema correcto: provider (singular) + npm + baseURL con /v1
