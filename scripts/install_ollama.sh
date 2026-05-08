@@ -164,28 +164,29 @@ detect_gpu() {
     return
   fi
 
-  # Fallback sin vulkaninfo — getprop (más confiable que /proc/cpuinfo en HyperOS)
-  local hw_prop
+  # Fallback sin vulkaninfo — getprop es la fuente mas confiable en Android
+  # 4 capas: ro.hardware.egl -> ro.hardware -> ro.board.platform -> ro.product.board
+  local hw_egl hw_prop hw_platform hw_board
+  hw_egl=$(getprop ro.hardware.egl 2>/dev/null | tr '[:upper:]' '[:lower:]')
   hw_prop=$(getprop ro.hardware 2>/dev/null | tr '[:upper:]' '[:lower:]')
-  [ -z "$hw_prop" ] && hw_prop=$(getprop ro.board.platform 2>/dev/null | tr '[:upper:]' '[:lower:]')
+  hw_platform=$(getprop ro.board.platform 2>/dev/null | tr '[:upper:]' '[:lower:]')
+  hw_board=$(getprop ro.product.board 2>/dev/null | tr '[:upper:]' '[:lower:]')
+  local hw_all="${hw_egl} ${hw_prop} ${hw_platform} ${hw_board}"
 
-  if echo "$hw_prop" | grep -qE "^sm[0-9]|qualcomm|snapdragon"; then
+  # Qualcomm/Adreno: qcom, lahaina, kona, taro, kalama, pineapple, sm*, sdm*
+  if echo "$hw_all" | grep -qE "adreno|qcom|lahaina|kona|taro|kalama|pineapple|crow|shima|yupik|sm[0-9]|sdm[0-9]|snapdragon|qualcomm"; then
     echo "adreno_no_vulkan"
-  elif echo "$hw_prop" | grep -qE "^mt[0-9]|mediatek|dimensity|helio"; then
+  # MediaTek/Mali: mt*, dimensity, helio
+  elif echo "$hw_all" | grep -qE "mt[0-9]|mediatek|dimensity|helio|mali"; then
+    echo "mali_no_vulkan"
+  # Exynos/Samsung
+  elif echo "$hw_all" | grep -qE "exynos|universal[0-9]"; then
     echo "mali_no_vulkan"
   else
-    # Último fallback: /proc/cpuinfo Hardware field
-    local hw_cpu
-    hw_cpu=$(grep -m1 "^Hardware" /proc/cpuinfo 2>/dev/null | tr '[:upper:]' '[:lower:]')
-    if echo "$hw_cpu" | grep -qE "qualcomm|snapdragon|sm[0-9]"; then
-      echo "adreno_no_vulkan"
-    elif echo "$hw_cpu" | grep -qE "mediatek|dimensity|helio|mt[0-9]"; then
-      echo "mali_no_vulkan"
-    else
-      [ -e /dev/mali0 ] || [ -e /sys/class/misc/mali0 ] && echo "mali_no_vulkan" && return
-      [ -e /dev/kgsl-3d0 ] && echo "adreno_no_vulkan" && return
-      echo "none"
-    fi
+    # Ultimo fallback: nodos de dispositivo
+    { [ -e /dev/mali0 ] || [ -e /sys/class/misc/mali0 ]; } && echo "mali_no_vulkan" && return
+    [ -e /dev/kgsl-3d0 ] && echo "adreno_no_vulkan" && return
+    echo "none"
   fi
 }
 
@@ -215,57 +216,30 @@ case "$HW_GPU" in
     : ;;
 esac
 
-echo "  ┌─────────────────────────────────────────┐"
-echo "  │  HARDWARE DETECTADO                     │"
-echo "  ├─────────────────────────────────────────┤"
-printf "  │  GPU: %-34s│\n" "$HW_GPU"
-printf "  │  CPU: %-34s│\n" "$HW_CPU"
-printf "  │  Modo recomendado: %-22s│\n" "$HW_MODE"
-echo "  └─────────────────────────────────────────┘"
+printf "  GPU: %-20s CPU: %s\n" "$HW_GPU" "$HW_CPU"
+echo -e "  Recomendado: ${GREEN}${HW_MODE}${NC}"
 echo ""
 
-echo ""
-echo "  Este script instalará:"
-echo "  ▸ Ollama vía pkg (método funcional en Termux ARM64)"
-echo "  ▸ Puerto: 11434"
-echo "  ▸ API compatible con OpenAI"
-echo "  ▸ Script de inicio con tmux"
-echo "  ▸ Aliases: ollama-start, ollama-stop, ollama-status"
-echo ""
-echo -e "  ${YELLOW}⚠️  NOTA DE RENDIMIENTO:${NC}"
-echo "  La versión actual de pkg puede tener respuestas lentas (bug conocido)."
-echo "  Funciona correctamente — solo más lento en algunos dispositivos."
-echo "  Estado: pendiente fix oficial en termux-packages."
-echo ""
 # ── Selección de versión de instalación ──────────────────────
-echo "  Versiones disponibles:"
-echo ""
-echo -e "  ${CYAN}[1] Estándar${NC}   — pkg install ollama (genérico ARM64)"
-echo -e "               Compatible con cualquier dispositivo"
+echo -e "  ${CYAN}[1]${NC} Estándar   — pkg ollama (genérico, siempre funciona)"
 
 if [ "$HW_MODE" = "cpu_optimized" ] || [ "$HW_MODE" = "gpu_vulkan" ]; then
-  echo -e "  ${GREEN}[2] Optimizada${NC} — llama.cpp compilado con flags CPU avanzados"
-  printf   "               Ganancia estimada ~1.5x–2.5x tokens/s (%s)\n" "$HW_CPU"
-  echo -e "               Requiere: cmake clang git (~15min compilación)"
+  echo -e "  ${GREEN}[2]${NC} Optimizada — llama.cpp+${HW_CPU} (~15min) ★"
 else
-  echo -e "  ${YELLOW}[2] Optimizada${NC} — no disponible (CPU sin instrucciones avanzadas)"
+  echo -e "  ${YELLOW}[2]${NC} Optimizada — no disponible (sin instrucciones avanzadas)"
 fi
 
 if $HW_GPU_AVAILABLE; then
-  echo -e "  ${GREEN}[3] GPU Vulkan${NC}  — llama.cpp compilado con Vulkan (Adreno detectado)"
-  echo -e "               Más rápido para modelos grandes"
-  echo -e "               Requiere: cmake clang git vulkan-tools (~20min)"
+  echo -e "  ${GREEN}[3]${NC} GPU Vulkan — Adreno detectado (~20min)"
 else
-  echo -e "  ${YELLOW}[3] GPU Vulkan${NC}  — no disponible en este dispositivo"
+  echo -e "  ${YELLOW}[3]${NC} GPU Vulkan — no disponible"
 fi
 
 echo ""
-echo -e "  Recomendado para tu hardware: ${GREEN}${HW_MODE}${NC}"
-echo ""
-echo -n "  Elige versión [1"
+echo -n "  Versión [1"
 [ "$HW_MODE" != "cpu_standard" ] && echo -n "/2"
 $HW_GPU_AVAILABLE && echo -n "/3"
-echo "]: "
+echo -n "]: "
 read -r VERSION_CHOICE < /dev/tty
 
 # Validar y asignar modo de instalación
