@@ -1807,11 +1807,13 @@ _oc_web_running() {
 # Helper: lanzar servidor web opencode en background desde Termux
 _oc_web_start() {
   local cwd="${1:-/root}"
-  # Matar proceso anterior si existe
+  # Matar sesión y proceso anterior
+  tmux kill-session -t "opencode-web" 2>/dev/null
   pkill -f "opencode web" 2>/dev/null
   sleep 1
-  # Lanzar en tmux de Termux (no del proot)
-  tmux new-session -d -s "opencode-web"     "proot-distro login debian -- bash -c 'source ~/.bashrc 2>/dev/null; opencode web --port 3000 --hostname 127.0.0.1 --cwd "$cwd" 2>&1'"     2>/dev/null
+  # Lanzar en tmux de Termux — escapar cwd correctamente
+  local CMD="proot-distro login debian -- bash -c 'source ~/.bashrc 2>/dev/null; opencode web --port 3000 --hostname 127.0.0.1 --cwd "${cwd}" 2>&1'"
+  tmux new-session -d -s "opencode-web" "$CMD" 2>/dev/null
 }
 
 submenu_opencode() {
@@ -1835,6 +1837,7 @@ submenu_opencode() {
     echo -e "  ║  ${NC}[4] Gestionar proyectos${CYAN}${BOLD}                ║"
     echo -e "  ║  ${NC}[5] Detener servidor web${CYAN}${BOLD}               ║"
     echo -e "  ║  ${NC}[6] Instalar / actualizar${CYAN}${BOLD}              ║"
+    echo -e "  ║  ${NC}[7] Configurar Ollama local${CYAN}${BOLD}            ║"
     echo -e "  ║  ${NC}[b] Volver${CYAN}${BOLD}                             ║"
     echo -e "  ╚══════════════════════════════════════════╝${NC}"
     echo ""; echo -n "  Opción: "
@@ -1856,7 +1859,7 @@ submenu_opencode() {
         else
           echo -e "  ${CYAN}Iniciando servidor OpenCode web...${NC}"; echo ""
           _oc_web_start "/root"
-          sleep 3
+          sleep 6
           if _oc_web_running; then
             echo -e "  ${GREEN}[OK]${NC} Servidor iniciado"
           else
@@ -1904,7 +1907,7 @@ submenu_opencode() {
           # Detener servidor anterior si existe
           pkill -f "opencode web" 2>/dev/null; sleep 1
           _oc_web_start "$REAL_PATH"
-          sleep 3
+          sleep 6
           if _oc_web_running; then
             echo -e "  ${GREEN}[OK]${NC} Servidor iniciado con proyecto"
             echo -e "  ${GREEN}URL:${NC} http://127.0.0.1:3000"
@@ -2013,6 +2016,60 @@ submenu_opencode() {
             echo -e "  ${YELLOW}[AVISO]${NC} Verificar instalación: proot-distro login debian"
           fi
         fi
+        echo ""; read -r _ < /dev/tty ;;
+
+      7) # Configurar Ollama como provider local
+        clear; echo ""
+        echo -e "  ${CYAN}${BOLD}Configurar Ollama en OpenCode${NC}"; echo ""
+
+        # Verificar que Ollama esté corriendo
+        if ! curl -sf http://127.0.0.1:11434 &>/dev/null; then
+          echo -e "  ${YELLOW}[AVISO]${NC} Ollama no está corriendo en :11434"
+          echo -e "  ${DIM}Inícialo primero con: ollama-start${NC}"; echo ""
+          echo -n "  ¿Continuar de todas formas? (s/n): "
+          read -r _OL < /dev/tty
+          [ "$_OL" != "s" ] && [ "$_OL" != "S" ] && { echo ""; read -r _ < /dev/tty; continue; }
+        fi
+
+        # Listar modelos disponibles en Ollama
+        echo -e "  ${CYAN}Modelos en Ollama:${NC}"; echo ""
+        OL_MODELS=$(curl -sf http://127.0.0.1:11434/api/tags 2>/dev/null |           python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    models = [m['name'] for m in d.get('models', [])]
+    for i, m in enumerate(models, 1):
+        print(f'    [{i}] {m}')
+    if not models:
+        print('    (ninguno instalado)')
+except:
+    print('    (error leyendo modelos)')
+" 2>/dev/null)
+        echo "$OL_MODELS"
+        echo ""
+        echo -n "  Nombre del modelo (ej: qwen2.5:0.5b): "
+        read -r OL_MODEL < /dev/tty
+        [ -z "$OL_MODEL" ] && { echo -e "  ${YELLOW}Cancelado${NC}"; echo ""; read -r _ < /dev/tty; continue; }
+
+        # Escribir config de OpenCode en Debian proot
+        # OpenCode config: ~/.config/opencode/config.json
+        proot-distro login debian -- bash -c "
+mkdir -p /root/.config/opencode
+cat > /root/.config/opencode/config.json << 'OCCONF'
+{
+  "model": "ollama/${OL_MODEL}",
+  "providers": {
+    "ollama": {
+      "apiUrl": "http://127.0.0.1:11434"
+    }
+  }
+}
+OCCONF
+echo ok" 2>/dev/null &&           echo -e "  ${GREEN}[OK]${NC} Ollama configurado: ${OL_MODEL}" ||           echo -e "  ${RED}[ERROR]${NC} No se pudo escribir config"
+
+        echo ""
+        echo -e "  ${DIM}Config: /root/.config/opencode/config.json${NC}"
+        echo -e "  ${DIM}Reinicia el servidor web para aplicar cambios${NC}"
         echo ""; read -r _ < /dev/tty ;;
 
       b|B|"") break ;;
