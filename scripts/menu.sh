@@ -1798,46 +1798,8 @@ submenu_claude() {
 # ════════════════════════════════════════════
 #  SUBMENÚ OPENCODE
 # ════════════════════════════════════════════
-# Helper: verifica si opencode web está corriendo (puerto responde)
-_oc_web_running() {
-  curl -sf http://127.0.0.1:3000 &>/dev/null
-}
-
-# Helper: lanzar servidor web con nohup — PID guardado en ~/.opencode_web.pid
-_oc_web_start() {
-  local cwd="${1:-/root}"
-  # Matar proceso anterior si existe
-  if [ -f "$HOME/.opencode_web.pid" ]; then
-    kill "$(cat "$HOME/.opencode_web.pid")" 2>/dev/null
-    rm -f "$HOME/.opencode_web.pid"
-    sleep 1
-  fi
-  pkill -f "opencode web" 2>/dev/null
-  sleep 1
-  # Exportar cwd para que sea accesible dentro del subshell
-  export _OC_CWD="$cwd"
-  # Lanzar con nohup — comillas correctas via variable exportada
-  nohup proot-distro login debian -- bash -c \
-    'source ~/.bashrc 2>/dev/null; opencode web --port 3000 --hostname 127.0.0.1 --cwd "$_OC_CWD"' \
-    > "$HOME/opencode_web.log" 2>&1 &
-  echo $! > "$HOME/.opencode_web.pid"
-  # Espera adaptativa: verifica cada 2s hasta 20s
-  local waited=0
-  while [ $waited -lt 20 ]; do
-    sleep 2; waited=$((waited+2))
-    curl -sf http://127.0.0.1:3000 &>/dev/null && return 0
-    echo -n "."
-  done
-  echo ""
-  return 1
-}
-
-# Helper: detener servidor web
+# Helper: detener servidor web opencode
 _oc_web_stop() {
-  if [ -f "$HOME/.opencode_web.pid" ]; then
-    kill "$(cat "$HOME/.opencode_web.pid")" 2>/dev/null
-    rm -f "$HOME/.opencode_web.pid"
-  fi
   pkill -f "opencode web" 2>/dev/null
   echo -e "  ${GREEN}[OK]${NC} Servidor detenido"
 }
@@ -1848,9 +1810,11 @@ submenu_opencode() {
   while true; do
     clear; echo ""
 
-    # Verificar servidor via puerto (funciona desde Termux aunque corra en proot)
+    # Estado servidor via puerto
     local OC_STATUS
-    _oc_web_running       && OC_STATUS="${GREEN}● activo :3000${NC}"       || OC_STATUS="detenido"
+    curl -sf http://127.0.0.1:3000 &>/dev/null \
+      && OC_STATUS="${GREEN}● activo :3000${NC}" \
+      || OC_STATUS="detenido"
 
     echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
     echo    "  ║  ◆ OPENCODE                             ║"
@@ -1859,7 +1823,7 @@ submenu_opencode() {
     echo    "  ╠══════════════════════════════════════════╣"
     echo -e "  ║  ${NC}[1] Abrir en TUI (terminal)${CYAN}${BOLD}            ║"
     echo -e "  ║  ${NC}[2] Iniciar servidor web (:3000)${CYAN}${BOLD}       ║"
-    echo -e "  ║  ${NC}[3] Abrir proyecto en web${CYAN}${BOLD}              ║"
+    echo -e "  ║  ${NC}[3] Abrir proyecto (TUI o web)${CYAN}${BOLD}         ║"
     echo -e "  ║  ${NC}[4] Gestionar proyectos${CYAN}${BOLD}                ║"
     echo -e "  ║  ${NC}[5] Detener servidor web${CYAN}${BOLD}               ║"
     echo -e "  ║  ${NC}[6] Instalar / actualizar${CYAN}${BOLD}              ║"
@@ -1875,38 +1839,41 @@ submenu_opencode() {
         clear; echo ""
         echo -e "  ${CYAN}Abriendo OpenCode TUI en Debian...${NC}"
         echo -e "  ${DIM}Ctrl+C para salir${NC}"; echo ""
-        proot-distro login debian -- bash -c           'source ~/.bashrc 2>/dev/null; opencode' < /dev/tty
+        proot-distro login debian -- bash -c \
+          'source ~/.bashrc 2>/dev/null; opencode' < /dev/tty
         echo ""; read -r _ < /dev/tty ;;
 
-      2) # Servidor web en directorio raíz
+      2) # Servidor web — tmux visible, usuario hace Ctrl+B D para background
         clear; echo ""
-        if _oc_web_running; then
-          echo -e "  ${GREEN}[OK]${NC} Servidor ya corriendo en :3000"
-        else
-          echo -e "  ${CYAN}Iniciando servidor OpenCode web...${NC}"
-          echo -e "  ${DIM}(puede tardar hasta 20s)${NC}"; echo ""
-          if _oc_web_start "/root"; then
-            echo -e "  ${GREEN}[OK]${NC} Servidor iniciado"
-          else
-            echo -e "  ${RED}[ERROR]${NC} No respondió. Log: ~/opencode_web.log"
-          fi
-        fi
+        pkill -f "opencode web" 2>/dev/null
+        tmux kill-session -t "oc-web" 2>/dev/null
+        sleep 1
+        echo -e "  ${CYAN}Iniciando OpenCode Web en tmux...${NC}"; echo ""
+        echo -e "  ${DIM}Verás el output del servidor con la URL.${NC}"
+        echo -e "  ${DIM}Presiona Ctrl+B D para dejarlo en background.${NC}"
+        echo -e "  ${DIM}Luego abre: http://127.0.0.1:3000${NC}"; echo ""
+        echo -n "  Presiona ENTER para continuar..."
+        read -r _ < /dev/tty
+        tmux new-session -s "oc-web" \
+          "proot-distro login debian -- bash -c 'source ~/.bashrc 2>/dev/null; opencode web --port 3000 --hostname 127.0.0.1'"
         echo ""
         echo -e "  ${GREEN}URL:${NC} http://127.0.0.1:3000"
-        echo -e "  ${DIM}Abre en Brave, Chrome u otro navegador${NC}"
+        echo -e "  ${DIM}Para reconectar: tmux attach -t oc-web${NC}"
         echo ""; read -r _ < /dev/tty ;;
 
-      3) # Abrir proyecto en web
+      3) # Abrir proyecto — elegir TUI o Web
         clear; echo ""
         mkdir -p "$OC_PROJ_DIR"
         mapfile -t PROJS < <(ls -1 "$OC_PROJ_DIR/" 2>/dev/null)
         echo -e "  ${CYAN}Proyectos en ~/proyectos/:${NC}"; echo ""
         local IDX=1
-        [ ${#PROJS[@]} -gt 0 ]           && for p in "${PROJS[@]}"; do printf "    [%d] %s\n" "$IDX" "$p"; IDX=$((IDX+1)); done           || echo "    (ninguno — usa [4] para agregar)"
+        [ ${#PROJS[@]} -gt 0 ] \
+          && for p in "${PROJS[@]}"; do printf "    [%d] %s\n" "$IDX" "$p"; IDX=$((IDX+1)); done \
+          || echo "    (ninguno — usa [4] para agregar)"
         echo ""
         echo "    [m] Ruta manual"
         echo "    [b] Volver"
-        echo ""; echo -n "  Elige: "
+        echo ""; echo -n "  Elige proyecto: "
         read -r PCHOICE < /dev/tty
 
         local TARGET_DIR=""
@@ -1914,34 +1881,50 @@ submenu_opencode() {
           m|M) echo -n "  Ruta: "; read -r TARGET_DIR < /dev/tty ;;
           b|B|"") continue ;;
           *)
-            if [[ "$PCHOICE" =~ ^[0-9]+$ ]] && [ "$PCHOICE" -ge 1 ] && [ "$PCHOICE" -le "${#PROJS[@]}" ]; then
+            if [[ "$PCHOICE" =~ ^[0-9]+$ ]] && [ "$PCHOICE" -ge 1 ] && \
+               [ "$PCHOICE" -le "${#PROJS[@]}" ]; then
               TARGET_DIR="$OC_PROJ_DIR/${PROJS[$((PCHOICE-1))]}"
             fi ;;
         esac
 
-        if [ -n "$TARGET_DIR" ] && [ -d "$TARGET_DIR" ]; then
-          local REAL_PATH
-          REAL_PATH=$(readlink -f "$TARGET_DIR" 2>/dev/null || echo "$TARGET_DIR")
-          # Convertir ruta /storage/emulated/0 a /sdcard accesible desde proot
-          REAL_PATH="${REAL_PATH/\/storage\/emulated\/0/\/sdcard}"
-          # Si la ruta es de Termux home, mapear a /root en Debian
-          REAL_PATH="${REAL_PATH/\/data\/data\/com.termux\/files\/home/\/root}"
-          echo -e "\n  ${CYAN}Iniciando servidor en proyecto: $(basename "$TARGET_DIR")${NC}"
-          echo -e "  ${DIM}cwd: $REAL_PATH${NC}\n"
-          # Detener servidor anterior si existe
-          pkill -f "opencode web" 2>/dev/null; sleep 1
-          echo -e "  ${CYAN}Iniciando...${NC} ${DIM}(hasta 20s)${NC}"
-          if _oc_web_start "$REAL_PATH"; then
-            echo -e "  ${GREEN}[OK]${NC} Servidor iniciado con proyecto"
-            echo -e "  ${GREEN}URL:${NC} http://127.0.0.1:3000"
-          else
-            echo -e "  ${RED}[ERROR]${NC} No respondió. Log: ~/opencode_web.log"
-          fi
-          echo ""; read -r _ < /dev/tty
-        elif [ -n "$TARGET_DIR" ]; then
+        [ -z "$TARGET_DIR" ] && continue
+        [ ! -d "$TARGET_DIR" ] && {
           echo -e "  ${RED}[ERROR]${NC} No existe: $TARGET_DIR"
-          echo ""; read -r _ < /dev/tty
-        fi ;;
+          echo ""; read -r _ < /dev/tty; continue
+        }
+
+        local REAL_PATH
+        REAL_PATH=$(readlink -f "$TARGET_DIR" 2>/dev/null || echo "$TARGET_DIR")
+        REAL_PATH="${REAL_PATH/\/storage\/emulated\/0/\/sdcard}"
+        REAL_PATH="${REAL_PATH/\/data\/data\/com.termux\/files\/home/\/root}"
+
+        echo ""
+        echo -e "  ${CYAN}Proyecto:${NC} $(basename "$TARGET_DIR")"
+        echo -e "  ${DIM}cwd: $REAL_PATH${NC}"; echo ""
+        echo "  [1] TUI  — interfaz en terminal"
+        echo "  [2] Web  — servidor en :3000"
+        echo ""; echo -n "  Modo: "
+        read -r MODO < /dev/tty
+
+        case "$MODO" in
+          1)
+            echo ""
+            proot-distro login debian -- bash -c \
+              "source ~/.bashrc 2>/dev/null; opencode --cwd '$REAL_PATH'" < /dev/tty
+            echo ""; read -r _ < /dev/tty ;;
+          2)
+            pkill -f "opencode web" 2>/dev/null
+            tmux kill-session -t "oc-web" 2>/dev/null; sleep 1
+            echo -e "  ${DIM}Ctrl+B D para background. Luego abre :3000${NC}"; echo ""
+            echo -n "  Presiona ENTER para continuar..."
+            read -r _ < /dev/tty
+            tmux new-session -s "oc-web" \
+              "proot-distro login debian -- bash -c 'source ~/.bashrc 2>/dev/null; opencode web --port 3000 --hostname 127.0.0.1 --cwd \"$REAL_PATH\"'"
+            echo ""
+            echo -e "  ${GREEN}URL:${NC} http://127.0.0.1:3000"
+            echo ""; read -r _ < /dev/tty ;;
+          *) continue ;;
+        esac ;;
 
       4) # Gestionar proyectos
         while true; do
