@@ -2081,7 +2081,7 @@ except: pass
         # [r] = quitar config Ollama
         if [ "$OL_INPUT" = "r" ] || [ "$OL_INPUT" = "R" ]; then
           proot-distro login debian -- bash -c \
-            'rm -f /root/.config/opencode/config.json && echo ok' 2>/dev/null
+            'rm -f /root/.config/opencode/opencode.json /root/.config/opencode/config.json && echo ok' 2>/dev/null
           echo -e "  ${GREEN}[OK]${NC} Config eliminado — OpenCode usará provider por defecto"
           echo ""; read -r _ < /dev/tty; continue
         fi
@@ -2102,14 +2102,27 @@ except: pass
         echo -e "  Configurando: ${CYAN}${OL_MODEL}${NC}"; echo ""
 
         # Generar JSON válido con Python y pasarlo por stdin a proot
+        # Schema correcto: provider (singular) + npm + baseURL con /v1
         python3 - << PYEOF | proot-distro login debian -- bash -c \
-          'mkdir -p /root/.config/opencode && cat > /root/.config/opencode/config.json' \
+          'mkdir -p /root/.config/opencode && cat > /root/.config/opencode/opencode.json' \
           2>/dev/null && OC_CFG_OK=true || OC_CFG_OK=false
 import json
 print(json.dumps({
+  "\$schema": "https://opencode.ai/config.json",
   "model": "ollama/${OL_MODEL}",
-  "providers": {
-    "ollama": {"apiUrl": "http://127.0.0.1:11434"}
+  "provider": {
+    "ollama": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Ollama (local)",
+      "options": {
+        "baseURL": "http://127.0.0.1:11434/v1"
+      },
+      "models": {
+        "${OL_MODEL}": {
+          "name": "${OL_MODEL}"
+        }
+      }
+    }
   }
 }, indent=2))
 PYEOF
