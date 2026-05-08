@@ -132,6 +132,22 @@ EOF
   echo "ready|${ver}|"
 }
 
+check_opencode() {
+  # Detectar si opencode está instalado en proot Debian
+  local oc_ver=""
+  if proot-distro login debian -- bash -c 'command -v opencode' &>/dev/null 2>&1; then
+    oc_ver=$(proot-distro login debian -- bash -c 'opencode --version 2>/dev/null | head -1' 2>/dev/null \
+      | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+    [ -z "$oc_ver" ] && oc_ver="?"
+    # Ver si el servidor web está corriendo (tmux sesión opencode)
+    tmux has-session -t "opencode" 2>/dev/null \
+      && echo "running|${oc_ver}|:3000" \
+      || echo "stopped|${oc_ver}|"
+  else
+    echo "not_installed||"
+  fi
+}
+
 check_ollama() {
   [ "$(get_reg ollama installed)" = "true" ] || { echo "not_installed||"; return; }
   local ver; ver=$(pkg show ollama 2>/dev/null | grep "^Version:" | awk '{print $2}')
@@ -1554,6 +1570,70 @@ submenu_ollama() {
 # ════════════════════════════════════════════
 #  SUBMENÚ CLAUDE CODE
 # ════════════════════════════════════════════
+submenu_code_tools() {
+  while true; do
+    clear; echo ""
+
+    # Leer estados frescos cada vez que se entra
+    local CC_S CC_V CC_E OC_S OC_V OC_E
+    IFS='|' read -r CC_S CC_V CC_E <<< "$(check_claude)"
+    IFS='|' read -r OC_S OC_V OC_E <<< "$(check_opencode)"
+
+    # Estado y versión por herramienta
+    local CC_PILL OC_PILL CC_LINE OC_LINE
+    case "$CC_S" in
+      ready)         CC_PILL="${GREEN}● listo   ${NC}" ;;
+      not_installed) CC_PILL="${YELLOW}○ no instal${NC}" ; CC_V="──────────" ;;
+      *)             CC_PILL="${YELLOW}● ${CC_S}${NC}" ;;
+    esac
+    case "$OC_S" in
+      running)       OC_PILL="${GREEN}● activo  ${NC}" ;;
+      stopped)       OC_PILL="${GREEN}● listo   ${NC}" ;;
+      not_installed) OC_PILL="${YELLOW}○ no instal${NC}" ; OC_V="──────────" ;;
+      *)             OC_PILL="${YELLOW}● ${OC_S}${NC}" ;;
+    esac
+
+    echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
+    echo    "  ║  ◆ CODE TOOLS                           ║"
+    echo    "  ╠══════════════════════════════════════════╣"
+    printf  "  ║  ${NC}[1] Claude Code  %b  %b${CYAN}${BOLD}║\n" "$CC_PILL" "${NC}→ submenú${CYAN}${BOLD}"
+    printf  "  ║      ${NC}${DIM}%s${NC}${CYAN}${BOLD}%-$((28 - ${#CC_V}))s║\n" "$CC_V" ""
+    printf  "  ║  ${NC}[2] OpenCode     %b  %b${CYAN}${BOLD}║\n" "$OC_PILL" "${NC}→ submenú${CYAN}${BOLD}"
+    printf  "  ║      ${NC}${DIM}%s${NC}${CYAN}${BOLD}%-$((28 - ${#OC_V}))s║\n" "$OC_V" ""
+    echo    "  ╠══════════════════════════════════════════╣"
+    echo -e "  ║  ${NC}[b] Volver al menú principal${CYAN}${BOLD}           ║"
+    echo -e "  ╚══════════════════════════════════════════╝${NC}"
+    echo ""; echo -n "  Opción: "
+    read -r OPT < /dev/tty
+
+    case "$OPT" in
+      1)
+        if [ "$CC_S" = "not_installed" ]; then
+          install_module "Claude Code" "claude"
+        elif [ "$CC_V" = "err:reinstalar" ]; then
+          clear; echo ""
+          echo -e "${YELLOW}${BOLD}  ╔══════════════════════════════════════════╗"
+          echo    "  ║  ⚠  Claude Code — cli.js corrompido    ║"
+          echo    "  ╠══════════════════════════════════════════╣"
+          echo -e "  ║  ${NC}Usa [0] → Restore → GitHub → claude     ${YELLOW}${BOLD}║"
+          echo -e "  ╚══════════════════════════════════════════╝${NC}"; echo ""
+          echo -n "  ¿Reinstalar ahora? (s/n): "
+          read -r RI < /dev/tty
+          [ "$RI" = "s" ] || [ "$RI" = "S" ] && install_module "Claude Code" "claude"
+        else
+          submenu_claude
+        fi ;;
+      2)
+        if [ "$OC_S" = "not_installed" ]; then
+          install_module "OpenCode" "opencode"
+        else
+          submenu_opencode
+        fi ;;
+      b|B|"") break ;;
+    esac
+  done
+}
+
 submenu_claude() {
   while true; do
     clear; echo ""
@@ -1710,6 +1790,231 @@ submenu_claude() {
         _ensure_install_script "install_claude.sh" || { read -r _ < /dev/tty; continue; }
         bash "$HOME/install_claude.sh" < /dev/tty
         echo ""; read -r _ < /dev/tty ;;
+      b|B|"") break ;;
+    esac
+  done
+}
+
+# ════════════════════════════════════════════
+#  SUBMENÚ OPENCODE
+# ════════════════════════════════════════════
+# Helper: verifica si opencode web está corriendo (proceso en proot)
+_oc_web_running() {
+  # El proceso corre dentro de proot — verificar via puerto, no tmux
+  curl -sf http://127.0.0.1:3000 &>/dev/null
+}
+
+# Helper: lanzar servidor web opencode en background desde Termux
+_oc_web_start() {
+  local cwd="${1:-/root}"
+  # Matar proceso anterior si existe
+  pkill -f "opencode web" 2>/dev/null
+  sleep 1
+  # Lanzar en tmux de Termux (no del proot)
+  tmux new-session -d -s "opencode-web"     "proot-distro login debian -- bash -c 'source ~/.bashrc 2>/dev/null; opencode web --port 3000 --hostname 127.0.0.1 --cwd "$cwd" 2>&1'"     2>/dev/null
+}
+
+submenu_opencode() {
+  local OC_PROJ_DIR="$HOME/proyectos"
+
+  while true; do
+    clear; echo ""
+
+    # Verificar servidor via puerto (funciona desde Termux aunque corra en proot)
+    local OC_STATUS
+    _oc_web_running       && OC_STATUS="${GREEN}● activo :3000${NC}"       || OC_STATUS="detenido"
+
+    echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
+    echo    "  ║  ◆ OPENCODE                             ║"
+    echo    "  ╠══════════════════════════════════════════╣"
+    printf  "  ║  ${NC}Web: %-35b${CYAN}${BOLD}║\n" "$OC_STATUS"
+    echo    "  ╠══════════════════════════════════════════╣"
+    echo -e "  ║  ${NC}[1] Abrir en TUI (terminal)${CYAN}${BOLD}            ║"
+    echo -e "  ║  ${NC}[2] Iniciar servidor web (:3000)${CYAN}${BOLD}       ║"
+    echo -e "  ║  ${NC}[3] Abrir proyecto en web${CYAN}${BOLD}              ║"
+    echo -e "  ║  ${NC}[4] Gestionar proyectos${CYAN}${BOLD}                ║"
+    echo -e "  ║  ${NC}[5] Detener servidor web${CYAN}${BOLD}               ║"
+    echo -e "  ║  ${NC}[6] Instalar / actualizar${CYAN}${BOLD}              ║"
+    echo -e "  ║  ${NC}[b] Volver${CYAN}${BOLD}                             ║"
+    echo -e "  ╚══════════════════════════════════════════╝${NC}"
+    echo ""; echo -n "  Opción: "
+    read -r OPT < /dev/tty
+
+    case "$OPT" in
+
+      1) # TUI directo en Debian
+        clear; echo ""
+        echo -e "  ${CYAN}Abriendo OpenCode TUI en Debian...${NC}"
+        echo -e "  ${DIM}Ctrl+C para salir${NC}"; echo ""
+        proot-distro login debian -- bash -c           'source ~/.bashrc 2>/dev/null; opencode' < /dev/tty
+        echo ""; read -r _ < /dev/tty ;;
+
+      2) # Servidor web en directorio raíz
+        clear; echo ""
+        if _oc_web_running; then
+          echo -e "  ${GREEN}[OK]${NC} Servidor ya corriendo en :3000"
+        else
+          echo -e "  ${CYAN}Iniciando servidor OpenCode web...${NC}"; echo ""
+          _oc_web_start "/root"
+          sleep 3
+          if _oc_web_running; then
+            echo -e "  ${GREEN}[OK]${NC} Servidor iniciado"
+          else
+            echo -e "  ${RED}[ERROR]${NC} No respondió en :3000"
+            echo -e "  ${DIM}Verifica con: proot-distro login debian -- opencode --version${NC}"
+          fi
+        fi
+        echo ""
+        echo -e "  ${GREEN}URL:${NC} http://127.0.0.1:3000"
+        echo -e "  ${DIM}Abre en Brave, Chrome u otro navegador${NC}"
+        echo ""; read -r _ < /dev/tty ;;
+
+      3) # Abrir proyecto en web
+        clear; echo ""
+        mkdir -p "$OC_PROJ_DIR"
+        mapfile -t PROJS < <(ls -1 "$OC_PROJ_DIR/" 2>/dev/null)
+        echo -e "  ${CYAN}Proyectos en ~/proyectos/:${NC}"; echo ""
+        local IDX=1
+        [ ${#PROJS[@]} -gt 0 ]           && for p in "${PROJS[@]}"; do printf "    [%d] %s\n" "$IDX" "$p"; IDX=$((IDX+1)); done           || echo "    (ninguno — usa [4] para agregar)"
+        echo ""
+        echo "    [m] Ruta manual"
+        echo "    [b] Volver"
+        echo ""; echo -n "  Elige: "
+        read -r PCHOICE < /dev/tty
+
+        local TARGET_DIR=""
+        case "$PCHOICE" in
+          m|M) echo -n "  Ruta: "; read -r TARGET_DIR < /dev/tty ;;
+          b|B|"") continue ;;
+          *)
+            if [[ "$PCHOICE" =~ ^[0-9]+$ ]] && [ "$PCHOICE" -ge 1 ] && [ "$PCHOICE" -le "${#PROJS[@]}" ]; then
+              TARGET_DIR="$OC_PROJ_DIR/${PROJS[$((PCHOICE-1))]}"
+            fi ;;
+        esac
+
+        if [ -n "$TARGET_DIR" ] && [ -d "$TARGET_DIR" ]; then
+          local REAL_PATH
+          REAL_PATH=$(readlink -f "$TARGET_DIR" 2>/dev/null || echo "$TARGET_DIR")
+          # Convertir ruta /storage/emulated/0 a /sdcard accesible desde proot
+          REAL_PATH="${REAL_PATH/\/storage\/emulated\/0/\/sdcard}"
+          # Si la ruta es de Termux home, mapear a /root en Debian
+          REAL_PATH="${REAL_PATH/\/data\/data\/com.termux\/files\/home/\/root}"
+          echo -e "\n  ${CYAN}Iniciando servidor en proyecto: $(basename "$TARGET_DIR")${NC}"
+          echo -e "  ${DIM}cwd: $REAL_PATH${NC}\n"
+          # Detener servidor anterior si existe
+          pkill -f "opencode web" 2>/dev/null; sleep 1
+          _oc_web_start "$REAL_PATH"
+          sleep 3
+          if _oc_web_running; then
+            echo -e "  ${GREEN}[OK]${NC} Servidor iniciado con proyecto"
+            echo -e "  ${GREEN}URL:${NC} http://127.0.0.1:3000"
+          else
+            echo -e "  ${RED}[ERROR]${NC} No respondió. Verifica que opencode esté instalado."
+          fi
+          echo ""; read -r _ < /dev/tty
+        elif [ -n "$TARGET_DIR" ]; then
+          echo -e "  ${RED}[ERROR]${NC} No existe: $TARGET_DIR"
+          echo ""; read -r _ < /dev/tty
+        fi ;;
+
+      4) # Gestionar proyectos
+        while true; do
+          clear; echo ""
+          echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
+          echo    "  ║  ◆ OPENCODE — Proyectos                 ║"
+          echo    "  ╠══════════════════════════════════════════╣"
+          echo -e "  ║  ${NC}[1] Listar proyectos${CYAN}${BOLD}                   ║"
+          echo -e "  ║  ${NC}[2] Symlink desde Download${CYAN}${BOLD}             ║"
+          echo -e "  ║  ${NC}[3] Crear carpeta nueva${CYAN}${BOLD}                ║"
+          echo -e "  ║  ${NC}[4] Eliminar symlink${CYAN}${BOLD}                   ║"
+          echo -e "  ║  ${NC}[b] Volver${CYAN}${BOLD}                             ║"
+          echo -e "  ╚══════════════════════════════════════════╝${NC}"
+          echo ""; echo -n "  Opción: "
+          read -r GOPT < /dev/tty
+
+          case "$GOPT" in
+            1)
+              clear; echo ""
+              echo -e "  ${BOLD}~/proyectos/:${NC}"; echo ""
+              mkdir -p "$OC_PROJ_DIR"
+              ls "$OC_PROJ_DIR/" 2>/dev/null | grep -q .                 && ls -la "$OC_PROJ_DIR/"                 || echo -e "  ${DIM}(vacío)${NC}"
+              echo ""; read -r _ < /dev/tty ;;
+
+            2)
+              clear; echo ""
+              echo -e "  ${BOLD}Symlink desde /sdcard/Download/${NC}"; echo ""
+              mapfile -t DL_DIRS < <(find /storage/emulated/0/Download -maxdepth 1 -mindepth 1 -type d 2>/dev/null | xargs -I{} basename {})
+              [ ${#DL_DIRS[@]} -eq 0 ] && { echo -e "  ${YELLOW}Sin carpetas en Download${NC}"; read -r _ < /dev/tty; continue; }
+              mkdir -p "$OC_PROJ_DIR"
+              for i in "${!DL_DIRS[@]}"; do
+                local LDST="$OC_PROJ_DIR/${DL_DIRS[$i]}"
+                [ -L "$LDST" ]                   && printf "    [%d] %s ${DIM}(ya vinculado)${NC}\n" "$((i+1))" "${DL_DIRS[$i]}"                   || printf "    [%d] %s\n" "$((i+1))" "${DL_DIRS[$i]}"
+              done
+              echo ""; echo -n "  Número: "
+              read -r DCHOICE < /dev/tty
+              if [[ "$DCHOICE" =~ ^[0-9]+$ ]] && [ "$DCHOICE" -ge 1 ] && [ "$DCHOICE" -le "${#DL_DIRS[@]}" ]; then
+                local DNAME="${DL_DIRS[$((DCHOICE-1))]}"
+                local LSRC="/storage/emulated/0/Download/${DNAME}"
+                local LDST="$OC_PROJ_DIR/${DNAME}"
+                [ -L "$LDST" ]                   && echo -e "  ${YELLOW}[AVISO]${NC} Ya existe: ~/proyectos/${DNAME}"                   || { ln -s "$LSRC" "$LDST" 2>/dev/null                     && echo -e "  ${GREEN}[OK]${NC} Symlink: ~/proyectos/${DNAME}"                     || echo -e "  ${RED}[ERROR]${NC} No se pudo crear"; }
+              fi
+              echo ""; read -r _ < /dev/tty ;;
+
+            3)
+              clear; echo ""
+              echo -n "  Nombre del proyecto: "
+              read -r NEW_NAME < /dev/tty
+              NEW_NAME=$(echo "$NEW_NAME" | tr ' ' '-' | tr -cd '[:alnum:]-_')
+              [ -z "$NEW_NAME" ] && { echo -e "  ${YELLOW}Nombre vacío${NC}"; echo ""; read -r _ < /dev/tty; continue; }
+              mkdir -p "$OC_PROJ_DIR/$NEW_NAME"                 && echo -e "  ${GREEN}[OK]${NC} Creado: ~/proyectos/$NEW_NAME"                 || echo -e "  ${RED}[ERROR]${NC}"
+              echo ""; read -r _ < /dev/tty ;;
+
+            4)
+              clear; echo ""
+              mapfile -t LINKS < <(find "$OC_PROJ_DIR" -maxdepth 1 -type l 2>/dev/null | xargs -I{} basename {})
+              [ ${#LINKS[@]} -eq 0 ] && { echo -e "  ${DIM}Sin symlinks${NC}"; read -r _ < /dev/tty; continue; }
+              for i in "${!LINKS[@]}"; do printf "    [%d] %s\n" "$((i+1))" "${LINKS[$i]}"; done
+              echo ""; echo -n "  Número: "
+              read -r LCHOICE < /dev/tty
+              if [[ "$LCHOICE" =~ ^[0-9]+$ ]] && [ "$LCHOICE" -ge 1 ] && [ "$LCHOICE" -le "${#LINKS[@]}" ]; then
+                local LNAME="${LINKS[$((LCHOICE-1))]}"
+                echo -n "  ¿Eliminar ~/proyectos/${LNAME}? (s/n): "
+                read -r LCONFIRM < /dev/tty
+                [ "$LCONFIRM" = "s" ] || [ "$LCONFIRM" = "S" ] && {
+                  rm "$OC_PROJ_DIR/$LNAME"                     && echo -e "  ${GREEN}[OK]${NC} Eliminado"                     || echo -e "  ${RED}[ERROR]${NC}"
+                }
+              fi
+              echo ""; read -r _ < /dev/tty ;;
+
+            b|B|"") break ;;
+          esac
+        done ;;
+
+      5) # Detener servidor
+        clear; echo ""
+        pkill -f "opencode web" 2>/dev/null
+        tmux kill-session -t "opencode-web" 2>/dev/null
+        echo -e "  ${GREEN}[OK]${NC} Servidor detenido"
+        echo ""; read -r _ < /dev/tty ;;
+
+      6) # Instalar / actualizar — inline, sin depender del repo
+        clear; echo ""
+        echo -e "  ${CYAN}Instalando/actualizando OpenCode en Debian...${NC}"; echo ""
+        if [ -f "$HOME/install_opencode.sh" ]; then
+          bash "$HOME/install_opencode.sh" < /dev/tty
+        else
+          echo -e "  ${CYAN}Ejecutando instalación directa en Debian...${NC}"; echo ""
+          proot-distro login debian -- bash -c             'apt update -qq && apt install -y curl ripgrep tmux && curl -fsSL https://opencode.ai/install | bash'             < /dev/tty
+          echo ""
+          OC_VER=$(proot-distro login debian -- bash -c             'source ~/.bashrc 2>/dev/null; opencode --version 2>/dev/null' 2>/dev/null |             grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+          if [ -n "$OC_VER" ]; then
+            echo -e "  ${GREEN}[OK]${NC} OpenCode v${OC_VER} instalado"
+          else
+            echo -e "  ${YELLOW}[AVISO]${NC} Verificar instalación: proot-distro login debian"
+          fi
+        fi
+        echo ""; read -r _ < /dev/tty ;;
+
       b|B|"") break ;;
     esac
   done
@@ -2191,108 +2496,45 @@ PYREPORT
         _check_script "$BACKTEST_SCRIPT" "backtest_runner.py" || continue
         clear; echo ""
         echo -e "  ${CYAN}${BOLD}BACKTESTING — CSV MT5${NC}"
-        echo -e "  ${DIM}Busca CSV en: ~/trading/ · /sdcard/Download/trading/ · /sdcard/Download/${NC}"; echo ""
+        echo -e "  ${DIM}Coloca el CSV en ~/trading/ o /sdcard/Download/trading/${NC}"; echo ""
         python3 "$BACKTEST_SCRIPT" < /dev/tty
         echo ""; read -r _ < /dev/tty ;;
       11)
         _py_ok || continue
         clear; echo ""
         echo -e "  ${CYAN}${BOLD}EJECUTAR BOT PYTHON${NC}"; echo ""
-
-        # ── Rutas de búsqueda predeterminadas ────────────────────
-        BOT_SEARCH_DIRS=(
-          "$TRADING_DIR"
-          "/sdcard/Download/bots"
-          "/sdcard/Download/trading"
-          "/sdcard/Download"
-        )
-        # Scripts del stack a excluir
-        STACK_SCRIPTS="signal_bot.py|trade_tracker.py|webhook_receiver.py|backtest_runner.py"
-
-        # ── Recolectar scripts de todas las rutas ─────────────────
-        BOT_LIST=()
-        for dir in "${BOT_SEARCH_DIRS[@]}"; do
-          [ -d "$dir" ] || continue
-          while IFS= read -r f; do
-            nombre_bot="$(basename "$f")"
-            echo "$nombre_bot" | grep -qE "^($STACK_SCRIPTS)$" && continue
-            BOT_LIST+=("$f")
-          done < <(find "$dir" -maxdepth 1 -name "*.py" 2>/dev/null | sort)
-        done
-
-        # ── Mostrar lista ─────────────────────────────────────────
-        if [ ${#BOT_LIST[@]} -eq 0 ]; then
-          echo -e "  ${YELLOW}[AVISO]${NC} No se encontraron bots en:\n"
-          for dir in "${BOT_SEARCH_DIRS[@]}"; do
-            echo "    • $dir"
-          done
-          echo ""
-        else
-          echo -e "  Bots encontrados:\n"
-          for i in "${!BOT_LIST[@]}"; do
-            printf "    [%d] %s  ${DIM}(%s)${NC}\n" \
-              "$((i+1))" "$(basename "${BOT_LIST[$i]}")" \
-              "$(dirname "${BOT_LIST[$i]}")"
-          done
-          echo ""
+        # Buscar scripts en ~/python/trading/ excluyendo los del stack
+        STACK_SCRIPTS="signal_bot.py trade_tracker.py webhook_receiver.py backtest_runner.py"
+        mapfile -t BOTS < <(find "$TRADING_DIR" -maxdepth 1 -name "*.py" 2>/dev/null | sort)
+        if [ ${#BOTS[@]} -eq 0 ]; then
+          echo -e "  ${YELLOW}[AVISO]${NC} No hay scripts en $TRADING_DIR"
+          echo ""; read -r _ < /dev/tty; continue
         fi
-
-        echo "    [m] Navegar otra carpeta"
-        echo "    [c] Crear carpeta /sdcard/Download/bots/"
+        echo -e "  Scripts en $TRADING_DIR:\n"
+        BOT_LIST=()
+        for f in "${BOTS[@]}"; do
+          nombre_bot="$(basename "$f")"
+          BOT_LIST+=("$f")
+          printf "    [%d] %s\n" "${#BOT_LIST[@]}" "$nombre_bot"
+        done
+        echo ""
+        echo "    [m] Ruta manual"
         echo ""; echo -n "  Elige número: "
         read -r BOT_OPT < /dev/tty
-
-        if [ "$BOT_OPT" = "c" ] || [ "$BOT_OPT" = "C" ]; then
-          mkdir -p "/sdcard/Download/bots" \
-            && echo -e "  ${GREEN}[OK]${NC} Carpeta creada: /sdcard/Download/bots" \
-            || echo -e "  ${RED}[ERROR]${NC} No se pudo crear la carpeta"
-          echo ""; read -r _ < /dev/tty; continue
-
-        elif [ "$BOT_OPT" = "m" ] || [ "$BOT_OPT" = "M" ]; then
-          # ── Navegar carpeta: listar y elegir número ───────────
-          clear; echo ""
-          echo -e "  ${CYAN}Carpetas disponibles:${NC}"; echo ""
-          NAV_DIRS=("$HOME/python" "/sdcard/Download" "$HOME")
-          for i in "${!NAV_DIRS[@]}"; do
-            printf "    [%d] %s\n" "$((i+1))" "${NAV_DIRS[$i]}"
-          done
-          echo ""; echo -n "  Elegir carpeta (número): "
-          read -r NAV_OPT < /dev/tty
-          if [[ "$NAV_OPT" =~ ^[0-9]+$ ]] && [ "$NAV_OPT" -ge 1 ] && [ "$NAV_OPT" -le "${#NAV_DIRS[@]}" ]; then
-            NAV_DIR="${NAV_DIRS[$((NAV_OPT-1))]}"
-          else
-            echo -e "  ${YELLOW}[?]${NC} Opción inválida"; echo ""; read -r _ < /dev/tty; continue
-          fi
-          mapfile -t NAV_FILES < <(find "$NAV_DIR" -maxdepth 2 -name "*.py" 2>/dev/null | sort)
-          if [ ${#NAV_FILES[@]} -eq 0 ]; then
-            echo -e "  ${YELLOW}[AVISO]${NC} No hay .py en $NAV_DIR"
-            echo ""; read -r _ < /dev/tty; continue
-          fi
-          clear; echo ""
-          echo -e "  Scripts en $NAV_DIR:\n"
-          for i in "${!NAV_FILES[@]}"; do
-            printf "    [%d] %s\n" "$((i+1))" "$(basename "${NAV_FILES[$i]}")"
-          done
-          echo ""; echo -n "  Número: "
-          read -r NAV_SEL < /dev/tty
-          if [[ "$NAV_SEL" =~ ^[0-9]+$ ]] && [ "$NAV_SEL" -ge 1 ] && [ "$NAV_SEL" -le "${#NAV_FILES[@]}" ]; then
-            BOT_PATH="${NAV_FILES[$((NAV_SEL-1))]}"
-          else
-            echo -e "  ${YELLOW}[?]${NC} Opción inválida"; echo ""; read -r _ < /dev/tty; continue
-          fi
-
+        if [ "$BOT_OPT" = "m" ] || [ "$BOT_OPT" = "M" ]; then
+          echo -n "  Ruta del script: "
+          read -r BOT_PATH < /dev/tty
+          BOT_PATH="${BOT_PATH/#\~/$HOME}"
         elif [[ "$BOT_OPT" =~ ^[0-9]+$ ]] && [ "$BOT_OPT" -ge 1 ] && [ "$BOT_OPT" -le "${#BOT_LIST[@]}" ]; then
           BOT_PATH="${BOT_LIST[$((BOT_OPT-1))]}"
         else
           echo -e "  ${YELLOW}[?]${NC} Opción inválida"
           echo ""; read -r _ < /dev/tty; continue
         fi
-
         if [ ! -f "$BOT_PATH" ]; then
           echo -e "  ${RED}[ERROR]${NC} Archivo no encontrado: $BOT_PATH"
           echo ""; read -r _ < /dev/tty; continue
         fi
-
         echo ""
         echo -e "  ${CYAN}Argumentos adicionales (ENTER para ninguno):${NC}"
         echo -n "  args: "
@@ -3082,6 +3324,7 @@ while true; do
   IFS='|' read -r EX_STATE  EX_VER  EX_EXTRA  <<< "$(check_expo)"
   IFS='|' read -r PY_STATE  PY_VER  PY_EXTRA  <<< "$(check_python)"
   IFS='|' read -r RM_STATE  RM_VER  RM_EXTRA  <<< "$(check_remote)"
+  IFS='|' read -r OC_STATE  OC_VER  OC_EXTRA  <<< "$(check_opencode)"
 
   # ── Info sistema ──────────────────────────────────────────────
   IP=$(_get_ip)
@@ -3103,26 +3346,28 @@ while true; do
 
   # ── Módulos ───────────────────────────────────────────────────
   case "$N8N_STATE" in running|stopped) N8N_CMD="→ submenú" ;; *) N8N_CMD="" ;; esac
-  draw_module "1" "⬡" "n8n"         "$N8N_STATE" "$N8N_VER" "$N8N_CMD"
+  draw_module "1" "⬡" "n8n"          "$N8N_STATE" "$N8N_VER" "$N8N_CMD"
 
-  case "$CC_STATE"  in ready)           CC_CMD="→ submenú"  ;; *) CC_CMD=""  ;; esac
-  draw_module "2" "◆" "Claude Code"  "$CC_STATE"  "$CC_VER"  "$CC_CMD"
+  # [2] Code Tools — estado compuesto Claude + OpenCode
+  CT_STATE="ready"
+  [ "$CC_STATE" = "not_installed" ] && [ "$OC_STATE" = "not_installed" ] && CT_STATE="not_installed"
+  CT_VER="cc:${CC_VER:-?} oc:${OC_VER:-?}"
+  draw_module "2" "◆" "Code Tools"   "$CT_STATE"  "$CT_VER"  "→ submenú"
 
   case "$OL_STATE"  in running|stopped) OL_CMD="→ submenú" ;; *) OL_CMD="" ;; esac
-  draw_module "3" "◎" "Ollama"       "$OL_STATE"  "$OL_VER"  "$OL_CMD"
+  draw_module "3" "◎" "Ollama"        "$OL_STATE"  "$OL_VER"  "$OL_CMD"
 
   case "$EX_STATE"  in ready)           EX_CMD="→ submenú"  ;; *) EX_CMD=""  ;; esac
-  draw_module "4" "◈" "Expo/EAS/Git" "$EX_STATE"  "$EX_VER"  "$EX_CMD"
+  draw_module "4" "◈" "Expo/EAS/Git"  "$EX_STATE"  "$EX_VER"  "$EX_CMD"
 
   case "$PY_STATE"  in ready)           PY_CMD="→ submenú"  ;; *) PY_CMD=""  ;; esac
-  draw_module "5" "◉" "Python"       "$PY_STATE"  "$PY_VER"  "$PY_CMD"
+  draw_module "5" "◉" "Python"        "$PY_STATE"  "$PY_VER"  "$PY_CMD"
 
   # Remote: muestra estado compuesto SSH●/DB● en la línea extra
   case "$RM_STATE"  in running|stopped) RM_CMD="→ submenú" ;; *) RM_CMD="" ;; esac
-  # Remote: mostrar versión SSH + estado de servicios activos
   RM_DISPLAY_VER="$RM_VER"
   [ -n "$RM_EXTRA" ] && RM_DISPLAY_VER="${RM_VER} ${RM_EXTRA}"
-  draw_module "6" "⬡" "Remote"       "$RM_STATE"  "$RM_DISPLAY_VER" "$RM_CMD"
+  draw_module "6" "⬡" "Remote"        "$RM_STATE"  "$RM_DISPLAY_VER" "$RM_CMD"
 
   # ── Separador + Backup ────────────────────────────────────────
   echo -e "  ${DIM}──────────────────────────────────────────${NC}"
@@ -3142,23 +3387,7 @@ while true; do
     1)
       [ "$N8N_STATE" = "not_installed" ] && install_module "n8n" "n8n" && continue || submenu_n8n "$N8N_STATE" ;;
     2)
-      if [ "$CC_STATE" = "not_installed" ]; then
-        install_module "Claude Code" "claude"; continue
-      elif [ "$CC_VER" = "err:reinstalar" ]; then
-        clear; echo ""
-        echo -e "${YELLOW}${BOLD}  ╔══════════════════════════════════════════╗"
-        echo    "  ║  ⚠  Claude Code — cli.js corrompido    ║"
-        echo    "  ╠══════════════════════════════════════════╣"
-        echo -e "  ║  ${NC}Usa [0] → Restore → GitHub → claude     ${YELLOW}${BOLD}║"
-        echo -e "  ║  ${NC}O prueba reinstalar desde este menú:     ${YELLOW}${BOLD}║"
-        echo -e "  ╚══════════════════════════════════════════╝${NC}"; echo ""
-        echo -n "  ¿Reinstalar ahora? (s/n): "
-        read -r RI < /dev/tty
-        [ "$RI" = "s" ] || [ "$RI" = "S" ] && install_module "Claude Code" "claude"
-        continue
-      else
-        submenu_claude
-      fi ;;
+      submenu_code_tools ;;
     3)
       [ "$OL_STATE" = "not_installed" ] && install_module "Ollama" "ollama" && continue || submenu_ollama "$OL_STATE" ;;
     4)

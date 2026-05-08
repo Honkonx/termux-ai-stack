@@ -1798,23 +1798,40 @@ submenu_claude() {
 # ════════════════════════════════════════════
 #  SUBMENÚ OPENCODE
 # ════════════════════════════════════════════
+# Helper: verifica si opencode web está corriendo (proceso en proot)
+_oc_web_running() {
+  # El proceso corre dentro de proot — verificar via puerto, no tmux
+  curl -sf http://127.0.0.1:3000 &>/dev/null
+}
+
+# Helper: lanzar servidor web opencode en background desde Termux
+_oc_web_start() {
+  local cwd="${1:-/root}"
+  # Matar proceso anterior si existe
+  pkill -f "opencode web" 2>/dev/null
+  sleep 1
+  # Lanzar en tmux de Termux (no del proot)
+  tmux new-session -d -s "opencode-web"     "proot-distro login debian -- bash -c 'source ~/.bashrc 2>/dev/null; opencode web --port 3000 --hostname 127.0.0.1 --cwd "$cwd" 2>&1'"     2>/dev/null
+}
+
 submenu_opencode() {
   local OC_PROJ_DIR="$HOME/proyectos"
 
   while true; do
     clear; echo ""
 
-    local OC_STATUS="detenido"
-    tmux has-session -t "opencode" 2>/dev/null && OC_STATUS="${GREEN}● activo :3000${NC}"
+    # Verificar servidor via puerto (funciona desde Termux aunque corra en proot)
+    local OC_STATUS
+    _oc_web_running       && OC_STATUS="${GREEN}● activo :3000${NC}"       || OC_STATUS="detenido"
 
     echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
     echo    "  ║  ◆ OPENCODE                             ║"
     echo    "  ╠══════════════════════════════════════════╣"
-    printf  "  ║  ${NC}Servidor: %-30b${CYAN}${BOLD}║\n" "$OC_STATUS"
+    printf  "  ║  ${NC}Web: %-35b${CYAN}${BOLD}║\n" "$OC_STATUS"
     echo    "  ╠══════════════════════════════════════════╣"
     echo -e "  ║  ${NC}[1] Abrir en TUI (terminal)${CYAN}${BOLD}            ║"
     echo -e "  ║  ${NC}[2] Iniciar servidor web (:3000)${CYAN}${BOLD}       ║"
-    echo -e "  ║  ${NC}[3] Abrir en proyecto${CYAN}${BOLD}                  ║"
+    echo -e "  ║  ${NC}[3] Abrir proyecto en web${CYAN}${BOLD}              ║"
     echo -e "  ║  ${NC}[4] Gestionar proyectos${CYAN}${BOLD}                ║"
     echo -e "  ║  ${NC}[5] Detener servidor web${CYAN}${BOLD}               ║"
     echo -e "  ║  ${NC}[6] Instalar / actualizar${CYAN}${BOLD}              ║"
@@ -1829,25 +1846,30 @@ submenu_opencode() {
         clear; echo ""
         echo -e "  ${CYAN}Abriendo OpenCode TUI en Debian...${NC}"
         echo -e "  ${DIM}Ctrl+C para salir${NC}"; echo ""
-        proot-distro login debian -- bash -c 'opencode' < /dev/tty
+        proot-distro login debian -- bash -c           'source ~/.bashrc 2>/dev/null; opencode' < /dev/tty
         echo ""; read -r _ < /dev/tty ;;
 
-      2) # Servidor web
+      2) # Servidor web en directorio raíz
         clear; echo ""
-        if tmux has-session -t "opencode" 2>/dev/null; then
-          echo -e "  ${GREEN}[OK]${NC} Servidor ya corriendo"
+        if _oc_web_running; then
+          echo -e "  ${GREEN}[OK]${NC} Servidor ya corriendo en :3000"
         else
           echo -e "  ${CYAN}Iniciando servidor OpenCode web...${NC}"; echo ""
-          proot-distro login debian -- bash -c             'tmux kill-session -t opencode 2>/dev/null; tmux new-session -d -s opencode "opencode web --port 3000 --hostname 127.0.0.1"'             2>/dev/null
-          sleep 2
-          tmux has-session -t "opencode" 2>/dev/null             && echo -e "  ${GREEN}[OK]${NC} Servidor iniciado"             || echo -e "  ${YELLOW}[AVISO]${NC} Verifica que opencode esté instalado en Debian"
+          _oc_web_start "/root"
+          sleep 3
+          if _oc_web_running; then
+            echo -e "  ${GREEN}[OK]${NC} Servidor iniciado"
+          else
+            echo -e "  ${RED}[ERROR]${NC} No respondió en :3000"
+            echo -e "  ${DIM}Verifica con: proot-distro login debian -- opencode --version${NC}"
+          fi
         fi
         echo ""
         echo -e "  ${GREEN}URL:${NC} http://127.0.0.1:3000"
         echo -e "  ${DIM}Abre en Brave, Chrome u otro navegador${NC}"
         echo ""; read -r _ < /dev/tty ;;
 
-      3) # Abrir en proyecto
+      3) # Abrir proyecto en web
         clear; echo ""
         mkdir -p "$OC_PROJ_DIR"
         mapfile -t PROJS < <(ls -1 "$OC_PROJ_DIR/" 2>/dev/null)
@@ -1873,9 +1895,22 @@ submenu_opencode() {
         if [ -n "$TARGET_DIR" ] && [ -d "$TARGET_DIR" ]; then
           local REAL_PATH
           REAL_PATH=$(readlink -f "$TARGET_DIR" 2>/dev/null || echo "$TARGET_DIR")
+          # Convertir ruta /storage/emulated/0 a /sdcard accesible desde proot
           REAL_PATH="${REAL_PATH/\/storage\/emulated\/0/\/sdcard}"
-          echo -e "\n  ${CYAN}Abriendo OpenCode TUI en $TARGET_DIR...${NC}\n"
-          proot-distro login debian -- bash -c "opencode --cwd '$REAL_PATH'" < /dev/tty
+          # Si la ruta es de Termux home, mapear a /root en Debian
+          REAL_PATH="${REAL_PATH/\/data\/data\/com.termux\/files\/home/\/root}"
+          echo -e "\n  ${CYAN}Iniciando servidor en proyecto: $(basename "$TARGET_DIR")${NC}"
+          echo -e "  ${DIM}cwd: $REAL_PATH${NC}\n"
+          # Detener servidor anterior si existe
+          pkill -f "opencode web" 2>/dev/null; sleep 1
+          _oc_web_start "$REAL_PATH"
+          sleep 3
+          if _oc_web_running; then
+            echo -e "  ${GREEN}[OK]${NC} Servidor iniciado con proyecto"
+            echo -e "  ${GREEN}URL:${NC} http://127.0.0.1:3000"
+          else
+            echo -e "  ${RED}[ERROR]${NC} No respondió. Verifica que opencode esté instalado."
+          fi
           echo ""; read -r _ < /dev/tty
         elif [ -n "$TARGET_DIR" ]; then
           echo -e "  ${RED}[ERROR]${NC} No existe: $TARGET_DIR"
@@ -1957,14 +1992,27 @@ submenu_opencode() {
 
       5) # Detener servidor
         clear; echo ""
-        tmux has-session -t "opencode" 2>/dev/null           && { tmux kill-session -t "opencode" 2>/dev/null; echo -e "  ${GREEN}[OK]${NC} Servidor detenido"; }           || echo -e "  ${YELLOW}[AVISO]${NC} No estaba corriendo"
+        pkill -f "opencode web" 2>/dev/null
+        tmux kill-session -t "opencode-web" 2>/dev/null
+        echo -e "  ${GREEN}[OK]${NC} Servidor detenido"
         echo ""; read -r _ < /dev/tty ;;
 
-      6) # Instalar / actualizar
+      6) # Instalar / actualizar — inline, sin depender del repo
         clear; echo ""
         echo -e "  ${CYAN}Instalando/actualizando OpenCode en Debian...${NC}"; echo ""
-        _ensure_install_script "install_opencode.sh" || { read -r _ < /dev/tty; continue; }
-        bash "$HOME/install_opencode.sh" < /dev/tty
+        if [ -f "$HOME/install_opencode.sh" ]; then
+          bash "$HOME/install_opencode.sh" < /dev/tty
+        else
+          echo -e "  ${CYAN}Ejecutando instalación directa en Debian...${NC}"; echo ""
+          proot-distro login debian -- bash -c             'apt update -qq && apt install -y curl ripgrep tmux && curl -fsSL https://opencode.ai/install | bash'             < /dev/tty
+          echo ""
+          OC_VER=$(proot-distro login debian -- bash -c             'source ~/.bashrc 2>/dev/null; opencode --version 2>/dev/null' 2>/dev/null |             grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+          if [ -n "$OC_VER" ]; then
+            echo -e "  ${GREEN}[OK]${NC} OpenCode v${OC_VER} instalado"
+          else
+            echo -e "  ${YELLOW}[AVISO]${NC} Verificar instalación: proot-distro login debian"
+          fi
+        fi
         echo ""; read -r _ < /dev/tty ;;
 
       b|B|"") break ;;
