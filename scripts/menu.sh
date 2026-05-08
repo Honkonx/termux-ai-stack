@@ -1814,9 +1814,22 @@ _oc_web_start() {
   fi
   pkill -f "opencode web" 2>/dev/null
   sleep 1
-  # Lanzar con nohup — proceso queda vivo en Termux nativo
-  nohup proot-distro login debian -- bash -c     "source ~/.bashrc 2>/dev/null; opencode web --port 3000 --hostname 127.0.0.1 --cwd "${cwd}""     > "$HOME/opencode_web.log" 2>&1 &
+  # Exportar cwd para que sea accesible dentro del subshell
+  export _OC_CWD="$cwd"
+  # Lanzar con nohup — comillas correctas via variable exportada
+  nohup proot-distro login debian -- bash -c \
+    'source ~/.bashrc 2>/dev/null; opencode web --port 3000 --hostname 127.0.0.1 --cwd "$_OC_CWD"' \
+    > "$HOME/opencode_web.log" 2>&1 &
   echo $! > "$HOME/.opencode_web.pid"
+  # Espera adaptativa: verifica cada 2s hasta 20s
+  local waited=0
+  while [ $waited -lt 20 ]; do
+    sleep 2; waited=$((waited+2))
+    curl -sf http://127.0.0.1:3000 &>/dev/null && return 0
+    echo -n "."
+  done
+  echo ""
+  return 1
 }
 
 # Helper: detener servidor web
@@ -1870,14 +1883,12 @@ submenu_opencode() {
         if _oc_web_running; then
           echo -e "  ${GREEN}[OK]${NC} Servidor ya corriendo en :3000"
         else
-          echo -e "  ${CYAN}Iniciando servidor OpenCode web...${NC}"; echo ""
-          _oc_web_start "/root"
-          sleep 6
-          if _oc_web_running; then
+          echo -e "  ${CYAN}Iniciando servidor OpenCode web...${NC}"
+          echo -e "  ${DIM}(puede tardar hasta 20s)${NC}"; echo ""
+          if _oc_web_start "/root"; then
             echo -e "  ${GREEN}[OK]${NC} Servidor iniciado"
           else
-            echo -e "  ${RED}[ERROR]${NC} No respondió en :3000"
-            echo -e "  ${DIM}Verifica con: proot-distro login debian -- opencode --version${NC}"
+            echo -e "  ${RED}[ERROR]${NC} No respondió. Log: ~/opencode_web.log"
           fi
         fi
         echo ""
@@ -1919,13 +1930,12 @@ submenu_opencode() {
           echo -e "  ${DIM}cwd: $REAL_PATH${NC}\n"
           # Detener servidor anterior si existe
           pkill -f "opencode web" 2>/dev/null; sleep 1
-          _oc_web_start "$REAL_PATH"
-          sleep 6
-          if _oc_web_running; then
+          echo -e "  ${CYAN}Iniciando...${NC} ${DIM}(hasta 20s)${NC}"
+          if _oc_web_start "$REAL_PATH"; then
             echo -e "  ${GREEN}[OK]${NC} Servidor iniciado con proyecto"
             echo -e "  ${GREEN}URL:${NC} http://127.0.0.1:3000"
           else
-            echo -e "  ${RED}[ERROR]${NC} No respondió. Verifica que opencode esté instalado."
+            echo -e "  ${RED}[ERROR]${NC} No respondió. Log: ~/opencode_web.log"
           fi
           echo ""; read -r _ < /dev/tty
         elif [ -n "$TARGET_DIR" ]; then
