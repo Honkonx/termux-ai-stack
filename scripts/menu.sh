@@ -1438,13 +1438,14 @@ _cl_start() {
 }
 
 _cl_stop() {
-  [ -f "$HOME/.openclaw_gateway.pid" ] && {
-    kill "$(cat "$HOME/.openclaw_gateway.pid")" 2>/dev/null
-    rm -f "$HOME/.openclaw_gateway.pid"
-  }
-  pkill -f "openclaw gateway" 2>/dev/null || true
   proot-distro login debian -- bash -c \
-    'pkill -f "openclaw gateway" 2>/dev/null || true' 2>/dev/null || true
+    'pkill -TERM -f "node.*openclaw" 2>/dev/null
+     pkill -TERM -f "openclaw gateway" 2>/dev/null
+     sleep 2
+     pkill -KILL -f "node.*openclaw" 2>/dev/null || true
+     pkill -KILL -f "openclaw" 2>/dev/null || true' 2>/dev/null || true
+  pkill -f "openclaw" 2>/dev/null || true
+  rm -f "$HOME/.openclaw_gateway.pid"
 }
 
 _cl_open_browser() {
@@ -1492,11 +1493,11 @@ submenu_openclaw() {
     echo    "  ╠══════════════════════════════════════════╣"
     echo -e "  ║  ${NC}[1] Iniciar gateway${CYAN}${BOLD}                   ║"
     echo -e "  ║  ${NC}[2] Abrir dashboard web (:18789)${CYAN}${BOLD}       ║"
-    echo -e "  ║  ${NC}[3] Abrir TUI (terminal)${CYAN}${BOLD}               ║"
+    echo -e "  ║  ${NC}[3] TUI — no soportado en proot${CYAN}${BOLD}        ║"
     echo -e "  ║  ${NC}[4] Abrir en proyecto${CYAN}${BOLD}                  ║"
     echo -e "  ║  ${NC}[5] Gestionar proyectos${CYAN}${BOLD}                ║"
     echo -e "  ║  ${NC}[6] Detener gateway${CYAN}${BOLD}                    ║"
-    echo -e "  ║  ${NC}[7] Configurar Ollama local${CYAN}${BOLD}            ║"
+    echo -e "  ║  ${NC}[7] Cambiar proveedor IA${CYAN}${BOLD}               ║"
     echo -e "  ║  ${NC}[8] Instalar / actualizar${CYAN}${BOLD}              ║"
     echo -e "  ║  ${NC}[b] Volver${CYAN}${BOLD}                             ║"
     echo -e "  ╚══════════════════════════════════════════╝${NC}"
@@ -1527,8 +1528,9 @@ submenu_openclaw() {
             TOKEN=$(_cl_get_token)
             echo -e "  ${GREEN}[OK]${NC} Gateway iniciado"; echo ""
             if [ -n "$TOKEN" ]; then
-              echo -e "  URL: ${CYAN}http://127.0.0.1:18789/#token=${TOKEN}${NC}"; echo ""
-              _cl_open_browser "$TOKEN"
+              echo -e "  URL con token:"
+              echo -e "  ${CYAN}http://127.0.0.1:18789/#token=${TOKEN}${NC}"; echo ""
+              echo -e "  ${DIM}Usa [2] para abrir en el browser${NC}"
             else
               echo -e "  ${CYAN}http://127.0.0.1:18789${NC}"
               echo -e "  ${YELLOW}[AVISO]${NC} Token no encontrado — usa [8] para setup"
@@ -1552,12 +1554,13 @@ submenu_openclaw() {
         echo ""; read -r _ < /dev/tty ;;
       3)
         clear; echo ""
-        echo -e "  ${CYAN}Abriendo OpenClaw TUI...${NC}"
-        echo -e "  ${DIM}Ctrl+C para salir${NC}"; echo ""
-        proot-distro login debian -- bash -c \
-          'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
-           export NODE_OPTIONS="--require /root/openclaw-shim.cjs"
-           openclaw tui' < /dev/tty
+        echo -e "  ${YELLOW}[AVISO]${NC} La TUI en terminal no está soportada en proot"
+        echo -e "  El input del teclado no llega correctamente al proceso."
+        echo ""
+        echo -e "  ${CYAN}Alternativa recomendada:${NC}"
+        echo -e "  Usa [2] para abrir OpenClaw en el browser — funciona perfectamente."
+        echo ""
+        echo -e "  ${DIM}Nota técnica: proot-distro no pasa el TTY correctamente${NC}"
         echo ""; read -r _ < /dev/tty ;;
       4)
         clear; echo ""
@@ -1651,33 +1654,67 @@ submenu_openclaw() {
         done ;;
       6)
         clear; echo ""
+        if ! curl -sf http://127.0.0.1:18789 &>/dev/null; then
+          echo -e "  ${YELLOW}[AVISO]${NC} Gateway ya estaba detenido"
+          echo ""; read -r _ < /dev/tty; continue
+        fi
         echo -e "  ${CYAN}[+] Deteniendo OpenClaw...${NC}"; echo ""
-        _cl_stop; sleep 1
+        _cl_stop
+        TRIES=0
+        while [ $TRIES -lt 5 ]; do
+          sleep 2
+          curl -sf http://127.0.0.1:18789 &>/dev/null || break
+          TRIES=$((TRIES+1)); echo -n "."
+        done; echo ""
         curl -sf http://127.0.0.1:18789 &>/dev/null \
-          && echo -e "  ${YELLOW}[AVISO]${NC} Aún responde — puede tardar" \
+          && echo -e "  ${RED}[ERROR]${NC} Gateway aún responde — intenta de nuevo" \
           || echo -e "  ${GREEN}[OK]${NC} Gateway detenido"
         echo ""; read -r _ < /dev/tty ;;
       7)
         clear; echo ""
-        echo -e "  ${CYAN}Configurar modelo Ollama en OpenClaw${NC}"; echo ""
-        if ! curl -sf http://127.0.0.1:11434 &>/dev/null; then
-          echo -e "  ${YELLOW}[AVISO]${NC} Ollama no responde — inícialo primero desde [3]"
-          echo ""; read -r _ < /dev/tty; continue
-        fi
-        MODELS_RAW=$(ollama list 2>/dev/null | tail -n +2 | awk '{print $1}')
-        [ -z "$MODELS_RAW" ] && {
-          echo -e "  ${YELLOW}Sin modelos descargados${NC} — usa [3] → Ollama → [5]"
-          echo ""; read -r _ < /dev/tty; continue
-        }
-        mapfile -t MODELS <<< "$MODELS_RAW"
-        for i in "${!MODELS[@]}"; do printf "    [%d] %s\n" "$((i+1))" "${MODELS[$i]}"; done
-        echo ""; echo -n "  Elige modelo: "
-        read -r MCHOICE < /dev/tty
-        if [[ "$MCHOICE" =~ ^[0-9]+$ ]] && [ "$MCHOICE" -ge 1 ] && \
-           [ "$MCHOICE" -le "${#MODELS[@]}" ]; then
-          CHOSEN_MODEL="${MODELS[$((MCHOICE-1))]}"
-          proot-distro login debian -- bash -c \
-            "python3 -c \"
+        echo -e "  ${CYAN}Cambiar proveedor IA de OpenClaw${NC}"; echo ""
+        echo -e "  Opciones disponibles: Ollama, Claude, ChatGPT, Gemini, etc."
+        echo ""
+        echo -e "  ${BOLD}[1]${NC} Configurar via wizard (recomendado)"
+        echo -e "  ${DIM}    Lanza: openclaw configure — selector interactivo${NC}"
+        echo ""
+        echo -e "  ${BOLD}[2]${NC} Configurar Ollama local rápido"
+        echo -e "  ${DIM}    Detecta modelos instalados y configura automáticamente${NC}"
+        echo ""
+        echo -e "  ${BOLD}[b]${NC} Volver"
+        echo ""; echo -n "  Opción: "
+        read -r POPT < /dev/tty
+        case "$POPT" in
+          1)
+            echo ""
+            echo -e "  ${CYAN}Lanzando openclaw configure...${NC}"
+            echo -e "  ${DIM}Selecciona el provider con las flechas y Enter${NC}"; echo ""
+            proot-distro login debian -- bash -c \
+              'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+               export NODE_OPTIONS="--require /root/openclaw-shim.cjs"
+               openclaw configure' < /dev/tty
+            echo ""
+            echo -e "  ${DIM}Reinicia el gateway [6]→[1] para aplicar cambios${NC}" ;;
+          2)
+            if ! curl -sf http://127.0.0.1:11434 &>/dev/null; then
+              echo -e "  ${YELLOW}[AVISO]${NC} Ollama no responde — inícialo desde [3] primero"
+              echo ""; read -r _ < /dev/tty; continue
+            fi
+            MODELS_RAW=$(ollama list 2>/dev/null | tail -n +2 | awk '{print $1}')
+            [ -z "$MODELS_RAW" ] && {
+              echo -e "  ${YELLOW}Sin modelos descargados${NC} — usa [3] → Ollama → [5]"
+              echo ""; read -r _ < /dev/tty; continue
+            }
+            echo ""
+            mapfile -t MODELS <<< "$MODELS_RAW"
+            for i in "${!MODELS[@]}"; do printf "    [%d] %s\n" "$((i+1))" "${MODELS[$i]}"; done
+            echo ""; echo -n "  Elige modelo: "
+            read -r MCHOICE < /dev/tty
+            if [[ "$MCHOICE" =~ ^[0-9]+$ ]] && [ "$MCHOICE" -ge 1 ] && \
+               [ "$MCHOICE" -le "${#MODELS[@]}" ]; then
+              CHOSEN_MODEL="${MODELS[$((MCHOICE-1))]}"
+              proot-distro login debian -- bash -c \
+                "python3 -c \"
 import json
 cfg_path='/root/.openclaw/openclaw.json'
 try:
@@ -1692,11 +1729,12 @@ cfg.setdefault('models',{}).setdefault('providers',{})['ollama']={
 json.dump(cfg,open(cfg_path,'w'),indent=2)
 print('OK')
 \"" 2>/dev/null
-          echo -e "  ${GREEN}[OK]${NC} Modelo ${CHOSEN_MODEL} configurado"
-          echo -e "  ${DIM}Reinicia el gateway para aplicar${NC}"
-        else
-          echo -e "  ${YELLOW}Cancelado${NC}"
-        fi
+              echo -e "  ${GREEN}[OK]${NC} Ollama/${CHOSEN_MODEL} configurado"
+              echo -e "  ${DIM}Reinicia el gateway para aplicar${NC}"
+            else
+              echo -e "  ${YELLOW}Cancelado${NC}"
+            fi ;;
+        esac
         echo ""; read -r _ < /dev/tty ;;
       8)
         clear; echo ""
