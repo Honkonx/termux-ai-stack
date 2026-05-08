@@ -404,6 +404,9 @@ else
         warn "Ollama pkg no instalado — usa llama-server directamente"
 
       cd "$HOME"
+      # Limpiar fuentes de compilación (~260MB — binarios ya copiados a PREFIX)
+      rm -rf "$BUILD_DIR"
+      log "Directorio de compilación eliminado (+260MB libres)"
       log "llama.cpp optimizado compilado e instalado"
       log "Binarios: llama-server · llama-cli"
       ;;
@@ -438,6 +441,9 @@ else
         -o Dpkg::Options::="--force-confold" 2>/dev/null
 
       cd "$HOME"
+      # Limpiar fuentes de compilación (~260MB — binarios ya copiados a PREFIX)
+      rm -rf "$BUILD_DIR"
+      log "Directorio de compilación eliminado (+260MB libres)"
       log "llama.cpp con Vulkan compilado e instalado"
       ;;
 
@@ -720,7 +726,7 @@ def redimensionar(ruta):
     img.save(tmp, "JPEG", quality=80)
     return tmp
 
-def _post_ollama(payload, timeout=300):
+def _post_ollama(payload, timeout=600):
     data = json.dumps(payload).encode("utf-8")
     req = ureq.Request(f"{OLLAMA_URL}/api/generate", data=data,
                        headers={"Content-Type": "application/json"})
@@ -765,7 +771,7 @@ def chat_texto(chat_id, mensaje):
     conn.commit()
     try:
         result = _post_ollama({"model": TEXT_MODEL, "prompt": prompt,
-            "stream": False, "options": {"num_predict": 100}}, timeout=60)
+            "stream": False, "options": {"num_predict": 100}}, timeout=600)
         respuesta = result.get("response", "").strip()
     except Exception as e:
         respuesta = f"[ERROR Ollama] {e}"

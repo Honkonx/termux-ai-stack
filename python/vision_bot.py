@@ -80,7 +80,7 @@ def redimensionar(ruta):
     return tmp
 
 
-def _post_ollama(payload_dict, timeout=300):
+def _post_ollama(payload_dict, timeout=600):
     """HTTP POST a Ollama usando urllib — sin dependencia de requests."""
     data = json.dumps(payload_dict).encode("utf-8")
     req = ureq.Request(
@@ -162,7 +162,7 @@ def chat_texto(chat_id, mensaje):
             "prompt": prompt,
             "stream": False,
             "options": {"num_predict": 100}
-        }, timeout=60)
+        }, timeout=600)
         respuesta = result.get("response", "").strip()
     except Exception as e:
         respuesta = f"[ERROR Ollama] {e}"

@@ -337,7 +337,7 @@ def ollama_chat(model, messages, num_ctx=4096):
         headers={"Content-Type": "application/json"},
     )
     try:
-        with ureq.urlopen(req, timeout=120) as resp:
+        with ureq.urlopen(req, timeout=600) as resp:
             result = json.loads(resp.read())
             return True, result.get("message", {}).get("content", "")
     except Exception as e:

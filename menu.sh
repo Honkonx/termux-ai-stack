@@ -942,7 +942,7 @@ try:
         data=payload,
         headers={"Content-Type": "application/json"}
     )
-    with ureq.urlopen(req, timeout=120) as resp:
+    with ureq.urlopen(req, timeout=600) as resp:
         response = json.loads(resp.read()).get("response", "").strip()
 except Exception as e:
     response = "[ERROR] " + str(e)
@@ -1107,7 +1107,7 @@ try:
     req = ureq.Request(url + "/api/generate",
                        data=payload,
                        headers={"Content-Type": "application/json"})
-    with ureq.urlopen(req, timeout=120) as resp:
+    with ureq.urlopen(req, timeout=600) as resp:
         response = json.loads(resp.read()).get("response", "").strip()
 except Exception as e:
     response = "[ERROR] " + str(e)
@@ -1271,7 +1271,7 @@ try:
     req = ureq.Request(url + '/api/generate',
                        data=payload,
                        headers={'Content-Type': 'application/json'})
-    with ureq.urlopen(req, timeout=300) as resp:
+    with ureq.urlopen(req, timeout=600) as resp:
         response = json.loads(resp.read()).get('response','').strip()
 except Exception as e:
     response = '[ERROR] ' + str(e)
