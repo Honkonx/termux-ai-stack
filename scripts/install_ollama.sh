@@ -239,30 +239,40 @@ case "$METODO_CHOICE" in
   *)   INSTALL_METHOD="clean"  ;;
 esac
 
-# ── Paso B — Versión según hardware ──────────────────────────
-# Siempre se muestra la detección de hardware.
-# En modo limpia: [1]=pkg estándar, [2]=compilar optimizado, [3]=compilar Vulkan
-# En modo GitHub: [1]=standard, [2]=optimized, [3]=vulkan (binarios precompilados)
+# ── Paso B — Submenú según método elegido ────────────────────
 
-echo -e "  ${CYAN}[1]${NC} Estándar"
-if [ "$HW_MODE" = "cpu_optimized" ] || [ "$HW_MODE" = "gpu_vulkan" ]; then
-  if [ "$INSTALL_METHOD" = "github" ]; then
-    echo -e "  ${GREEN}[2]${NC} Optimizada — part4-ollama-optimized ★ recomendado"
+if [ "$INSTALL_METHOD" = "clean" ]; then
+  echo -e "  ${CYAN}${BOLD}╔══════════════════════════════════════════╗"
+  echo -e "  ║  Instalación limpia — elige versión      ║"
+  echo -e "  ╚══════════════════════════════════════════╝${NC}"
+  echo ""
+  echo -e "  ${CYAN}[1]${NC} Estándar    — pkg install ollama (genérico)"
+  if [ "$HW_MODE" = "cpu_optimized" ] || [ "$HW_MODE" = "gpu_vulkan" ]; then
+    echo -e "  ${GREEN}[2]${NC} Optimizada  — compilar llama.cpp+${HW_CPU} ★ recomendado"
   else
-    echo -e "  ${GREEN}[2]${NC} Optimizada — compilar llama.cpp+${HW_CPU} ★ recomendado"
+    echo -e "  ${YELLOW}[2]${NC} Optimizada  — no disponible (CPU sin i8mm/dotprod)"
+  fi
+  if $HW_GPU_AVAILABLE; then
+    echo -e "  ${GREEN}[3]${NC} Vulkan GPU  — compilar llama.cpp+Vulkan"
+  else
+    echo -e "  ${YELLOW}[3]${NC} Vulkan GPU  — no disponible"
   fi
 else
-  echo -e "  ${YELLOW}[2]${NC} Optimizada — no disponible (CPU sin i8mm/dotprod)"
-fi
-
-if $HW_GPU_AVAILABLE; then
-  if [ "$INSTALL_METHOD" = "github" ]; then
-    echo -e "  ${GREEN}[3]${NC} GPU Vulkan — part4-ollama-vulkan"
+  echo -e "  ${CYAN}${BOLD}╔══════════════════════════════════════════╗"
+  echo -e "  ║  GitHub Releases — elige versión         ║"
+  echo -e "  ╚══════════════════════════════════════════╝${NC}"
+  echo ""
+  echo -e "  ${CYAN}[1]${NC} Estándar    — descargar part4-ollama-standard"
+  if [ "$HW_MODE" = "cpu_optimized" ] || [ "$HW_MODE" = "gpu_vulkan" ]; then
+    echo -e "  ${GREEN}[2]${NC} Optimizada  — descargar part4-ollama-optimized ★ recomendado"
   else
-    echo -e "  ${GREEN}[3]${NC} GPU Vulkan — compilar llama.cpp+Vulkan"
+    echo -e "  ${YELLOW}[2]${NC} Optimizada  — no disponible (CPU sin i8mm/dotprod)"
   fi
-else
-  echo -e "  ${YELLOW}[3]${NC} GPU Vulkan — no disponible"
+  if $HW_GPU_AVAILABLE; then
+    echo -e "  ${GREEN}[3]${NC} Vulkan GPU  — descargar part4-ollama-vulkan"
+  else
+    echo -e "  ${YELLOW}[3]${NC} Vulkan GPU  — no disponible"
+  fi
 fi
 
 echo ""
