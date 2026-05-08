@@ -346,7 +346,7 @@ else
         menu.sh backup.sh restore.sh \
         install_n8n.sh install_claude.sh install_ollama.sh \
         install_expo.sh install_python.sh install_ssh.sh \
-        install_remote.sh
+        install_remote.sh install_opencode.sh install_openclaw.sh
       do
         if download_file "$REPO_RAW_SCRIPT/$script" "$HOME/$script" "$script"; then
           SCRIPTS_OK=$((SCRIPTS_OK + 1))
@@ -427,7 +427,7 @@ else
             menu.sh backup.sh restore.sh \
             install_n8n.sh install_claude.sh install_ollama.sh \
             install_expo.sh install_python.sh install_ssh.sh \
-            install_remote.sh
+            install_remote.sh install_opencode.sh install_openclaw.sh
           do
             download_file "$REPO_RAW_SCRIPT/$script" "$HOME/$script" "$script"
           done
@@ -439,7 +439,7 @@ else
           menu.sh backup.sh restore.sh \
           install_n8n.sh install_claude.sh install_ollama.sh \
           install_expo.sh install_python.sh install_ssh.sh \
-          install_remote.sh
+          install_remote.sh install_opencode.sh install_openclaw.sh
         do
           download_file "$REPO_RAW_SCRIPT/$script" "$HOME/$script" "$script"
         done
@@ -456,7 +456,7 @@ for script in \
   menu.sh backup.sh restore.sh \
   install_n8n.sh install_claude.sh install_ollama.sh \
   install_expo.sh install_python.sh install_ssh.sh \
-  install_remote.sh
+  install_remote.sh install_opencode.sh install_openclaw.sh
 do
   if [ -f "$HOME/$script" ] && [ -s "$HOME/$script" ]; then
     SIZE=$(wc -c < "$HOME/$script" 2>/dev/null)
@@ -572,6 +572,61 @@ case "$MODULE_CHOICE" in
 esac
 
 # ============================================================
+# PASO 6 — Módulos opcionales (requieren proot Debian)
+# ============================================================
+titulo "PASO 6 — Módulos opcionales (requieren proot)"
+
+echo "  Los siguientes módulos requieren proot Debian instalado."
+echo "  Si instalaste n8n, el proot ya existe."
+echo ""
+
+# ── OpenCode ──────────────────────────────────────────────────
+if check_module "opencode"; then
+  OC_V=$(get_reg opencode version)
+  echo -e "  OpenCode  ${GREEN}✓ v${OC_V} ya instalado${NC}"
+else
+  echo -n "  ¿Instalar OpenCode (IDE IA en proot, puerto :3000)? (s/n): "
+  read -r INST_OC < /dev/tty
+  if [ "$INST_OC" = "s" ] || [ "$INST_OC" = "S" ]; then
+    if [ -f "$HOME/install_opencode.sh" ] && [ -s "$HOME/install_opencode.sh" ]; then
+      bash "$HOME/install_opencode.sh" < /dev/tty
+    else
+      warn "install_opencode.sh no encontrado — descargando..."
+      download_file "$REPO_RAW_SCRIPT/install_opencode.sh" \
+        "$HOME/install_opencode.sh" "install_opencode.sh" && \
+        bash "$HOME/install_opencode.sh" < /dev/tty || \
+        warn "No se pudo instalar OpenCode — instala después con: menu"
+    fi
+  else
+    info "OpenCode omitido — instala después desde el menú"
+  fi
+fi
+
+echo ""
+
+# ── OpenClaw ──────────────────────────────────────────────────
+if check_module "openclaw"; then
+  OCL_V=$(get_reg openclaw version)
+  echo -e "  OpenClaw  ${GREEN}✓ v${OCL_V} ya instalado${NC}"
+else
+  echo -n "  ¿Instalar OpenClaw (gateway agentes IA, puerto :18789)? (s/n): "
+  read -r INST_OCL < /dev/tty
+  if [ "$INST_OCL" = "s" ] || [ "$INST_OCL" = "S" ]; then
+    if [ -f "$HOME/install_openclaw.sh" ] && [ -s "$HOME/install_openclaw.sh" ]; then
+      bash "$HOME/install_openclaw.sh" < /dev/tty
+    else
+      warn "install_openclaw.sh no encontrado — descargando..."
+      download_file "$REPO_RAW_SCRIPT/install_openclaw.sh" \
+        "$HOME/install_openclaw.sh" "install_openclaw.sh" && \
+        bash "$HOME/install_openclaw.sh" < /dev/tty || \
+        warn "No se pudo instalar OpenClaw — instala después con: menu"
+    fi
+  else
+    info "OpenClaw omitido — instala después desde el menú"
+  fi
+fi
+
+# ============================================================
 # PASO 8 — Termux:API (opcional)
 # ============================================================
 titulo "PASO 8 — Termux:API (opcional)"
@@ -638,6 +693,7 @@ echo -e "${NC}"
 echo "  SCRIPTS EN ~/:"
 for f in menu.sh install_n8n.sh install_claude.sh install_ollama.sh \
           install_expo.sh install_python.sh install_ssh.sh install_remote.sh \
+          install_opencode.sh install_openclaw.sh \
           backup.sh restore.sh; do
   [ -f "$HOME/$f" ] && \
     echo -e "  ${GREEN}✓${NC} ~/$f" || \
