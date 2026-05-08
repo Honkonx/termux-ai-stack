@@ -1803,20 +1803,22 @@ submenu_claude() {
 # $1 = cwd dentro de Debian (default /root)
 _oc_web_start() {
   local cwd="${1:-/root}"
+  local logfile="$HOME/opencode_web.log"
   # Matar sesión anterior
   tmux kill-session -t "oc-web" 2>/dev/null
   pkill -f "opencode web" 2>/dev/null
   sleep 1
-  # Lanzar en background — tmux de Termux nativo
-  tmux new-session -d -s "oc-web"     "proot-distro login debian -- bash -c 'source ~/.bashrc 2>/dev/null; opencode web --port 3000 --hostname 127.0.0.1 --cwd "${cwd}"'"
-  # Espera adaptativa — hasta 30s, verifica cada 2s
+  # Lanzar con redirect al log — igual que el comando manual validado
+  # El redirect es clave: sin él el proceso muere por falta de PTY
+  tmux new-session -d -s "oc-web" \
+    "proot-distro login debian -- bash -c 'source ~/.bashrc 2>/dev/null; opencode web --port 3000 --hostname 127.0.0.1 --cwd "${cwd}"' > '$logfile' 2>&1"
+  # Esperar hasta que aparezca "Web interface" en el log — señal de que el servidor arrancó
   local waited=0
   echo -n "  Esperando"
   while [ $waited -lt 30 ]; do
     sleep 2; waited=$((waited+2))
     echo -n "."
-    curl -sf http://127.0.0.1:3000 &>/dev/null && echo "" && return 0
-    # Verificar que el proceso sigue vivo
+    grep -q "Web interface" "$logfile" 2>/dev/null && echo "" && return 0
     tmux has-session -t "oc-web" 2>/dev/null || { echo ""; return 1; }
   done
   echo ""
