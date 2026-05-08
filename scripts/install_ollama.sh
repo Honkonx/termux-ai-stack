@@ -220,17 +220,47 @@ printf "  GPU: %-20s CPU: %s\n" "$HW_GPU" "$HW_CPU"
 echo -e "  Recomendado: ${GREEN}${HW_MODE}${NC}"
 echo ""
 
-# ── Selección de versión de instalación ──────────────────────
-echo -e "  ${CYAN}[1]${NC} Estándar   — pkg ollama (genérico, siempre funciona)"
+# ── Paso A — Método de instalación ───────────────────────────
+echo -e "  ${CYAN}${BOLD}╔══════════════════════════════════════════╗"
+echo -e "  ║  ¿Cómo instalar Ollama?                  ║"
+echo -e "  ╚══════════════════════════════════════════╝${NC}"
+echo ""
+echo -e "  ${GREEN}[1]${NC} Instalación limpia  — compila/instala desde cero"
+echo -e "  ${CYAN}[2]${NC} Desde GitHub Releases — descarga binario precompilado"
+echo -e "  ${DIM}[b]${NC} Cancelar"
+echo ""
+echo -n "  Opción: "
+read -r METODO_CHOICE < /dev/tty
+echo ""
 
+case "$METODO_CHOICE" in
+  b|B) echo "Cancelado."; exit 0 ;;
+  2)   INSTALL_METHOD="github" ;;
+  *)   INSTALL_METHOD="clean"  ;;
+esac
+
+# ── Paso B — Versión según hardware ──────────────────────────
+# Siempre se muestra la detección de hardware.
+# En modo limpia: [1]=pkg estándar, [2]=compilar optimizado, [3]=compilar Vulkan
+# En modo GitHub: [1]=standard, [2]=optimized, [3]=vulkan (binarios precompilados)
+
+echo -e "  ${CYAN}[1]${NC} Estándar"
 if [ "$HW_MODE" = "cpu_optimized" ] || [ "$HW_MODE" = "gpu_vulkan" ]; then
-  echo -e "  ${GREEN}[2]${NC} Optimizada — llama.cpp+${HW_CPU} (~15min) ★"
+  if [ "$INSTALL_METHOD" = "github" ]; then
+    echo -e "  ${GREEN}[2]${NC} Optimizada — part4-ollama-optimized ★ recomendado"
+  else
+    echo -e "  ${GREEN}[2]${NC} Optimizada — compilar llama.cpp+${HW_CPU} ★ recomendado"
+  fi
 else
-  echo -e "  ${YELLOW}[2]${NC} Optimizada — no disponible (sin instrucciones avanzadas)"
+  echo -e "  ${YELLOW}[2]${NC} Optimizada — no disponible (CPU sin i8mm/dotprod)"
 fi
 
 if $HW_GPU_AVAILABLE; then
-  echo -e "  ${GREEN}[3]${NC} GPU Vulkan — Adreno detectado (~20min)"
+  if [ "$INSTALL_METHOD" = "github" ]; then
+    echo -e "  ${GREEN}[3]${NC} GPU Vulkan — part4-ollama-vulkan"
+  else
+    echo -e "  ${GREEN}[3]${NC} GPU Vulkan — compilar llama.cpp+Vulkan"
+  fi
 else
   echo -e "  ${YELLOW}[3]${NC} GPU Vulkan — no disponible"
 fi
@@ -249,7 +279,7 @@ case "$VERSION_CHOICE" in
     if [ "$HW_MODE" = "cpu_optimized" ] || [ "$HW_MODE" = "gpu_vulkan" ]; then
       INSTALL_MODE="optimized"
     else
-      warn "CPU estándar — usando instalación estándar"
+      warn "Sin instrucciones avanzadas — usando estándar"
       INSTALL_MODE="standard"
     fi
     ;;
@@ -257,7 +287,7 @@ case "$VERSION_CHOICE" in
     if $HW_GPU_AVAILABLE; then
       INSTALL_MODE="gpu_vulkan"
     else
-      warn "GPU Vulkan no disponible — usando instalación estándar"
+      warn "GPU Vulkan no disponible — usando estándar"
       INSTALL_MODE="standard"
     fi
     ;;
@@ -265,9 +295,73 @@ case "$VERSION_CHOICE" in
 esac
 
 echo ""
-echo -n "  ¿Continuar con instalación ${INSTALL_MODE}? (s/n): "
+echo -e "  Método: ${CYAN}${INSTALL_METHOD}${NC}   Versión: ${GREEN}${INSTALL_MODE}${NC}"
+echo ""
+echo -n "  ¿Continuar? (s/n): "
 read -r CONFIRM < /dev/tty
 [ "$CONFIRM" != "s" ] && [ "$CONFIRM" != "S" ] && { echo "Cancelado."; exit 0; }
+
+# ── Variables para GitHub Releases ───────────────────────────
+GITHUB_API_OLLAMA="https://api.github.com/repos/Honkonx/termux-ai-stack/releases/latest"
+RELEASE_JSON_OLLAMA=""
+
+_fetch_release_ollama() {
+  [ -n "$RELEASE_JSON_OLLAMA" ] && return
+  RELEASE_JSON_OLLAMA=$(curl -fsSL "$GITHUB_API_OLLAMA" 2>/dev/null)
+}
+
+_get_ollama_asset_url() {
+  local part_name="$1"
+  _fetch_release_ollama
+  echo "$RELEASE_JSON_OLLAMA" | \
+    grep -o "\"browser_download_url\": *\"[^\"]*${part_name}[^\"]*\"" | \
+    grep -o 'https://[^"]*' | head -1
+}
+
+_download_ollama_asset() {
+  local part_name="$1"
+  local dest_dir="$2"
+  local url
+  url=$(_get_ollama_asset_url "$part_name")
+
+  if [ -z "$url" ]; then
+    echo ""
+    warn "No se encontró '${part_name}' en GitHub Releases"
+    warn "Es posible que aún no esté disponible para tu versión"
+    echo ""
+    echo -e "  ${YELLOW}Opciones:${NC}"
+    echo -e "  ${CYAN}[1]${NC} Instalar versión limpia como fallback"
+    echo -e "  ${CYAN}[2]${NC} Salir"
+    echo -n "  Opción: "
+    read -r FB_OPT < /dev/tty
+    if [ "$FB_OPT" = "1" ]; then
+      INSTALL_METHOD="clean"
+      info "Cambiando a instalación limpia..."
+      return 1
+    else
+      echo "Cancelado."; exit 0
+    fi
+  fi
+
+  local filename
+  filename=$(basename "$url")
+  local dest_file="$dest_dir/$filename"
+  mkdir -p "$dest_dir"
+
+  info "Descargando ${filename}..."
+  curl -fL --progress-bar "$url" -o "$dest_file" 2>/dev/null || \
+    wget --progress=bar:force -O "$dest_file" "$url" 2>/dev/null
+
+  if [ ! -s "$dest_file" ]; then
+    warn "Descarga fallida"
+    INSTALL_METHOD="clean"
+    return 1
+  fi
+
+  log "Descarga completa: $(du -h "$dest_file" | cut -f1)"
+  DOWNLOADED_OLLAMA="$dest_file"
+  return 0
+}
 
 # ============================================================
 # PASO 1 — Actualizar Termux (condicional)
@@ -340,114 +434,162 @@ fi
 # ============================================================
 # PASO 2 — Instalar Ollama
 # ============================================================
-titulo "PASO 2 — Instalando Ollama (modo: ${INSTALL_MODE})"
+titulo "PASO 2 — Instalando Ollama (método: ${INSTALL_METHOD} / versión: ${INSTALL_MODE})"
 
 if check_done "ollama_install"; then
   log "Ollama ya instalado [checkpoint]"
 else
-  case "$INSTALL_MODE" in
 
-    standard)
-      info "Instalando Ollama vía pkg (genérico ARM64)..."
-      pkg install ollama -y \
-        -o Dpkg::Options::="--force-confdef" \
-        -o Dpkg::Options::="--force-confold" || \
-        error "Error instalando Ollama. Verifica conexión."
-      log "Ollama instalado: $(ollama --version 2>/dev/null | head -1)"
-      ;;
+  # ── Rama GitHub Releases ─────────────────────────────────
+  if [ "$INSTALL_METHOD" = "github" ]; then
 
-    optimized)
-      info "Instalando llama.cpp optimizado con flags CPU: ${HW_CPU}"
-      info "Instalando dependencias de compilación..."
-      pkg install cmake clang git -y \
-        -o Dpkg::Options::="--force-confdef" \
-        -o Dpkg::Options::="--force-confold" || \
-        error "Error instalando dependencias de compilación."
+    # Mapear INSTALL_MODE → nombre del asset en GitHub
+    case "$INSTALL_MODE" in
+      optimized) GH_PART="part4-ollama-optimized" ;;
+      gpu_vulkan) GH_PART="part4-ollama-vulkan"   ;;
+      *)          GH_PART="part4-ollama-standard"  ;;
+    esac
 
-      # Determinar flags según CPU features detectadas
-      CPU_FLAGS="-march=armv8-a"
-      echo "$HW_CPU" | grep -q "i8mm"    && CPU_FLAGS="-march=armv8.6-a+i8mm+dotprod"
-      echo "$HW_CPU" | grep -q "dotprod" && [ "$CPU_FLAGS" = "-march=armv8-a" ] && \
-        CPU_FLAGS="-march=armv8.2-a+dotprod"
-      echo "$HW_CPU" | grep -q "sve"     && CPU_FLAGS="${CPU_FLAGS}+sve"
+    DOWNLOADED_OLLAMA=""
+    DL_TMP="$HOME/ollama_dl_tmp"
 
-      info "Flags de compilación: ${CPU_FLAGS}"
-      info "Clonando llama.cpp (puede tardar)..."
+    if _download_ollama_asset "$GH_PART" "$DL_TMP"; then
+      # Extraer el paquete descargado
+      info "Extrayendo ${GH_PART}..."
+      EXTRACT_TMP="$DL_TMP/extract"
+      mkdir -p "$EXTRACT_TMP"
+      tar -xJf "$DOWNLOADED_OLLAMA" -C "$EXTRACT_TMP" 2>/dev/null || \
+        error "Error extrayendo el paquete. Archivo corrupto."
 
-      BUILD_DIR="$HOME/llama_cpp_build"
-      rm -rf "$BUILD_DIR"
-      git clone --depth=1 https://github.com/ggerganov/llama.cpp "$BUILD_DIR" || \
-        error "Error clonando llama.cpp. Verifica conexión."
+      # Copiar binarios a PREFIX
+      for bin in llama-server llama-cli ollama; do
+        SRC=$(find "$EXTRACT_TMP" -name "$bin" -type f 2>/dev/null | head -1)
+        if [ -n "$SRC" ]; then
+          cp "$SRC" "$TERMUX_PREFIX/bin/$bin"
+          chmod +x "$TERMUX_PREFIX/bin/$bin"
+          log "$bin instalado desde release"
+        fi
+      done
 
-      cd "$BUILD_DIR" && mkdir -p build && cd build
-      cmake .. \
-        -DCMAKE_BUILD_TYPE=Release \
-        -DCMAKE_C_FLAGS="$CPU_FLAGS" \
-        -DCMAKE_CXX_FLAGS="$CPU_FLAGS" \
-        -DLLAMA_BUILD_TESTS=OFF \
-        -DLLAMA_BUILD_EXAMPLES=ON || error "Error en cmake."
+      # Si no hay binario ollama en el paquete, instalar via pkg para gestión de modelos
+      if ! command -v ollama &>/dev/null; then
+        info "Instalando Ollama pkg para gestión de modelos..."
+        pkg install ollama -y \
+          -o Dpkg::Options::="--force-confdef" \
+          -o Dpkg::Options::="--force-confold" 2>/dev/null || \
+          warn "Ollama pkg no instalado — usa llama-server directamente"
+      fi
 
-      info "Compilando (esto puede tardar 10-20 minutos)..."
-      make -j4 llama-server llama-cli 2>&1 | tail -5
-      [ $? -ne 0 ] && error "Error de compilación. Intenta con versión estándar."
+      rm -rf "$DL_TMP"
+      log "Ollama instalado desde GitHub Releases ($GH_PART)"
+    fi
+    # Si _download_ollama_asset falló y el usuario eligió fallback a limpia,
+    # INSTALL_METHOD ya fue cambiado a "clean" dentro de la función — cae al bloque de abajo
+  fi
 
-      # Instalar binarios
-      cp bin/llama-server "$TERMUX_PREFIX/bin/llama-server" 2>/dev/null
-      cp bin/llama-cli    "$TERMUX_PREFIX/bin/llama-cli"    2>/dev/null
-      chmod +x "$TERMUX_PREFIX/bin/llama-server" "$TERMUX_PREFIX/bin/llama-cli" 2>/dev/null
+  # ── Rama instalación limpia ──────────────────────────────
+  # Se ejecuta si INSTALL_METHOD="clean" desde el inicio
+  # O si INSTALL_METHOD cambió a "clean" por fallback desde GitHub
+  if [ "$INSTALL_METHOD" = "clean" ]; then
+    case "$INSTALL_MODE" in
 
-      # Instalar Ollama pkg también (para gestión de modelos)
-      info "Instalando Ollama pkg para gestión de modelos..."
-      pkg install ollama -y \
-        -o Dpkg::Options::="--force-confdef" \
-        -o Dpkg::Options::="--force-confold" 2>/dev/null || \
-        warn "Ollama pkg no instalado — usa llama-server directamente"
+      standard)
+        info "Instalando Ollama vía pkg (genérico ARM64)..."
+        pkg install ollama -y \
+          -o Dpkg::Options::="--force-confdef" \
+          -o Dpkg::Options::="--force-confold" || \
+          error "Error instalando Ollama. Verifica conexión."
+        log "Ollama instalado: $(ollama --version 2>/dev/null | head -1)"
+        ;;
 
-      cd "$HOME"
-      # Limpiar fuentes de compilación (~260MB — binarios ya copiados a PREFIX)
-      rm -rf "$BUILD_DIR"
-      log "Directorio de compilación eliminado (+260MB libres)"
-      log "llama.cpp optimizado compilado e instalado"
-      log "Binarios: llama-server · llama-cli"
-      ;;
+      optimized)
+        info "Compilando llama.cpp optimizado con flags CPU: ${HW_CPU}"
+        info "Instalando dependencias de compilación..."
+        pkg install cmake clang git -y \
+          -o Dpkg::Options::="--force-confdef" \
+          -o Dpkg::Options::="--force-confold" || \
+          error "Error instalando dependencias de compilación."
 
-    gpu_vulkan)
-      info "Instalando llama.cpp con soporte Vulkan GPU..."
-      pkg install cmake clang git vulkan-tools -y \
-        -o Dpkg::Options::="--force-confdef" \
-        -o Dpkg::Options::="--force-confold" || \
-        error "Error instalando dependencias."
+        CPU_FLAGS="-march=armv8-a"
+        echo "$HW_CPU" | grep -q "i8mm"    && CPU_FLAGS="-march=armv8.6-a+i8mm+dotprod"
+        echo "$HW_CPU" | grep -q "dotprod" && [ "$CPU_FLAGS" = "-march=armv8-a" ] && \
+          CPU_FLAGS="-march=armv8.2-a+dotprod"
+        echo "$HW_CPU" | grep -q "sve"     && CPU_FLAGS="${CPU_FLAGS}+sve"
 
-      BUILD_DIR="$HOME/llama_cpp_build"
-      rm -rf "$BUILD_DIR"
-      git clone --depth=1 https://github.com/ggerganov/llama.cpp "$BUILD_DIR" || \
-        error "Error clonando llama.cpp."
+        info "Flags de compilación: ${CPU_FLAGS}"
+        info "Clonando llama.cpp (puede tardar)..."
 
-      cd "$BUILD_DIR" && mkdir -p build && cd build
-      cmake .. \
-        -DCMAKE_BUILD_TYPE=Release \
-        -DGGML_VULKAN=ON || error "Error en cmake con Vulkan."
+        BUILD_DIR="$HOME/llama_cpp_build"
+        rm -rf "$BUILD_DIR"
+        git clone --depth=1 https://github.com/ggerganov/llama.cpp "$BUILD_DIR" || \
+          error "Error clonando llama.cpp. Verifica conexión."
 
-      info "Compilando con Vulkan (puede tardar 15-25 minutos)..."
-      make -j4 llama-server llama-cli 2>&1 | tail -5
-      [ $? -ne 0 ] && error "Error compilando con Vulkan."
+        cd "$BUILD_DIR" && mkdir -p build && cd build
+        cmake .. \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_C_FLAGS="$CPU_FLAGS" \
+          -DCMAKE_CXX_FLAGS="$CPU_FLAGS" \
+          -DLLAMA_BUILD_TESTS=OFF \
+          -DLLAMA_BUILD_EXAMPLES=ON || error "Error en cmake."
 
-      cp bin/llama-server "$TERMUX_PREFIX/bin/llama-server" 2>/dev/null
-      cp bin/llama-cli    "$TERMUX_PREFIX/bin/llama-cli"    2>/dev/null
-      chmod +x "$TERMUX_PREFIX/bin/llama-server" "$TERMUX_PREFIX/bin/llama-cli" 2>/dev/null
+        info "Compilando (esto puede tardar 10-20 minutos)..."
+        make -j4 llama-server llama-cli 2>&1 | tail -5
+        [ $? -ne 0 ] && error "Error de compilación. Intenta con versión estándar."
 
-      pkg install ollama -y \
-        -o Dpkg::Options::="--force-confdef" \
-        -o Dpkg::Options::="--force-confold" 2>/dev/null
+        cp bin/llama-server "$TERMUX_PREFIX/bin/llama-server" 2>/dev/null
+        cp bin/llama-cli    "$TERMUX_PREFIX/bin/llama-cli"    2>/dev/null
+        chmod +x "$TERMUX_PREFIX/bin/llama-server" "$TERMUX_PREFIX/bin/llama-cli" 2>/dev/null
 
-      cd "$HOME"
-      # Limpiar fuentes de compilación (~260MB — binarios ya copiados a PREFIX)
-      rm -rf "$BUILD_DIR"
-      log "Directorio de compilación eliminado (+260MB libres)"
-      log "llama.cpp con Vulkan compilado e instalado"
-      ;;
+        info "Instalando Ollama pkg para gestión de modelos..."
+        pkg install ollama -y \
+          -o Dpkg::Options::="--force-confdef" \
+          -o Dpkg::Options::="--force-confold" 2>/dev/null || \
+          warn "Ollama pkg no instalado — usa llama-server directamente"
 
-  esac
+        cd "$HOME"
+        rm -rf "$BUILD_DIR"
+        log "Directorio de compilación eliminado (+260MB libres)"
+        log "llama.cpp optimizado compilado e instalado"
+        log "Binarios: llama-server · llama-cli"
+        ;;
+
+      gpu_vulkan)
+        info "Compilando llama.cpp con soporte Vulkan GPU..."
+        pkg install cmake clang git vulkan-tools -y \
+          -o Dpkg::Options::="--force-confdef" \
+          -o Dpkg::Options::="--force-confold" || \
+          error "Error instalando dependencias."
+
+        BUILD_DIR="$HOME/llama_cpp_build"
+        rm -rf "$BUILD_DIR"
+        git clone --depth=1 https://github.com/ggerganov/llama.cpp "$BUILD_DIR" || \
+          error "Error clonando llama.cpp."
+
+        cd "$BUILD_DIR" && mkdir -p build && cd build
+        cmake .. \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DGGML_VULKAN=ON || error "Error en cmake con Vulkan."
+
+        info "Compilando con Vulkan (puede tardar 15-25 minutos)..."
+        make -j4 llama-server llama-cli 2>&1 | tail -5
+        [ $? -ne 0 ] && error "Error compilando con Vulkan."
+
+        cp bin/llama-server "$TERMUX_PREFIX/bin/llama-server" 2>/dev/null
+        cp bin/llama-cli    "$TERMUX_PREFIX/bin/llama-cli"    2>/dev/null
+        chmod +x "$TERMUX_PREFIX/bin/llama-server" "$TERMUX_PREFIX/bin/llama-cli" 2>/dev/null
+
+        pkg install ollama -y \
+          -o Dpkg::Options::="--force-confdef" \
+          -o Dpkg::Options::="--force-confold" 2>/dev/null
+
+        cd "$HOME"
+        rm -rf "$BUILD_DIR"
+        log "Directorio de compilación eliminado (+260MB libres)"
+        log "llama.cpp con Vulkan compilado e instalado"
+        ;;
+
+    esac
+  fi
 
   mark_done "ollama_install"
 fi

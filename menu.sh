@@ -3668,26 +3668,30 @@ submenu_backup() {
       2)
         clear; echo ""
         echo -e "  ${CYAN}Selecciona módulo a respaldar:${NC}"; echo ""
-        echo "  [0] base   — scripts + tema + configs"
-        echo "  [2] claude — Claude Code"
-        echo "  [3] expo   — EAS CLI"
-        echo "  [4] ollama — Ollama (sin modelos)"
-        echo "  [5] n8n    — n8n + cloudflared"
-        echo "  [6] proot  — Rootfs Debian completo"
-        echo "  [7] remote — SSH + Dashboard configs"
+        echo "  [1] claude      — Claude Code"
+        echo "  [2] expo        — EAS CLI"
+        echo "  [3] ollama      — Ollama (sin modelos)"
+        echo "  [4] n8n         — n8n + cloudflared (datos)"
+        echo "  [5] proot-base  — Rootfs Debian limpio"
+        echo "  [6] proot-n8n   — Rootfs Debian + n8n + cloudflared"
+        echo "  [7] remote      — SSH + Dashboard configs"
+        echo "  [8] opencode    — OpenCode (en proot)"
+        echo "  [9] openclaw    — OpenClaw + NVM + Node22 (en proot)"
         echo "  [b] Cancelar"
         echo ""; echo -n "  Módulo: "
- read -r MOD_OPT < /dev/tty
+        read -r MOD_OPT < /dev/tty
 
         local BAK_MOD=""
         case "$MOD_OPT" in
-          0|b0) BAK_MOD="base"   ;;
-          2)    BAK_MOD="claude" ;;
-          3)    BAK_MOD="expo"   ;;
-          4)    BAK_MOD="ollama" ;;
-          5)    BAK_MOD="n8n"    ;;
-          6)    BAK_MOD="proot"  ;;
-          7)    BAK_MOD="remote" ;;
+          1)    BAK_MOD="claude"     ;;
+          2)    BAK_MOD="expo"       ;;
+          3)    BAK_MOD="ollama"     ;;
+          4)    BAK_MOD="n8n"        ;;
+          5)    BAK_MOD="proot-base" ;;
+          6)    BAK_MOD="proot-n8n"  ;;
+          7)    BAK_MOD="remote"     ;;
+          8)    BAK_MOD="opencode"   ;;
+          9)    BAK_MOD="openclaw"   ;;
           b|B|"") continue ;;
           *) echo -e "  ${RED}[ERROR]${NC} Opción inválida"; read -r _ < /dev/tty; continue ;;
         esac
@@ -3787,18 +3791,22 @@ submenu_desinstalar() {
     echo -e "  ║  ${NC}[4] Expo / EAS CLI${RED}${BOLD}                     ║"
     echo -e "  ║  ${NC}[5] Python + SQLite${RED}${BOLD}                    ║"
     echo -e "  ║  ${NC}[6] Remote (SSH + Dashboard + CF-SSH)${RED}${BOLD}  ║"
+    echo -e "  ║  ${NC}[7] OpenCode${RED}${BOLD}                           ║"
+    echo -e "  ║  ${NC}[8] OpenClaw${RED}${BOLD}                           ║"
     echo -e "  ║  ${NC}[b] Cancelar${RED}${BOLD}                           ║"
     echo -e "  ╚══════════════════════════════════════════╝${NC}"
     echo ""; echo -n "  Módulo a desinstalar: "
- read -r OPT < /dev/tty
+    read -r OPT < /dev/tty
 
     case "$OPT" in
-      1) uninstall_module "n8n"    "n8n + proot Debian"          ; break ;;
-      2) uninstall_module "claude" "Claude Code"                  ; break ;;
-      3) uninstall_module "ollama" "Ollama"                       ; break ;;
-      4) uninstall_module "expo"   "Expo / EAS CLI"               ; break ;;
-      5) uninstall_module "python" "Python + SQLite"              ; break ;;
-      6) uninstall_module "remote" "Remote (SSH + Dashboard)"     ; break ;;
+      1) uninstall_module "n8n"      "n8n + proot Debian"          ; break ;;
+      2) uninstall_module "claude"   "Claude Code"                  ; break ;;
+      3) uninstall_module "ollama"   "Ollama"                       ; break ;;
+      4) uninstall_module "expo"     "Expo / EAS CLI"               ; break ;;
+      5) uninstall_module "python"   "Python + SQLite"              ; break ;;
+      6) uninstall_module "remote"   "Remote (SSH + Dashboard)"     ; break ;;
+      7) uninstall_module "opencode" "OpenCode"                     ; break ;;
+      8) uninstall_module "openclaw" "OpenClaw"                     ; break ;;
       b|B|"") break ;;
     esac
   done
