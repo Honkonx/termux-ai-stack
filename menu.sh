@@ -1803,45 +1803,31 @@ submenu_claude() {
 # $1 = cwd dentro de Debian (default /root)
 _oc_web_start() {
   local cwd="${1:-/root}"
-  local logfile="$HOME/opencode_web.log"
-  # Matar sesión anterior
-  tmux kill-session -t "oc-web" 2>/dev/null
+  # Matar proceso anterior
   pkill -f "opencode web" 2>/dev/null
+  tmux kill-session -t "oc-web" 2>/dev/null
   sleep 1
-  # Lanzar con redirect al log — igual que el comando manual validado
-  # El redirect es clave: sin él el proceso muere por falta de PTY
-  tmux new-session -d -s "oc-web" \
-    "proot-distro login debian -- bash -c 'source ~/.bashrc 2>/dev/null; opencode web --port 3000 --hostname 127.0.0.1 --cwd "${cwd}"' > '$logfile' 2>&1"
-  # Esperar hasta que aparezca "Web interface" en el log — señal de que el servidor arrancó
-  local waited=0
-  echo -n "  Esperando"
-  while [ $waited -lt 30 ]; do
-    sleep 2; waited=$((waited+2))
-    echo -n "."
-    grep -q "Web interface" "$logfile" 2>/dev/null && echo "" && return 0
-    tmux has-session -t "oc-web" 2>/dev/null || { echo ""; return 1; }
-  done
-  echo ""
-  return 1
+  # Lanzar en foreground pero con & — el usuario ve el output del servidor
+  # incluyendo el logo y la URL, luego presiona ENTER para volver al menú
+  proot-distro login debian -- bash -c     "source ~/.bashrc 2>/dev/null; opencode web --port 3000 --hostname 127.0.0.1 --cwd \"${cwd}\"" &
+  echo $! > "$HOME/.opencode_web.pid"
 }
+
 
 # Helper: detener servidor web opencode
 _oc_web_stop() {
-  tmux kill-session -t "oc-web" 2>/dev/null
+  if [ -f "$HOME/.opencode_web.pid" ]; then
+    kill "$(cat "$HOME/.opencode_web.pid")" 2>/dev/null
+    rm -f "$HOME/.opencode_web.pid"
+  fi
   pkill -f "opencode web" 2>/dev/null
+  tmux kill-session -t "oc-web" 2>/dev/null
   echo -e "  ${GREEN}[OK]${NC} Servidor detenido"
 }
 
-# Helper: estado del servidor (texto para header del menú)
+# Helper: estado del servidor
 _oc_web_status() {
-  # Verificar sesión tmux Y puerto
-  if tmux has-session -t "oc-web" 2>/dev/null && curl -sf http://127.0.0.1:3000 &>/dev/null; then
-    echo "running"
-  elif tmux has-session -t "oc-web" 2>/dev/null; then
-    echo "starting"  # sesión existe pero puerto aún no responde
-  else
-    echo "stopped"
-  fi
+  curl -sf http://127.0.0.1:3000 &>/dev/null && echo "running" || echo "stopped"
 }
 
 submenu_opencode() {
@@ -1890,25 +1876,27 @@ submenu_opencode() {
           'source ~/.bashrc 2>/dev/null; opencode' < /dev/tty
         echo ""; read -r _ < /dev/tty ;;
 
-      2) # Servidor web — background automático con verificación de puerto
+      2) # Servidor web — lanzar visible, Enter para volver al menú
         clear; echo ""
-        if _oc_web_status | grep -q "running"; then
+        if curl -sf http://127.0.0.1:3000 &>/dev/null; then
           echo -e "  ${GREEN}[OK]${NC} Servidor ya corriendo"
           echo -e "  ${GREEN}URL:${NC} http://127.0.0.1:3000"
+          echo ""; read -r _ < /dev/tty
         else
+          pkill -f "opencode web" 2>/dev/null; sleep 1
           echo -e "  ${CYAN}Iniciando OpenCode Web...${NC}"
-          echo -e "  ${DIM}(background automático, máx 30s)${NC}"; echo ""
-          if _oc_web_start "/root"; then
-            echo -e "  ${GREEN}[OK]${NC} Servidor listo"
-            echo -e "  ${GREEN}URL:${NC} http://127.0.0.1:3000"
-            echo -e "  ${DIM}Abre en Brave o Chrome${NC}"
-            echo -e "  ${DIM}Ver logs: tmux attach -t oc-web${NC}"
-          else
-            echo -e "  ${RED}[ERROR]${NC} No respondió en 30s"
-            echo -e "  ${DIM}Ver logs: tmux attach -t oc-web${NC}"
-          fi
-        fi
-        echo ""; read -r _ < /dev/tty ;;
+          echo -e "  ${DIM}Cuando veas la URL presiona ENTER para volver al menú${NC}"
+          echo -e "  ${DIM}El servidor quedará corriendo en background${NC}"; echo ""
+          proot-distro login debian -- bash -c             'source ~/.bashrc 2>/dev/null; opencode web --port 3000 --hostname 127.0.0.1' &
+          echo $! > "$HOME/.opencode_web.pid"
+          echo ""
+          echo -n "  Presiona ENTER cuando veas 'Web interface: http://127.0.0.1:3000'..."
+          read -r _ < /dev/tty
+          echo ""
+          echo -e "  ${GREEN}URL:${NC} http://127.0.0.1:3000"
+          echo -e "  ${DIM}Abre en Brave o Chrome${NC}"
+          echo ""; read -r _ < /dev/tty
+        fi ;;
 
       3) # Abrir proyecto — elegir TUI o Web
         clear; echo ""
@@ -1962,17 +1950,16 @@ submenu_opencode() {
               "source ~/.bashrc 2>/dev/null; opencode --cwd '$REAL_PATH'" < /dev/tty
             echo ""; read -r _ < /dev/tty ;;
           2)
+            pkill -f "opencode web" 2>/dev/null; sleep 1
             echo ""
             echo -e "  ${CYAN}Iniciando servidor en proyecto...${NC}"
-            echo -e "  ${DIM}(background automático, máx 30s)${NC}"; echo ""
-            if _oc_web_start "$REAL_PATH"; then
-              echo -e "  ${GREEN}[OK]${NC} Servidor listo"
-              echo -e "  ${GREEN}URL:${NC} http://127.0.0.1:3000"
-              echo -e "  ${DIM}Abre en Brave o Chrome${NC}"
-            else
-              echo -e "  ${RED}[ERROR]${NC} No respondió en 30s"
-              echo -e "  ${DIM}Ver logs: tmux attach -t oc-web${NC}"
-            fi
+            echo -e "  ${DIM}Cuando veas la URL presiona ENTER para volver al menú${NC}"; echo ""
+            proot-distro login debian -- bash -c               "source ~/.bashrc 2>/dev/null; opencode web --port 3000 --hostname 127.0.0.1 --cwd '$REAL_PATH'" &
+            echo $! > "$HOME/.opencode_web.pid"
+            echo ""
+            echo -n "  Presiona ENTER cuando veas 'Web interface: http://127.0.0.1:3000'..."
+            read -r _ < /dev/tty
+            echo -e "  ${GREEN}URL:${NC} http://127.0.0.1:3000"
             echo ""; read -r _ < /dev/tty ;;
           *) continue ;;
         esac ;;
