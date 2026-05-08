@@ -353,6 +353,15 @@ install_module() {
     return 0
   fi
 
+  # Ollama: tiene su propio instalador con submenús de método y versión
+  if [ "$module_key" = "ollama" ]; then
+    echo -e "\n${CYAN}${BOLD}  Instalando Ollama...${NC}\n"
+    _ensure_install_script "$script" || return 1
+    bash "$dest" < /dev/tty
+    echo ""; read -r _ < /dev/tty
+    return 0
+  fi
+
   # Claude: aviso especial ARM64
   echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
   printf  "  ║  %-40s║\n" "¿Cómo instalar ${name}?"
@@ -3668,30 +3677,26 @@ submenu_backup() {
       2)
         clear; echo ""
         echo -e "  ${CYAN}Selecciona módulo a respaldar:${NC}"; echo ""
-        echo "  [1] claude      — Claude Code"
-        echo "  [2] expo        — EAS CLI"
-        echo "  [3] ollama      — Ollama (sin modelos)"
-        echo "  [4] n8n         — n8n + cloudflared (datos)"
-        echo "  [5] proot-base  — Rootfs Debian limpio"
-        echo "  [6] proot-n8n   — Rootfs Debian + n8n + cloudflared"
-        echo "  [7] remote      — SSH + Dashboard configs"
-        echo "  [8] opencode    — OpenCode (en proot)"
-        echo "  [9] openclaw    — OpenClaw + NVM + Node22 (en proot)"
+        echo "  [0] base   — scripts + tema + configs"
+        echo "  [2] claude — Claude Code"
+        echo "  [3] expo   — EAS CLI"
+        echo "  [4] ollama — Ollama (sin modelos)"
+        echo "  [5] n8n    — n8n + cloudflared"
+        echo "  [6] proot  — Rootfs Debian completo"
+        echo "  [7] remote — SSH + Dashboard configs"
         echo "  [b] Cancelar"
         echo ""; echo -n "  Módulo: "
-        read -r MOD_OPT < /dev/tty
+ read -r MOD_OPT < /dev/tty
 
         local BAK_MOD=""
         case "$MOD_OPT" in
-          1)    BAK_MOD="claude"     ;;
-          2)    BAK_MOD="expo"       ;;
-          3)    BAK_MOD="ollama"     ;;
-          4)    BAK_MOD="n8n"        ;;
-          5)    BAK_MOD="proot-base" ;;
-          6)    BAK_MOD="proot-n8n"  ;;
-          7)    BAK_MOD="remote"     ;;
-          8)    BAK_MOD="opencode"   ;;
-          9)    BAK_MOD="openclaw"   ;;
+          0|b0) BAK_MOD="base"   ;;
+          2)    BAK_MOD="claude" ;;
+          3)    BAK_MOD="expo"   ;;
+          4)    BAK_MOD="ollama" ;;
+          5)    BAK_MOD="n8n"    ;;
+          6)    BAK_MOD="proot"  ;;
+          7)    BAK_MOD="remote" ;;
           b|B|"") continue ;;
           *) echo -e "  ${RED}[ERROR]${NC} Opción inválida"; read -r _ < /dev/tty; continue ;;
         esac
@@ -3775,6 +3780,39 @@ uninstall_module() {
       grep -v "^ssh\.\|^dashboard\." "$REGISTRY" > "$REGISTRY.tmp" 2>/dev/null && mv "$REGISTRY.tmp" "$REGISTRY"
       echo -e "  ${GREEN}[OK]${NC} Remote (SSH + Dashboard + CF-SSH) desinstalado"
       echo -e "  ${DIM}(~/.ssh/authorized_keys conservado)${NC}" ;;
+    opencode)
+      # Detener servidor web si está corriendo
+      if [ -f "$HOME/.opencode_web.pid" ]; then
+        kill "$(cat "$HOME/.opencode_web.pid")" 2>/dev/null || true
+        rm -f "$HOME/.opencode_web.pid"
+      fi
+      pkill -f "opencode web" 2>/dev/null || true
+      # Borrar archivos de OpenCode dentro del proot
+      if proot-distro login debian -- bash -c 'true' &>/dev/null 2>&1; then
+        proot-distro login debian -- bash -c \
+          'rm -rf /root/.local/share/opencode /root/.config/opencode 2>/dev/null; echo "[OK]"' 2>/dev/null
+      fi
+      grep -v "^opencode\." "$REGISTRY" > "$REGISTRY.tmp" 2>/dev/null && mv "$REGISTRY.tmp" "$REGISTRY"
+      echo -e "  ${GREEN}[OK]${NC} OpenCode desinstalado"
+      echo -e "  ${DIM}(proot Debian conservado — solo se eliminó OpenCode)${NC}" ;;
+    openclaw)
+      # Detener gateway si está corriendo
+      pkill -f "openclaw" 2>/dev/null || true
+      pkill -f "node.*openclaw" 2>/dev/null || true
+      [ -f "$HOME/.openclaw_gateway.pid" ] && \
+        kill "$(cat "$HOME/.openclaw_gateway.pid")" 2>/dev/null || true
+      # Borrar archivos de OpenClaw dentro del proot
+      # .nvm contiene Node 22 exclusivo de OpenClaw — n8n usa Node 20 del sistema
+      if proot-distro login debian -- bash -c 'true' &>/dev/null 2>&1; then
+        proot-distro login debian -- bash -c \
+          'rm -rf /root/.nvm /root/.openclaw /root/openclaw-shim.cjs 2>/dev/null; echo "[OK]"' 2>/dev/null
+      fi
+      # Limpiar scripts y archivos de control en Termux
+      rm -f "$HOME/openclaw_start.sh" "$HOME/openclaw_stop.sh" "$HOME/openclaw_token.sh" 2>/dev/null
+      rm -f "$HOME/.openclaw_gateway.pid" "$HOME/.openclaw_gateway.log" 2>/dev/null
+      grep -v "^openclaw\." "$REGISTRY" > "$REGISTRY.tmp" 2>/dev/null && mv "$REGISTRY.tmp" "$REGISTRY"
+      echo -e "  ${GREEN}[OK]${NC} OpenClaw desinstalado (NVM + Node22 + gateway)"
+      echo -e "  ${DIM}(proot Debian y n8n conservados)${NC}" ;;
   esac
   echo ""; read -r _ < /dev/tty
 }
@@ -3791,22 +3829,18 @@ submenu_desinstalar() {
     echo -e "  ║  ${NC}[4] Expo / EAS CLI${RED}${BOLD}                     ║"
     echo -e "  ║  ${NC}[5] Python + SQLite${RED}${BOLD}                    ║"
     echo -e "  ║  ${NC}[6] Remote (SSH + Dashboard + CF-SSH)${RED}${BOLD}  ║"
-    echo -e "  ║  ${NC}[7] OpenCode${RED}${BOLD}                           ║"
-    echo -e "  ║  ${NC}[8] OpenClaw${RED}${BOLD}                           ║"
     echo -e "  ║  ${NC}[b] Cancelar${RED}${BOLD}                           ║"
     echo -e "  ╚══════════════════════════════════════════╝${NC}"
     echo ""; echo -n "  Módulo a desinstalar: "
-    read -r OPT < /dev/tty
+ read -r OPT < /dev/tty
 
     case "$OPT" in
-      1) uninstall_module "n8n"      "n8n + proot Debian"          ; break ;;
-      2) uninstall_module "claude"   "Claude Code"                  ; break ;;
-      3) uninstall_module "ollama"   "Ollama"                       ; break ;;
-      4) uninstall_module "expo"     "Expo / EAS CLI"               ; break ;;
-      5) uninstall_module "python"   "Python + SQLite"              ; break ;;
-      6) uninstall_module "remote"   "Remote (SSH + Dashboard)"     ; break ;;
-      7) uninstall_module "opencode" "OpenCode"                     ; break ;;
-      8) uninstall_module "openclaw" "OpenClaw"                     ; break ;;
+      1) uninstall_module "n8n"    "n8n + proot Debian"          ; break ;;
+      2) uninstall_module "claude" "Claude Code"                  ; break ;;
+      3) uninstall_module "ollama" "Ollama"                       ; break ;;
+      4) uninstall_module "expo"   "Expo / EAS CLI"               ; break ;;
+      5) uninstall_module "python" "Python + SQLite"              ; break ;;
+      6) uninstall_module "remote" "Remote (SSH + Dashboard)"     ; break ;;
       b|B|"") break ;;
     esac
   done
