@@ -86,8 +86,8 @@ parse_args() {
 
   if [ -n "$TARGET_MODULE" ]; then
     case "$TARGET_MODULE" in
-      base|claude|expo|ollama|n8n|proot|remote|all) ;;
-      *) error "Módulo inválido: '$TARGET_MODULE'\n  Válidos: base | claude | expo | ollama | n8n | proot | remote | all" ;;
+      base|claude|expo|ollama|n8n|proot-base|proot-n8n|remote|opencode|openclaw|all) ;;
+      *) error "Módulo inválido: '$TARGET_MODULE'\n  Válidos: base | claude | expo | ollama | n8n | proot-base | proot-n8n | remote | opencode | openclaw | all" ;;
     esac
   fi
 
@@ -156,30 +156,36 @@ menu_interactivo() {
 
   echo -e "  ${BOLD}¿Qué módulo restaurar?${NC}"
   echo ""
-  echo "  [0] base   — scripts + tema + configs (part0)"
-  echo "  [2] claude — Claude Code              (part2)"
-  echo "  [3] expo   — EAS CLI + credenciales   (part3)"
-  echo "  [4] ollama — Ollama binario           (part4)"
-  echo "  [5] n8n    — n8n + cloudflared        (part5)"
-  echo "  [6] proot  — Rootfs Debian            (part6)"
-  echo "  [7] remote — SSH + Dashboard          (part7)"
-  echo "  [a] all    — Todos los módulos"
+  echo "  [0] base       — scripts + tema + configs       (part0)"
+  echo "  [2] claude     — Claude Code                    (part2)"
+  echo "  [3] expo       — EAS CLI + credenciales         (part3)"
+  echo "  [4] ollama     — Ollama binario                 (part4-*)"
+  echo "  [5] n8n        — n8n + cloudflared              (part5)"
+  echo "  [6b] proot-base — Rootfs Debian limpio          (part6-proot-base)"
+  echo "  [6n] proot-n8n  — Rootfs Debian + n8n           (part6-proot-n8n)"
+  echo "  [7] remote     — SSH + Dashboard                (part7)"
+  echo "  [8] opencode   — OpenCode en proot              (part8)"
+  echo "  [9] openclaw   — OpenClaw en proot              (part9)"
+  echo "  [a] all        — Todos los módulos"
   echo "  [q] Salir"
   echo ""
   echo -n "  Opción: "
   read -r OPT_MOD < /dev/tty
 
   case "$OPT_MOD" in
-    0|b) TARGET_MODULE="base"   ;;
-    2)   TARGET_MODULE="claude" ;;
-    3)   TARGET_MODULE="expo"   ;;
-    4)   TARGET_MODULE="ollama" ;;
-    5)   TARGET_MODULE="n8n"    ;;
-    6)   TARGET_MODULE="proot"  ;;
-    7)   TARGET_MODULE="remote" ;;
-    a|A) TARGET_MODULE="all"    ;;
-    q|Q) echo "Cancelado."; exit 0 ;;
-    *)   error "Opción inválida" ;;
+    0)    TARGET_MODULE="base"       ;;
+    2)    TARGET_MODULE="claude"     ;;
+    3)    TARGET_MODULE="expo"       ;;
+    4)    TARGET_MODULE="ollama"     ;;
+    5)    TARGET_MODULE="n8n"        ;;
+    6b)   TARGET_MODULE="proot-base" ;;
+    6n)   TARGET_MODULE="proot-n8n"  ;;
+    7)    TARGET_MODULE="remote"     ;;
+    8)    TARGET_MODULE="opencode"   ;;
+    9)    TARGET_MODULE="openclaw"   ;;
+    a|A)  TARGET_MODULE="all"        ;;
+    q|Q)  echo "Cancelado."; exit 0  ;;
+    *)    error "Opción inválida"    ;;
   esac
 }
 
@@ -196,19 +202,29 @@ declare -A PART_NAMES=(
   [0]="part0-termux-base"
   [2]="part2-claude-code"
   [3]="part3-eas-expo"
-  [4]="part4-ollama"
+  [4s]="part4-ollama-standard"
+  [4o]="part4-ollama-optimized"
+  [4v]="part4-ollama-vulkan"
   [5]="part5-n8n-data"
-  [6]="part6-proot-debian"
+  [6b]="part6-proot-base"
+  [6n]="part6-proot-n8n"
   [7]="part7-remote"
+  [8]="part8-opencode"
+  [9]="part9-openclaw"
 )
 declare -A PART_LABELS=(
   [0]="Termux base (scripts + tema + configs)"
   [2]="Claude Code"
   [3]="Expo / EAS CLI"
-  [4]="Ollama"
+  [4s]="Ollama estándar"
+  [4o]="Ollama optimizado (i8mm+dotprod)"
+  [4v]="Ollama Vulkan GPU"
   [5]="n8n + cloudflared"
-  [6]="Proot Debian"
+  [6b]="Proot Debian limpio"
+  [6n]="Proot Debian + n8n + cloudflared"
   [7]="Remote (SSH + Dashboard)"
+  [8]="OpenCode"
+  [9]="OpenClaw (NVM + Node22)"
 )
 
 fetch_release_json() {
@@ -247,18 +263,16 @@ list_release_parts() {
     mkdir -p "$TMP_DIR"
     curl -fsSL "$CHECKSUMS_URL" -o "$CHECKSUMS_TMP" 2>/dev/null
     if [ -f "$CHECKSUMS_TMP" ] && [ -s "$CHECKSUMS_TMP" ]; then
-      for NUM in 0 2 3 4 5 6 7; do
+      for NUM in 0 2 3 4s 4o 4v 5 6b 6n 7 8 9; do
         local PREFIX="${PART_NAMES[$NUM]}"
         local LABEL="${PART_LABELS[$NUM]}"
         local URL; URL=$(get_part_url "$PREFIX")
         if [ -n "$URL" ]; then
           local FNAME; FNAME=$(basename "$URL")
-          # Tamaño desde checksums si está disponible
-          local SIZE=""
-          echo -e "  ${GREEN}✓${NC} part${NUM}  ${LABEL}"
+          echo -e "  ${GREEN}✓${NC} ${PREFIX}  ${DIM}${LABEL}${NC}"
           echo -e "       ${DIM}${FNAME}${NC}"
         else
-          echo -e "  ${YELLOW}○${NC} part${NUM}  ${LABEL} ${DIM}(no en este release)${NC}"
+          echo -e "  ${YELLOW}○${NC} ${PREFIX}  ${DIM}${LABEL}${NC} ${DIM}(no en este release)${NC}"
         fi
       done
       rm -f "$CHECKSUMS_TMP"
@@ -267,14 +281,14 @@ list_release_parts() {
   fi
 
   # Fallback: verificar directamente por URL sin checksums.txt
-  for NUM in 0 2 3 4 5 6 7; do
+  for NUM in 0 2 3 4s 4o 4v 5 6b 6n 7 8 9; do
     local PREFIX="${PART_NAMES[$NUM]}"
     local LABEL="${PART_LABELS[$NUM]}"
     local URL; URL=$(get_part_url "$PREFIX")
     if [ -n "$URL" ]; then
-      echo -e "  ${GREEN}✓${NC} part${NUM}  ${LABEL}  ${DIM}($(basename "$URL"))${NC}"
+      echo -e "  ${GREEN}✓${NC} ${PREFIX}  ${DIM}${LABEL}${NC}  ${DIM}($(basename "$URL"))${NC}"
     else
-      echo -e "  ${YELLOW}○${NC} part${NUM}  ${LABEL} ${DIM}(no disponible)${NC}"
+      echo -e "  ${YELLOW}○${NC} ${PREFIX}  ${DIM}${LABEL}${NC} ${DIM}(no disponible)${NC}"
     fi
   done
 }
@@ -539,7 +553,59 @@ restore_part3() {
 restore_part4() {
   titulo "PARTE 4 — Ollama (sin modelos)"
 
-  download_and_verify "part4-ollama"
+  # Detectar hardware para recomendar variante
+  local HW_CPU_FEAT
+  HW_CPU_FEAT=$(grep -m1 -i "^Features" /proc/cpuinfo 2>/dev/null)
+  local HW_REC="standard"
+  echo "$HW_CPU_FEAT" | grep -qE "i8mm|dotprod|asimddp" && HW_REC="optimized"
+
+  # Ver qué variantes hay disponibles en el release
+  if [ "$SOURCE" = "github" ]; then
+    [ -z "$RELEASE_JSON" ] && fetch_release_json
+    local URL_STD URL_OPT URL_VLK
+    URL_STD=$(get_part_url "part4-ollama-standard")
+    URL_OPT=$(get_part_url "part4-ollama-optimized")
+    URL_VLK=$(get_part_url "part4-ollama-vulkan")
+
+    echo ""
+    echo -e "  ${CYAN}Variantes disponibles:${NC}"
+    [ -n "$URL_STD" ] && echo -e "  ${GREEN}[1]${NC} Estándar   — part4-ollama-standard" \
+                      || echo -e "  ${YELLOW}[1]${NC} Estándar   — no disponible en este release"
+    [ -n "$URL_OPT" ] && echo -e "  ${GREEN}[2]${NC} Optimizada — part4-ollama-optimized$([ "$HW_REC" = "optimized" ] && echo " ★ recomendado")" \
+                      || echo -e "  ${YELLOW}[2]${NC} Optimizada — no disponible en este release"
+    [ -n "$URL_VLK" ] && echo -e "  ${GREEN}[3]${NC} Vulkan     — part4-ollama-vulkan" \
+                      || echo -e "  ${YELLOW}[3]${NC} Vulkan     — no disponible en este release"
+    echo ""
+    echo -n "  Variante [1/2/3]: "
+    read -r OL_V < /dev/tty
+
+    local OL_PART_KEY
+    case "$OL_V" in
+      2) OL_PART_KEY="part4-ollama-optimized" ;;
+      3) OL_PART_KEY="part4-ollama-vulkan"    ;;
+      *) OL_PART_KEY="part4-ollama-standard"  ;;
+    esac
+
+    # Verificar que la variante elegida existe
+    local CHOSEN_URL
+    CHOSEN_URL=$(get_part_url "$OL_PART_KEY")
+    if [ -z "$CHOSEN_URL" ]; then
+      warn "La variante '${OL_PART_KEY}' no está en el release actual"
+      warn "Instala Ollama limpio desde el menú: bash ~/install_ollama.sh"
+      return 0
+    fi
+  else
+    # Fuente local: preguntar variante
+    echo -n "  Variante [1=standard/2=optimized/3=vulkan]: "
+    read -r OL_V < /dev/tty
+    case "$OL_V" in
+      2) OL_PART_KEY="part4-ollama-optimized" ;;
+      3) OL_PART_KEY="part4-ollama-vulkan"    ;;
+      *) OL_PART_KEY="part4-ollama-standard"  ;;
+    esac
+  fi
+
+  download_and_verify "$OL_PART_KEY"
 
   EXTRACT_TMP="$TMP_DIR/ollama_extract"
   mkdir -p "$EXTRACT_TMP"
@@ -549,6 +615,18 @@ restore_part4() {
     cp "$EXTRACT_TMP/bin/ollama" "${TERMUX_PREFIX}/bin/ollama"
     chmod +x "${TERMUX_PREFIX}/bin/ollama"
     log "Binario ollama restaurado"
+  }
+
+  # llama-server y llama-cli para versiones compiladas
+  [ -f "$EXTRACT_TMP/bin/llama-server" ] && {
+    cp "$EXTRACT_TMP/bin/llama-server" "${TERMUX_PREFIX}/bin/llama-server"
+    chmod +x "${TERMUX_PREFIX}/bin/llama-server"
+    log "llama-server restaurado"
+  }
+  [ -f "$EXTRACT_TMP/bin/llama-cli" ] && {
+    cp "$EXTRACT_TMP/bin/llama-cli" "${TERMUX_PREFIX}/bin/llama-cli"
+    chmod +x "${TERMUX_PREFIX}/bin/llama-cli"
+    log "llama-cli restaurado"
   }
 
   [ -d "$EXTRACT_TMP/lib_ollama" ] && {
@@ -562,10 +640,8 @@ restore_part4() {
     log "Scripts ollama restaurados"
   }
 
-  OLLAMA_VER=$(pkg show ollama 2>/dev/null | grep "^Version:" | awk '{print $2}')
-  [ -z "$OLLAMA_VER" ] && OLLAMA_VER="restored"
-  update_registry "ollama" "$OLLAMA_VER"
-  log "Ollama restaurado ✓"
+  update_registry "ollama" "${OL_PART_KEY##*-}"
+  log "Ollama restaurado ✓ (${OL_PART_KEY})"
   echo -e "  ${YELLOW}⚠${NC}  Modelos NO incluidos — descarga con: ollama pull qwen2.5:0.5b"
   rm -rf "$EXTRACT_TMP"
 }
@@ -643,7 +719,8 @@ PROOT_INNER
 # RESTORE PARTE 6 — Proot Debian
 # ════════════════════════════════════════════════════════════
 restore_part6() {
-  titulo "PARTE 6 — Proot Debian (rootfs completo)"
+  local PROOT_VARIANT="${1:-proot-n8n}"  # default histórico: n8n
+  titulo "PARTE 6 — Proot Debian (${PROOT_VARIANT})"
 
   if [ -n "$DISTRO_NAME" ]; then
     echo -e "  ${YELLOW}${BOLD}⚠  Se sobreescribirá el rootfs: $DISTRO_NAME${NC}"
@@ -654,12 +731,12 @@ restore_part6() {
     [ "$CONFIRM_P6" != "s" ] && [ "$CONFIRM_P6" != "S" ] && { warn "Cancelado."; return 0; }
   fi
 
-  download_and_verify "part6-proot-debian"
+  download_and_verify "$PROOT_VARIANT"
   mkdir -p "$ROOTFS_BASE"
 
   info "Detectando nombre del distro en el archivo..."
   DISTRO_IN_TAR=$(tar -tJf "$DOWNLOADED_FILE" 2>/dev/null | head -1 | cut -d'/' -f1)
-  [ -z "$DISTRO_IN_TAR" ] && error "No se pudo leer el contenido del archive part6"
+  [ -z "$DISTRO_IN_TAR" ] && error "No se pudo leer el contenido del archive ${PROOT_VARIANT}"
   info "Distro detectada: $DISTRO_IN_TAR"
 
   [ -d "$ROOTFS_BASE/$DISTRO_IN_TAR" ] && {
@@ -667,9 +744,9 @@ restore_part6() {
     rm -rf "$ROOTFS_BASE/$DISTRO_IN_TAR"
   }
 
-  echo -e "  ${YELLOW}Extrayendo rootfs (~834MB) — puede tardar 10-20 min...${NC}"
+  echo -e "  ${YELLOW}Extrayendo rootfs — puede tardar 10-20 min...${NC}"
   tar -xJf "$DOWNLOADED_FILE" -C "$ROOTFS_BASE" 2>/dev/null || \
-    error "Error al extraer part6"
+    error "Error al extraer ${PROOT_VARIANT}"
 
   detect_distro
   PROOT_VER=$(proot-distro login "$DISTRO_IN_TAR" -- bash -c \
@@ -677,7 +754,14 @@ restore_part6() {
   [ -z "$PROOT_VER" ] && PROOT_VER=$(pkg show proot-distro 2>/dev/null | grep "^Version:" | awk '{print $2}')
   [ -z "$PROOT_VER" ] && PROOT_VER="restored"
   update_registry "proot" "$PROOT_VER"
-  log "Proot Debian restaurado ✓ ($DISTRO_IN_TAR)"
+  log "Proot Debian restaurado ✓ ($DISTRO_IN_TAR / ${PROOT_VARIANT})"
+
+  # Si restauramos el rootfs base y n8n está en otro backup, avisar
+  if [ "$PROOT_VARIANT" = "part6-proot-base" ]; then
+    echo ""
+    echo -e "  ${CYAN}Rootfs base restaurado.${NC}"
+    echo -e "  Para instalar n8n: restore módulo 'n8n' o usar el menú."
+  fi
 }
 
 # ════════════════════════════════════════════════════════════
@@ -754,27 +838,134 @@ restore_part7() {
 }
 
 # ════════════════════════════════════════════════════════════
+# RESTORE PARTE 8 — OpenCode
+# ════════════════════════════════════════════════════════════
+restore_part8() {
+  titulo "PARTE 8 — OpenCode (en proot)"
+
+  if [ -z "$DISTRO_NAME" ]; then
+    warn "Proot Debian no encontrado — OpenCode requiere proot"
+    echo -e "  Restaura primero el rootfs: restaurar módulo 'proot-base' o 'proot-n8n'"
+    return 0
+  fi
+
+  download_and_verify "part8-opencode"
+
+  info "Inyectando OpenCode en el rootfs existente ($DISTRO_NAME)..."
+  local OC_EXTRACT="${ROOTFS_PATH}tmp/opencode_restore"
+  mkdir -p "$OC_EXTRACT"
+  cp "$DOWNLOADED_FILE" "${ROOTFS_PATH}tmp/opencode_restore.tar.xz"
+
+  proot-distro login "$DISTRO_NAME" -- bash << 'PROOT_OC_R'
+export HOME=/root
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+ARCHIVE="/tmp/opencode_restore.tar.xz"
+[ ! -f "$ARCHIVE" ] && { echo "[ERROR] Archivo no encontrado en proot"; exit 1; }
+
+echo "[INFO] Extrayendo OpenCode en /..."
+tar -xJf "$ARCHIVE" -C / 2>/dev/null || \
+  tar -xJf "$ARCHIVE" -C / --ignore-failed-read 2>/dev/null || \
+  { echo "[ERROR] Extracción fallida"; exit 1; }
+
+# Verificar
+command -v opencode &>/dev/null && echo "[OK] opencode verificado" || echo "[AVISO] opencode no encontrado en PATH"
+rm -f "$ARCHIVE"
+echo "[DONE]"
+PROOT_OC_R
+
+  [ $? -ne 0 ] && { warn "Fallo restaurando OpenCode"; return 1; }
+
+  OC_VER=$(proot-distro login "$DISTRO_NAME" -- bash -c \
+    'source ~/.bashrc 2>/dev/null; opencode --version 2>/dev/null | head -1' 2>/dev/null | \
+    grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+  [ -z "$OC_VER" ] && OC_VER="restored"
+  update_registry "opencode" "$OC_VER"
+  log "OpenCode restaurado ✓"
+}
+
+# ════════════════════════════════════════════════════════════
+# RESTORE PARTE 9 — OpenClaw
+# ════════════════════════════════════════════════════════════
+restore_part9() {
+  titulo "PARTE 9 — OpenClaw (NVM + Node22 + OpenClaw en proot)"
+
+  if [ -z "$DISTRO_NAME" ]; then
+    warn "Proot Debian no encontrado — OpenClaw requiere proot"
+    echo -e "  Restaura primero el rootfs: restaurar módulo 'proot-base' o 'proot-n8n'"
+    return 0
+  fi
+
+  download_and_verify "part9-openclaw"
+
+  info "Inyectando OpenClaw en el rootfs existente ($DISTRO_NAME)..."
+  cp "$DOWNLOADED_FILE" "${ROOTFS_PATH}tmp/openclaw_restore.tar.xz"
+
+  proot-distro login "$DISTRO_NAME" -- bash << 'PROOT_OCL_R'
+export HOME=/root
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+ARCHIVE="/tmp/openclaw_restore.tar.xz"
+[ ! -f "$ARCHIVE" ] && { echo "[ERROR] Archivo no encontrado en proot"; exit 1; }
+
+echo "[INFO] Extrayendo OpenClaw en /..."
+tar -xJf "$ARCHIVE" -C / 2>/dev/null || \
+  tar -xJf "$ARCHIVE" -C / --ignore-failed-read 2>/dev/null || \
+  { echo "[ERROR] Extracción fallida"; exit 1; }
+
+# Cargar NVM y verificar openclaw
+export NVM_DIR="$HOME/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+
+# Agregar NVM al .bashrc si no está — sin sobreescribir
+if ! grep -q "NVM_DIR" /root/.bashrc 2>/dev/null; then
+  echo '' >> /root/.bashrc
+  echo 'export NVM_DIR="$HOME/.nvm"' >> /root/.bashrc
+  echo '[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"' >> /root/.bashrc
+  echo "[INFO] NVM agregado a .bashrc"
+fi
+
+command -v openclaw &>/dev/null && echo "[OK] openclaw verificado" || echo "[AVISO] openclaw no en PATH — puede necesitar reiniciar sesión proot"
+rm -f "$ARCHIVE"
+echo "[DONE]"
+PROOT_OCL_R
+
+  [ $? -ne 0 ] && { warn "Fallo restaurando OpenClaw"; return 1; }
+
+  OCL_VER=$(grep "^openclaw\.version=" "$REGISTRY" 2>/dev/null | cut -d'=' -f2)
+  [ -z "$OCL_VER" ] && OCL_VER="restored"
+  update_registry "openclaw" "$OCL_VER"
+  log "OpenClaw restaurado ✓"
+  echo -e "  ${YELLOW}⚠${NC}  Token de auth vacío — configura con: menu → Servicios → OpenClaw → Configurar"
+}
+
+# ════════════════════════════════════════════════════════════
 # DISPATCHER
 # ════════════════════════════════════════════════════════════
 run_restore() {
   mkdir -p "$TMP_DIR"
 
   case "$TARGET_MODULE" in
-    base)   restore_part0 ;;
-    claude) restore_part2 ;;
-    expo)   restore_part3 ;;
-    ollama) restore_part4 ;;
-    n8n)    restore_part5 ;;
-    proot)  restore_part6 ;;
-    remote) restore_part7 ;;
+    base)       restore_part0 ;;
+    claude)     restore_part2 ;;
+    expo)       restore_part3 ;;
+    ollama)     restore_part4 ;;
+    n8n)        restore_part5 ;;
+    proot-base) restore_part6 "part6-proot-base" ;;
+    proot-n8n)  restore_part6 "part6-proot-n8n"  ;;
+    remote)     restore_part7 ;;
+    opencode)   restore_part8 ;;
+    openclaw)   restore_part9 ;;
     all)
       restore_part0
       restore_part2
       restore_part3
       restore_part4
       restore_part5
-      restore_part6
+      restore_part6 "part6-proot-n8n"
       restore_part7
+      restore_part8
+      restore_part9
       ;;
   esac
 

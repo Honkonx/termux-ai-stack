@@ -73,15 +73,16 @@ parse_args() {
 
   if [ -n "$TARGET_MODULE" ]; then
     case "$TARGET_MODULE" in
-      base|claude|expo|ollama|n8n|proot|remote|full) ;;
-      *) error "Módulo inválido: '$TARGET_MODULE'\n  Válidos: base | claude | expo | ollama | n8n | proot | remote | full" ;;
+      base|claude|expo|ollama|n8n|proot-base|proot-n8n|remote|opencode|openclaw|full) ;;
+      *) error "Módulo inválido: '$TARGET_MODULE'\n  Válidos: base | claude | expo | ollama | n8n | proot-base | proot-n8n | remote | opencode | openclaw | full" ;;
     esac
   fi
 }
 parse_args "$@"
 
 should_run() {
-  [ -z "$TARGET_MODULE" ] || [ "$TARGET_MODULE" = "$1" ] || [ "$TARGET_MODULE" = "full" ]
+  [ -z "$TARGET_MODULE" ] || [ "$TARGET_MODULE" = "$1" ] || [ "$TARGET_MODULE" = "full" ] || \
+  { [ "$1" = "proot" ] && { [ "$TARGET_MODULE" = "proot-base" ] || [ "$TARGET_MODULE" = "proot-n8n" ]; }; }
 }
 
 # ── Detectar proot ────────────────────────────────────────────
@@ -104,6 +105,8 @@ HAS_OLLAMA=false
 HAS_N8N=false
 HAS_PROOT=false
 HAS_REMOTE=false
+HAS_OPENCODE=false
+HAS_OPENCLAW=false
 
 [ -d "${NPM_GLOBAL}/@anthropic-ai/claude-code" ] && HAS_CLAUDE=true
 [ -d "${NPM_GLOBAL}/eas-cli" ]                   && HAS_EAS=true
@@ -112,6 +115,10 @@ command -v ollama &>/dev/null                    && HAS_OLLAMA=true
 
 if $HAS_PROOT; then
   proot-distro login "$DISTRO_NAME" -- bash -c 'command -v n8n &>/dev/null' 2>/dev/null && HAS_N8N=true
+  proot-distro login "$DISTRO_NAME" -- bash -c 'command -v opencode &>/dev/null' 2>/dev/null && HAS_OPENCODE=true
+  proot-distro login "$DISTRO_NAME" -- bash -c \
+    'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"; command -v openclaw &>/dev/null' \
+    2>/dev/null && HAS_OPENCLAW=true
 fi
 
 # Remote: existe si hay sshd_config o dashboard_server.py
@@ -154,6 +161,8 @@ $HAS_OLLAMA  && echo -e "  ${GREEN}✓${NC} Ollama" || echo -e "  ${YELLOW}○${
 $HAS_N8N     && echo -e "  ${GREEN}✓${NC} n8n + cloudflared" || echo -e "  ${YELLOW}○${NC} n8n             (se omitirá)"
 $HAS_PROOT   && echo -e "  ${GREEN}✓${NC} Proot Debian ($DISTRO_NAME)" || echo -e "  ${YELLOW}○${NC} Proot Debian    (se omitirá)"
 $HAS_REMOTE  && echo -e "  ${GREEN}✓${NC} Remote (SSH + Dashboard)" || echo -e "  ${YELLOW}○${NC} Remote          (configs mínimas)"
+$HAS_OPENCODE && echo -e "  ${GREEN}✓${NC} OpenCode (en proot)" || echo -e "  ${YELLOW}○${NC} OpenCode        (se omitirá)"
+$HAS_OPENCLAW && echo -e "  ${GREEN}✓${NC} OpenClaw (en proot)" || echo -e "  ${YELLOW}○${NC} OpenClaw        (se omitirá)"
 echo ""
 echo -e "  ${YELLOW}⚠${NC}  Detén n8n y ollama antes de continuar"
 $HAS_PROOT && echo -e "  ${YELLOW}⚠${NC}  part6 (rootfs Debian) puede tardar 10-20 min"
@@ -346,22 +355,47 @@ titulo "PARTE 4 — Ollama (sin modelos)"
 if ! $HAS_OLLAMA; then
   skip "Ollama no encontrado — omitiendo part4"
 else
+  # Preguntar qué variante es la instalada actualmente
+  echo -e "  ${CYAN}¿Qué variante de Ollama está instalada?${NC}"
+  echo ""
+  echo -e "  ${CYAN}[1]${NC} Estándar   — pkg ollama genérico"
+  echo -e "  ${CYAN}[2]${NC} Optimizada — llama.cpp con i8mm/dotprod"
+  echo -e "  ${CYAN}[3]${NC} Vulkan     — llama.cpp con GPU Vulkan"
+  echo ""
+  echo -n "  Variante [1/2/3]: "
+  read -r OL_VARIANT < /dev/tty
+  case "$OL_VARIANT" in
+    2) OL_PART_NAME="part4-ollama-optimized" ;;
+    3) OL_PART_NAME="part4-ollama-vulkan"    ;;
+    *) OL_PART_NAME="part4-ollama-standard"  ;;
+  esac
+  echo ""
+  info "Nombre del asset: ${OL_PART_NAME}"
+
   P4_TMP="$TMP_DIR/ollama_pack"
   mkdir -p "$P4_TMP/bin" "$P4_TMP/home"
-  cp "${TERMUX_PREFIX}/bin/ollama" "$P4_TMP/bin/"
+  cp "${TERMUX_PREFIX}/bin/ollama" "$P4_TMP/bin/" 2>/dev/null
+  # llama-server y llama-cli solo en versiones compiladas
+  if [ "$OL_VARIANT" = "2" ] || [ "$OL_VARIANT" = "3" ]; then
+    [ -f "${TERMUX_PREFIX}/bin/llama-server" ] && cp "${TERMUX_PREFIX}/bin/llama-server" "$P4_TMP/bin/"
+    [ -f "${TERMUX_PREFIX}/bin/llama-cli" ]    && cp "${TERMUX_PREFIX}/bin/llama-cli"    "$P4_TMP/bin/"
+  fi
   [ -d "${TERMUX_PREFIX}/lib/ollama" ] && cp -r "${TERMUX_PREFIX}/lib/ollama" "$P4_TMP/lib_ollama"
   for f in ollama_start.sh ollama_stop.sh; do
     [ -f "$HOME/$f" ] && cp "$HOME/$f" "$P4_TMP/home/"
   done
 
   cat > "$P4_TMP/RESTORE.txt" << EOF
-# termux-ai-stack · part4-ollama
+# termux-ai-stack · ${OL_PART_NAME}
 # Versión: $VERSION
+# Variante: $([ "$OL_VARIANT" = "2" ] && echo "optimized (i8mm+dotprod)" || ([ "$OL_VARIANT" = "3" ] && echo "vulkan" || echo "standard"))
 #
 # NOTA: Modelos NO incluidos — descargar con: ollama pull qwen2.5:0.5b
 # RESTAURACIÓN:
 #   cp bin/ollama $TERMUX_PREFIX/bin/ollama
 #   chmod +x $TERMUX_PREFIX/bin/ollama
+#   [ -f bin/llama-server ] && cp bin/llama-server $TERMUX_PREFIX/bin/ && chmod +x $TERMUX_PREFIX/bin/llama-server
+#   [ -f bin/llama-cli ]    && cp bin/llama-cli    $TERMUX_PREFIX/bin/ && chmod +x $TERMUX_PREFIX/bin/llama-cli
 #   [ -d lib_ollama ] && cp -r lib_ollama $TERMUX_PREFIX/lib/ollama
 #   cp home/*.sh ~/  &&  chmod +x ~/ollama_start.sh ~/ollama_stop.sh
 EOF
@@ -370,7 +404,7 @@ EOF
   info "Tamaño: $SIZE"
   ITEMS=("bin" "home" "RESTORE.txt")
   [ -d "$P4_TMP/lib_ollama" ] && ITEMS+=("lib_ollama")
-  make_part "part4-ollama" "$P4_TMP" "${ITEMS[@]}"
+  make_part "$OL_PART_NAME" "$P4_TMP" "${ITEMS[@]}"
   rm -rf "$P4_TMP"
 fi
 fi # end should_run ollama
@@ -428,35 +462,70 @@ fi # end should_run n8n
 # PARTE 6 — Proot Debian rootfs completo
 # ════════════════════════════════════════════════════════════
 if should_run "proot"; then
-titulo "PARTE 6 — Proot Debian (rootfs completo)"
+
+# ── Determinar qué variante de proot hacer ───────────────────
+PROOT_VARIANT=""
+if [ -z "$TARGET_MODULE" ]; then
+  # Backup completo: preguntar cuál
+  echo ""
+  echo -e "  ${CYAN}¿Qué backup de proot crear?${NC}"
+  echo ""
+  echo -e "  ${CYAN}[1]${NC} proot-base — Rootfs Debian limpio (sin módulos)"
+  echo -e "  ${CYAN}[2]${NC} proot-n8n  — Rootfs Debian + n8n + cloudflared"
+  echo -e "  ${CYAN}[b]${NC} Omitir proot"
+  echo ""
+  echo -n "  Opción: "
+  read -r P6_OPT < /dev/tty
+  case "$P6_OPT" in
+    1) PROOT_VARIANT="proot-base" ;;
+    2) PROOT_VARIANT="proot-n8n"  ;;
+    b|B|"") PROOT_VARIANT="skip" ;;
+    *) PROOT_VARIANT="skip" ;;
+  esac
+elif [ "$TARGET_MODULE" = "proot-base" ]; then
+  PROOT_VARIANT="proot-base"
+elif [ "$TARGET_MODULE" = "proot-n8n" ]; then
+  PROOT_VARIANT="proot-n8n"
+fi
+
+if [ "$PROOT_VARIANT" = "skip" ]; then
+  info "Proot omitido"
+elif [ -z "$PROOT_VARIANT" ]; then
+  skip "Variante de proot no especificada — omitiendo"
+else
+
+titulo "PARTE 6 — Proot Debian (${PROOT_VARIANT})"
 
 if ! $HAS_PROOT; then
-  skip "Proot Debian no encontrado — omitiendo part6"
+  skip "Proot Debian no encontrado — omitiendo"
 else
   ROOTFS_SIZE=$(du -sh "$ROOTFS_PATH" 2>/dev/null | cut -f1)
   echo "  Rootfs    : $ROOTFS_PATH"
+  echo "  Variante  : $PROOT_VARIANT"
   echo "  Tamaño    : $ROOTFS_SIZE (sin comprimir)"
   echo -e "  ${YELLOW}Tiempo estimado: 10-20 min — mantén la pantalla encendida${NC}"
   echo ""
-  echo -n "  ¿Crear part6 ahora? (s/n): "
+  echo -n "  ¿Crear ${PROOT_VARIANT} ahora? (s/n): "
   read -r DO_PART6 < /dev/tty
 
   if [ "$DO_PART6" = "s" ] || [ "$DO_PART6" = "S" ]; then
-    P6_OUT="$TMP_DIR/part6-proot-debian-${VERSION}.tar.xz"
-    info "Comprimiendo rootfs Debian..."
+    P6_OUT="$TMP_DIR/${PROOT_VARIANT}-${VERSION}.tar.xz"
+    info "Comprimiendo rootfs Debian (${PROOT_VARIANT})..."
     tar -cJf "$P6_OUT" -C "$ROOTFS_BASE" "$DISTRO_NAME" 2>/dev/null
     if [ -f "$P6_OUT" ] && [ -s "$P6_OUT" ]; then
       SIZE=$(du -h "$P6_OUT" | cut -f1)
-      log "part6-proot-debian → $SIZE"
+      log "${PROOT_VARIANT} → $SIZE"
       GENERATED+=("$P6_OUT")
     else
-      warn "No se pudo crear part6"
+      warn "No se pudo crear ${PROOT_VARIANT}"
       rm -f "$P6_OUT"
     fi
   else
-    info "part6 omitida"
+    info "${PROOT_VARIANT} omitida"
   fi
 fi
+
+fi # end PROOT_VARIANT != skip
 fi # end should_run proot
 
 # ════════════════════════════════════════════════════════════
@@ -543,6 +612,122 @@ rm -rf "$P7_TMP"
 fi # end should_run remote
 
 # ════════════════════════════════════════════════════════════
+# PARTE 8 — OpenCode (solo archivos del proot)
+# ════════════════════════════════════════════════════════════
+if should_run "opencode"; then
+titulo "PARTE 8 — OpenCode (archivos en proot)"
+
+if ! $HAS_OPENCODE; then
+  skip "OpenCode no encontrado en proot — omitiendo part8"
+else
+  P8_TMP="$TMP_DIR/opencode_pack"
+  mkdir -p "$P8_TMP"
+
+  # Exportar solo archivos de OpenCode desde el proot
+  proot-distro login "$DISTRO_NAME" -- bash << 'PROOT_OC'
+export HOME=/root
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+ITEMS=""
+[ -d /root/.local/share/opencode ]  && ITEMS="$ITEMS /root/.local/share/opencode"
+[ -d /root/.config/opencode ]       && ITEMS="$ITEMS /root/.config/opencode"
+# .bashrc solo si tiene líneas de opencode — no sobreescribir el bashrc completo
+grep -q "opencode" /root/.bashrc 2>/dev/null && ITEMS="$ITEMS /root/.bashrc"
+
+if [ -z "$ITEMS" ]; then
+  echo "[SKIP] No se encontraron archivos de OpenCode"
+  exit 0
+fi
+
+echo "Empaquetando OpenCode: $ITEMS"
+tar -cJf /tmp/opencode_backup.tar.xz $ITEMS 2>/dev/null && \
+  echo "[DONE]" || { echo "[FAIL]"; exit 1; }
+PROOT_OC
+
+  OC_EXPORT="${ROOTFS_PATH}tmp/opencode_backup.tar.xz"
+  if [ -f "$OC_EXPORT" ] && [ -s "$OC_EXPORT" ]; then
+    mv "$OC_EXPORT" "$TMP_DIR/part8-opencode-${VERSION}.tar.xz"
+    SIZE=$(du -h "$TMP_DIR/part8-opencode-${VERSION}.tar.xz" | cut -f1)
+    log "part8-opencode → $SIZE"
+    GENERATED+=("$TMP_DIR/part8-opencode-${VERSION}.tar.xz")
+  else
+    warn "No se pudo exportar OpenCode desde el proot"
+  fi
+fi
+fi # end should_run opencode
+
+# ════════════════════════════════════════════════════════════
+# PARTE 9 — OpenClaw (NVM + Node22 + OpenClaw, sin config personal)
+# ════════════════════════════════════════════════════════════
+if should_run "openclaw"; then
+titulo "PARTE 9 — OpenClaw (archivos en proot, sin token)"
+
+if ! $HAS_OPENCLAW; then
+  skip "OpenClaw no encontrado en proot — omitiendo part9"
+else
+  # Exportar archivos de OpenClaw desde el proot
+  # IMPORTANTE: limpiar token y config personal antes de empaquetar
+  proot-distro login "$DISTRO_NAME" -- bash << 'PROOT_OCL'
+export HOME=/root
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+ITEMS=""
+[ -d /root/.nvm ]               && ITEMS="$ITEMS /root/.nvm"
+[ -f /root/openclaw-shim.cjs ]  && ITEMS="$ITEMS /root/openclaw-shim.cjs"
+
+# Limpiar config personal antes de empaquetar (backup público)
+# Solo guardar la estructura — sin token ni workspace personal
+if [ -d /root/.openclaw ]; then
+  TMP_CFG="/tmp/openclaw_clean"
+  mkdir -p "$TMP_CFG"
+  # Copiar solo openclaw.json con token vacío
+  if [ -f /root/.openclaw/openclaw.json ]; then
+    python3 -c "
+import json,sys
+try:
+  d=json.load(open('/root/.openclaw/openclaw.json'))
+  # Limpiar token
+  if 'gateway' in d and 'auth' in d['gateway']:
+    d['gateway']['auth']['token']=''
+  # Limpiar workspace personal
+  d.pop('workspace',None)
+  json.dump(d,open('${TMP_CFG}/openclaw.json','w'),indent=2)
+except: pass
+" 2>/dev/null
+  fi
+  [ -f "${TMP_CFG}/openclaw.json" ] && {
+    mkdir -p /tmp/openclaw_export/.openclaw
+    cp "${TMP_CFG}/openclaw.json" /tmp/openclaw_export/.openclaw/
+    ITEMS="$ITEMS /tmp/openclaw_export/.openclaw"
+  }
+fi
+
+if [ -z "$ITEMS" ]; then
+  echo "[ERROR] No se encontraron archivos de OpenClaw"
+  exit 1
+fi
+
+echo "Empaquetando OpenClaw: $ITEMS"
+tar -cJf /tmp/openclaw_backup.tar.xz $ITEMS 2>/dev/null && \
+  echo "[DONE]" || { echo "[FAIL]"; exit 1; }
+
+# Limpiar temporales
+rm -rf /tmp/openclaw_clean /tmp/openclaw_export 2>/dev/null
+PROOT_OCL
+
+  OCL_EXPORT="${ROOTFS_PATH}tmp/openclaw_backup.tar.xz"
+  if [ -f "$OCL_EXPORT" ] && [ -s "$OCL_EXPORT" ]; then
+    mv "$OCL_EXPORT" "$TMP_DIR/part9-openclaw-${VERSION}.tar.xz"
+    SIZE=$(du -h "$TMP_DIR/part9-openclaw-${VERSION}.tar.xz" | cut -f1)
+    log "part9-openclaw → $SIZE"
+    GENERATED+=("$TMP_DIR/part9-openclaw-${VERSION}.tar.xz")
+  else
+    warn "No se pudo exportar OpenClaw desde el proot"
+  fi
+fi
+fi # end should_run openclaw
+
+# ════════════════════════════════════════════════════════════
 # MODO FULL
 # ════════════════════════════════════════════════════════════
 if [ "$TARGET_MODULE" = "full" ]; then
@@ -587,14 +772,19 @@ CHECKSUMS_TMP="$TMP_DIR/checksums-${VERSION}.txt"
   echo "# Arch    : $(uname -m)"
   echo ""
   echo "# TABLA DE PARTES (permanente):"
-  echo "# part0 = termux-base   (scripts + tema + configs)"
-  echo "# part2 = claude-code   (npm @anthropic-ai/claude-code)"
-  echo "# part3 = eas-expo      (eas-cli + credenciales)"
-  echo "# part4 = ollama        (binario, sin modelos)"
-  echo "# part5 = n8n-data      (n8n + cloudflared dentro de proot)"
-  echo "# part6 = proot-debian  (rootfs Debian completo)"
-  echo "# part7 = remote        (SSH configs + Dashboard)"
-  echo "# NOTA: part1 no existe (reservado por compatibilidad con versiones anteriores)"
+  echo "# part0 = termux-base         (scripts + tema + configs)"
+  echo "# part2 = claude-code         (npm @anthropic-ai/claude-code)"
+  echo "# part3 = eas-expo            (eas-cli + credenciales)"
+  echo "# part4-ollama-standard       (binario pkg genérico)"
+  echo "# part4-ollama-optimized      (llama.cpp i8mm+dotprod)"
+  echo "# part4-ollama-vulkan         (llama.cpp Vulkan GPU)"
+  echo "# part5 = n8n-data            (n8n + cloudflared dentro de proot)"
+  echo "# part6-proot-base            (rootfs Debian limpio)"
+  echo "# part6-proot-n8n             (rootfs Debian + n8n + cloudflared)"
+  echo "# part7 = remote              (SSH configs + Dashboard)"
+  echo "# part8 = opencode            (OpenCode en proot)"
+  echo "# part9 = openclaw            (NVM + Node22 + OpenClaw en proot)"
+  echo "# NOTA: part1 no existe (reservado por compatibilidad)"
   echo ""
 } > "$CHECKSUMS_TMP"
 
