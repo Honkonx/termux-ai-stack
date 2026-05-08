@@ -148,6 +148,22 @@ check_opencode() {
   fi
 }
 
+check_openclaw() {
+  # "running|version|:18789" | "stopped|version|" | "not_installed||"
+  local cl_ver=""
+  if proot-distro login debian -- bash -c \
+    'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+     command -v openclaw' &>/dev/null 2>&1; then
+    cl_ver=$(grep "^openclaw\.version=" "$REGISTRY" 2>/dev/null | cut -d'=' -f2)
+    [ -z "$cl_ver" ] && cl_ver="?"
+    curl -sf http://127.0.0.1:18789 &>/dev/null \
+      && echo "running|${cl_ver}|:18789" \
+      || echo "stopped|${cl_ver}|"
+  else
+    echo "not_installed||"
+  fi
+}
+
 check_ollama() {
   [ "$(get_reg ollama installed)" = "true" ] || { echo "not_installed||"; return; }
   local ver; ver=$(pkg show ollama 2>/dev/null | grep "^Version:" | awk '{print $2}')
@@ -1392,6 +1408,305 @@ if modelos:
   done
 }
 
+
+# ════════════════════════════════════════════
+#  SUBMENÚ OPENCLAW
+# ════════════════════════════════════════════
+
+_cl_get_token() {
+  proot-distro login debian -- bash -c \
+    "python3 -c \"
+import json, sys
+try:
+    d=json.load(open('/root/.openclaw/openclaw.json'))
+    print(d['gateway']['auth']['token'])
+except Exception:
+    print('')
+\"" 2>/dev/null | tr -d '[:space:]'
+}
+
+_cl_status() {
+  curl -sf http://127.0.0.1:18789 &>/dev/null && echo "running" || echo "stopped"
+}
+
+_cl_start() {
+  proot-distro login debian -- bash -c \
+    'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+     export NODE_OPTIONS="--require /root/openclaw-shim.cjs"
+     openclaw gateway --bind loopback' > "$HOME/.openclaw_gateway.log" 2>&1 &
+  echo $! > "$HOME/.openclaw_gateway.pid"
+}
+
+_cl_stop() {
+  [ -f "$HOME/.openclaw_gateway.pid" ] && {
+    kill "$(cat "$HOME/.openclaw_gateway.pid")" 2>/dev/null
+    rm -f "$HOME/.openclaw_gateway.pid"
+  }
+  pkill -f "openclaw gateway" 2>/dev/null || true
+  proot-distro login debian -- bash -c \
+    'pkill -f "openclaw gateway" 2>/dev/null || true' 2>/dev/null || true
+}
+
+_cl_open_browser() {
+  local token="$1"
+  local url="http://127.0.0.1:18789/#token=${token}"
+  if command -v termux-open-url &>/dev/null; then
+    termux-open-url "$url" 2>/dev/null &
+    echo -e "  ${GREEN}[OK]${NC} Browser abierto"
+  else
+    echo -e "  ${YELLOW}[AVISO]${NC} termux-open-url no disponible"
+    echo -e "  Abre: ${CYAN}$url${NC}"
+  fi
+}
+
+check_openclaw() {
+  local cl_ver=""
+  if proot-distro login debian -- bash -c \
+    'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+     command -v openclaw' &>/dev/null 2>&1; then
+    cl_ver=$(grep "^openclaw\.version=" "$REGISTRY" 2>/dev/null | cut -d'=' -f2)
+    [ -z "$cl_ver" ] && cl_ver="?"
+    curl -sf http://127.0.0.1:18789 &>/dev/null \
+      && echo "running|${cl_ver}|:18789" \
+      || echo "stopped|${cl_ver}|"
+  else
+    echo "not_installed||"
+  fi
+}
+
+submenu_openclaw() {
+  local CL_PROJ_DIR="$HOME/proyectos"
+  while true; do
+    clear; echo ""
+    local _CL_ST; _CL_ST=$(_cl_status)
+    local CL_STATUS CL_URL_LINE
+    case "$_CL_ST" in
+      running) CL_STATUS="${GREEN}● activo :18789${NC}"; CL_URL_LINE="  http://127.0.0.1:18789" ;;
+      *)       CL_STATUS="detenido"; CL_URL_LINE="" ;;
+    esac
+    echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
+    echo    "  ║  🦞 OPENCLAW                            ║"
+    echo    "  ╠══════════════════════════════════════════╣"
+    printf  "  ║  ${NC}Gateway: %-32b${CYAN}${BOLD}║\n" "$CL_STATUS"
+    [ -n "$CL_URL_LINE" ] && printf "  ║  ${GREEN}%-40s${CYAN}${BOLD}║\n" "$CL_URL_LINE"
+    echo    "  ╠══════════════════════════════════════════╣"
+    echo -e "  ║  ${NC}[1] Iniciar gateway${CYAN}${BOLD}                   ║"
+    echo -e "  ║  ${NC}[2] Abrir dashboard web (:18789)${CYAN}${BOLD}       ║"
+    echo -e "  ║  ${NC}[3] Abrir TUI (terminal)${CYAN}${BOLD}               ║"
+    echo -e "  ║  ${NC}[4] Abrir en proyecto${CYAN}${BOLD}                  ║"
+    echo -e "  ║  ${NC}[5] Gestionar proyectos${CYAN}${BOLD}                ║"
+    echo -e "  ║  ${NC}[6] Detener gateway${CYAN}${BOLD}                    ║"
+    echo -e "  ║  ${NC}[7] Configurar Ollama local${CYAN}${BOLD}            ║"
+    echo -e "  ║  ${NC}[8] Instalar / actualizar${CYAN}${BOLD}              ║"
+    echo -e "  ║  ${NC}[b] Volver${CYAN}${BOLD}                             ║"
+    echo -e "  ╚══════════════════════════════════════════╝${NC}"
+    echo ""; echo -n "  Opción: "
+    read -r OPT < /dev/tty
+    case "$OPT" in
+      1)
+        clear; echo ""
+        if curl -sf http://127.0.0.1:18789 &>/dev/null; then
+          TOKEN=$(_cl_get_token)
+          echo -e "  ${GREEN}[OK]${NC} Gateway ya corriendo"; echo ""
+          [ -n "$TOKEN" ] && {
+            echo -e "  ${CYAN}http://127.0.0.1:18789/#token=${TOKEN}${NC}"; echo ""
+            echo -n "  ¿Abrir browser? (s/n): "
+            read -r _OB < /dev/tty
+            [ "$_OB" = "s" ] || [ "$_OB" = "S" ] && _cl_open_browser "$TOKEN"
+          }
+        else
+          echo -e "  ${CYAN}[+] Iniciando OpenClaw Gateway...${NC}"
+          echo -e "  ${DIM}Espera ~30-60 segundos en ARM64${NC}"; echo ""
+          _cl_start
+          TRIES=0
+          while [ $TRIES -lt 30 ]; do
+            sleep 2; curl -sf http://127.0.0.1:18789 &>/dev/null && break
+            TRIES=$((TRIES+1)); echo -n "."
+          done; echo ""
+          if curl -sf http://127.0.0.1:18789 &>/dev/null; then
+            TOKEN=$(_cl_get_token)
+            echo -e "  ${GREEN}[OK]${NC} Gateway iniciado"; echo ""
+            if [ -n "$TOKEN" ]; then
+              echo -e "  URL: ${CYAN}http://127.0.0.1:18789/#token=${TOKEN}${NC}"; echo ""
+              _cl_open_browser "$TOKEN"
+            else
+              echo -e "  ${CYAN}http://127.0.0.1:18789${NC}"
+              echo -e "  ${YELLOW}[AVISO]${NC} Token no encontrado — usa [8] para setup"
+            fi
+          else
+            echo -e "  ${RED}[ERROR]${NC} No respondió — revisa: cat ~/.openclaw_gateway.log"
+          fi
+        fi
+        echo ""; read -r _ < /dev/tty ;;
+      2)
+        clear; echo ""
+        if ! curl -sf http://127.0.0.1:18789 &>/dev/null; then
+          echo -e "  ${YELLOW}[AVISO]${NC} Gateway no está corriendo — usa [1] primero"
+          echo ""; read -r _ < /dev/tty; continue
+        fi
+        TOKEN=$(_cl_get_token)
+        [ -n "$TOKEN" ] && {
+          echo -e "  ${CYAN}http://127.0.0.1:18789/#token=${TOKEN}${NC}"; echo ""
+          _cl_open_browser "$TOKEN"
+        } || echo -e "  Abre: ${CYAN}http://127.0.0.1:18789${NC}"
+        echo ""; read -r _ < /dev/tty ;;
+      3)
+        clear; echo ""
+        echo -e "  ${CYAN}Abriendo OpenClaw TUI...${NC}"
+        echo -e "  ${DIM}Ctrl+C para salir${NC}"; echo ""
+        proot-distro login debian -- bash -c \
+          'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+           export NODE_OPTIONS="--require /root/openclaw-shim.cjs"
+           openclaw tui' < /dev/tty
+        echo ""; read -r _ < /dev/tty ;;
+      4)
+        clear; echo ""
+        mkdir -p "$CL_PROJ_DIR"
+        mapfile -t PROJS < <(ls -1 "$CL_PROJ_DIR/" 2>/dev/null)
+        echo -e "  ${CYAN}Proyectos en ~/proyectos/:${NC}"; echo ""
+        local IDX=1
+        [ ${#PROJS[@]} -gt 0 ] \
+          && for p in "${PROJS[@]}"; do printf "    [%d] %s\n" "$IDX" "$p"; IDX=$((IDX+1)); done \
+          || echo "    (ninguno — usa [5] para agregar)"
+        echo ""; echo "    [m] Ruta manual  [b] Volver"
+        echo ""; echo -n "  Elige: "
+        read -r PCHOICE < /dev/tty
+        local TARGET_DIR=""
+        case "$PCHOICE" in
+          m|M) echo -n "  Ruta: "; read -r TARGET_DIR < /dev/tty ;;
+          b|B|"") continue ;;
+          *) [[ "$PCHOICE" =~ ^[0-9]+$ ]] && [ "$PCHOICE" -ge 1 ] && \
+             [ "$PCHOICE" -le "${#PROJS[@]}" ] && \
+             TARGET_DIR="$CL_PROJ_DIR/${PROJS[$((PCHOICE-1))]}" ;;
+        esac
+        [ -z "$TARGET_DIR" ] && continue
+        [ ! -d "$TARGET_DIR" ] && {
+          echo -e "  ${RED}[ERROR]${NC} No existe: $TARGET_DIR"
+          echo ""; read -r _ < /dev/tty; continue
+        }
+        local REAL_PATH
+        REAL_PATH=$(readlink -f "$TARGET_DIR" 2>/dev/null || echo "$TARGET_DIR")
+        REAL_PATH="${REAL_PATH/\/storage\/emulated\/0/\/sdcard}"
+        REAL_PATH="${REAL_PATH/\/data\/data\/com.termux\/files\/home/\/root}"
+        echo ""; echo -e "  ${CYAN}Proyecto:${NC} $(basename "$TARGET_DIR")"
+        echo "  [1] Gateway web  [2] TUI"
+        echo ""; echo -n "  Modo: "
+        read -r MODO < /dev/tty
+        case "$MODO" in
+          1) TOKEN=$(_cl_get_token)
+             [ -n "$TOKEN" ] && _cl_open_browser "$TOKEN" || \
+               echo -e "  Abre: ${CYAN}http://127.0.0.1:18789${NC}"
+             echo ""; read -r _ < /dev/tty ;;
+          2) proot-distro login debian -- bash -c \
+               "export NVM_DIR=\"\$HOME/.nvm\"; [ -s \"\$NVM_DIR/nvm.sh\" ] && . \"\$NVM_DIR/nvm.sh\"
+                export NODE_OPTIONS=\"--require /root/openclaw-shim.cjs\"
+                openclaw tui --cwd '${REAL_PATH}'" < /dev/tty
+             echo ""; read -r _ < /dev/tty ;;
+        esac ;;
+      5)
+        while true; do
+          clear; echo ""
+          echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
+          echo    "  ║  🦞 OPENCLAW — Proyectos               ║"
+          echo    "  ╠══════════════════════════════════════════╣"
+          echo -e "  ║  ${NC}[1] Listar  [2] Crear symlink  [3] Borrar${CYAN}${BOLD}║"
+          echo -e "  ║  ${NC}[b] Volver${CYAN}${BOLD}                             ║"
+          echo -e "  ╚══════════════════════════════════════════╝${NC}"
+          echo ""; echo -n "  Opción: "; read -r GOPT < /dev/tty
+          case "$GOPT" in
+            1) clear; echo ""
+               ls -la "$CL_PROJ_DIR/" 2>/dev/null | grep -v "^total" || \
+                 echo -e "  ${DIM}(vacío)${NC}"
+               echo ""; read -r _ < /dev/tty ;;
+            2) clear; echo ""
+               mapfile -t DL_DIRS < <(find /storage/emulated/0/Download \
+                 -maxdepth 1 -mindepth 1 -type d 2>/dev/null | xargs -I{} basename {})
+               [ ${#DL_DIRS[@]} -eq 0 ] && { echo -e "  ${YELLOW}Sin carpetas en Download${NC}"; read -r _ < /dev/tty; continue; }
+               for i in "${!DL_DIRS[@]}"; do printf "    [%d] %s\n" "$((i+1))" "${DL_DIRS[$i]}"; done
+               echo ""; echo -n "  Número: "; read -r DCHOICE < /dev/tty
+               [[ "$DCHOICE" =~ ^[0-9]+$ ]] && [ "$DCHOICE" -ge 1 ] && \
+               [ "$DCHOICE" -le "${#DL_DIRS[@]}" ] && {
+                 mkdir -p "$CL_PROJ_DIR"
+                 ln -sf "/storage/emulated/0/Download/${DL_DIRS[$((DCHOICE-1))]}" \
+                   "$CL_PROJ_DIR/${DL_DIRS[$((DCHOICE-1))]}" && \
+                   echo -e "  ${GREEN}[OK]${NC} Symlink creado" || echo -e "  ${RED}[ERROR]${NC}"
+               }
+               echo ""; read -r _ < /dev/tty ;;
+            3) clear; echo ""
+               mapfile -t LINKS < <(find "$CL_PROJ_DIR" -maxdepth 1 -type l 2>/dev/null \
+                 | xargs -I{} basename {})
+               [ ${#LINKS[@]} -eq 0 ] && { echo -e "  ${DIM}Sin symlinks${NC}"; read -r _ < /dev/tty; continue; }
+               for i in "${!LINKS[@]}"; do printf "    [%d] %s\n" "$((i+1))" "${LINKS[$i]}"; done
+               echo ""; echo -n "  Número: "; read -r LCHOICE < /dev/tty
+               [[ "$LCHOICE" =~ ^[0-9]+$ ]] && [ "$LCHOICE" -ge 1 ] && \
+               [ "$LCHOICE" -le "${#LINKS[@]}" ] && {
+                 echo -n "  ¿Eliminar? (s/n): "; read -r LCONF < /dev/tty
+                 [ "$LCONF" = "s" ] || [ "$LCONF" = "S" ] && \
+                   rm "$CL_PROJ_DIR/${LINKS[$((LCHOICE-1))]}" && \
+                   echo -e "  ${GREEN}[OK]${NC} Eliminado"
+               }
+               echo ""; read -r _ < /dev/tty ;;
+            b|B|"") break ;;
+          esac
+        done ;;
+      6)
+        clear; echo ""
+        echo -e "  ${CYAN}[+] Deteniendo OpenClaw...${NC}"; echo ""
+        _cl_stop; sleep 1
+        curl -sf http://127.0.0.1:18789 &>/dev/null \
+          && echo -e "  ${YELLOW}[AVISO]${NC} Aún responde — puede tardar" \
+          || echo -e "  ${GREEN}[OK]${NC} Gateway detenido"
+        echo ""; read -r _ < /dev/tty ;;
+      7)
+        clear; echo ""
+        echo -e "  ${CYAN}Configurar modelo Ollama en OpenClaw${NC}"; echo ""
+        if ! curl -sf http://127.0.0.1:11434 &>/dev/null; then
+          echo -e "  ${YELLOW}[AVISO]${NC} Ollama no responde — inícialo primero desde [3]"
+          echo ""; read -r _ < /dev/tty; continue
+        fi
+        MODELS_RAW=$(ollama list 2>/dev/null | tail -n +2 | awk '{print $1}')
+        [ -z "$MODELS_RAW" ] && {
+          echo -e "  ${YELLOW}Sin modelos descargados${NC} — usa [3] → Ollama → [5]"
+          echo ""; read -r _ < /dev/tty; continue
+        }
+        mapfile -t MODELS <<< "$MODELS_RAW"
+        for i in "${!MODELS[@]}"; do printf "    [%d] %s\n" "$((i+1))" "${MODELS[$i]}"; done
+        echo ""; echo -n "  Elige modelo: "
+        read -r MCHOICE < /dev/tty
+        if [[ "$MCHOICE" =~ ^[0-9]+$ ]] && [ "$MCHOICE" -ge 1 ] && \
+           [ "$MCHOICE" -le "${#MODELS[@]}" ]; then
+          CHOSEN_MODEL="${MODELS[$((MCHOICE-1))]}"
+          proot-distro login debian -- bash -c \
+            "python3 -c \"
+import json
+cfg_path='/root/.openclaw/openclaw.json'
+try:
+    cfg=json.load(open(cfg_path))
+except Exception:
+    cfg={}
+cfg.setdefault('models',{}).setdefault('providers',{})['ollama']={
+    'baseUrl':'http://127.0.0.1:11434','api':'ollama','apiKey':'OLLAMA_API_KEY',
+    'models':[{'id':'${CHOSEN_MODEL}','name':'${CHOSEN_MODEL}','reasoning':False,
+               'input':['text'],'cost':{'input':0,'output':0,'cacheRead':0,'cacheWrite':0},
+               'contextWindow':32768,'maxTokens':8192}]}
+json.dump(cfg,open(cfg_path,'w'),indent=2)
+print('OK')
+\"" 2>/dev/null
+          echo -e "  ${GREEN}[OK]${NC} Modelo ${CHOSEN_MODEL} configurado"
+          echo -e "  ${DIM}Reinicia el gateway para aplicar${NC}"
+        else
+          echo -e "  ${YELLOW}Cancelado${NC}"
+        fi
+        echo ""; read -r _ < /dev/tty ;;
+      8)
+        clear; echo ""
+        _ensure_install_script "install_openclaw.sh" || { read -r _ < /dev/tty; continue; }
+        bash "$HOME/install_openclaw.sh" < /dev/tty
+        echo ""; read -r _ < /dev/tty ;;
+      b|B|"") break ;;
+    esac
+  done
+}
 
 submenu_ollama() {
   local state="$1"
@@ -3452,6 +3767,58 @@ submenu_desinstalar() {
 }
 
 # ════════════════════════════════════════════
+#  SUBMENÚ SERVICIOS (n8n + OpenClaw)
+# ════════════════════════════════════════════
+submenu_servicios() {
+  while true; do
+    clear; echo ""
+
+    local N8_S N8_V N8_E CL_S CL_V CL_E
+    IFS='|' read -r N8_S N8_V N8_E <<< "$(check_n8n)"
+    IFS='|' read -r CL_S CL_V CL_E <<< "$(check_openclaw)"
+
+    local N8_PILL CL_PILL
+    case "$N8_S" in
+      running)       N8_PILL="${GREEN}● activo  ${NC}" ;;
+      stopped)       N8_PILL="${GREEN}● listo   ${NC}" ;;
+      not_installed) N8_PILL="${YELLOW}○ no instal${NC}"; N8_V="──────────" ;;
+      *)             N8_PILL="${YELLOW}● ${N8_S}${NC}" ;;
+    esac
+    case "$CL_S" in
+      running)       CL_PILL="${GREEN}● activo  ${NC}" ;;
+      stopped)       CL_PILL="${GREEN}● listo   ${NC}" ;;
+      not_installed) CL_PILL="${YELLOW}○ no instal${NC}"; CL_V="──────────" ;;
+      *)             CL_PILL="${YELLOW}● ${CL_S}${NC}" ;;
+    esac
+
+    echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
+    echo    "  ║  ⬡ SERVICIOS                            ║"
+    echo    "  ╠══════════════════════════════════════════╣"
+    printf  "  ║  ${NC}[1] n8n        %b  %b${CYAN}${BOLD}║\n" "$N8_PILL" "${NC}→ submenú${CYAN}${BOLD}"
+    printf  "  ║      ${NC}${DIM}%s${NC}${CYAN}${BOLD}%-$((28 - ${#N8_V}))s║\n" "$N8_V" ""
+    printf  "  ║  ${NC}[2] OpenClaw   %b  %b${CYAN}${BOLD}║\n" "$CL_PILL" "${NC}→ submenú${CYAN}${BOLD}"
+    printf  "  ║      ${NC}${DIM}%s${NC}${CYAN}${BOLD}%-$((28 - ${#CL_V}))s║\n" "$CL_V" ""
+    echo    "  ╠══════════════════════════════════════════╣"
+    echo -e "  ║  ${NC}[b] Volver al menú principal${CYAN}${BOLD}           ║"
+    echo -e "  ╚══════════════════════════════════════════╝${NC}"
+    echo ""; echo -n "  Opción: "
+    read -r OPT < /dev/tty
+
+    case "$OPT" in
+      1)
+        [ "$N8_S" = "not_installed" ] \
+          && install_module "n8n" "n8n" \
+          || submenu_n8n "$N8_S" ;;
+      2)
+        [ "$CL_S" = "not_installed" ] \
+          && install_module "OpenClaw" "openclaw" \
+          || submenu_openclaw ;;
+      b|B|"") break ;;
+    esac
+  done
+}
+
+# ════════════════════════════════════════════
 #  LOOP PRINCIPAL
 # ════════════════════════════════════════════
 while true; do
@@ -3459,6 +3826,7 @@ while true; do
 
   # ── Estado módulos ────────────────────────────────────────────
   IFS='|' read -r N8N_STATE N8N_VER N8N_EXTRA <<< "$(check_n8n)"
+  IFS='|' read -r CL_STATE  CL_VER  CL_EXTRA  <<< "$(check_openclaw)"
   if [ -z "$_CC_CACHE" ] || [ "$_CC_REFRESH" = "1" ]; then
     _CC_CACHE=$(check_claude); _CC_REFRESH=0
   fi
@@ -3488,25 +3856,31 @@ while true; do
   echo -e "${NC}"
 
   # ── Módulos ───────────────────────────────────────────────────
-  case "$N8N_STATE" in running|stopped) N8N_CMD="→ submenú" ;; *) N8N_CMD="" ;; esac
-  draw_module "1" "⬡" "n8n"          "$N8N_STATE" "$N8N_VER" "$N8N_CMD"
+  # [1] Servicios — n8n + OpenClaw (ambos son gateways/servidores)
+  SVC_STATE="not_installed"
+  [ "$N8N_STATE" != "not_installed" ] || [ "$CL_STATE" != "not_installed" ] && SVC_STATE="ready"
+  [ "$N8N_STATE" = "running" ] || [ "$CL_STATE" = "running" ] && SVC_STATE="running"
+  SVC_VER=""
+  [ "$N8N_STATE" != "not_installed" ] && SVC_VER="n8n:${N8N_VER:-?}"
+  [ "$CL_STATE"  != "not_installed" ] && SVC_VER="${SVC_VER:+${SVC_VER} }claw:${CL_VER:-?}"
+  [ -z "$SVC_VER" ] && SVC_VER="──────────"
+  draw_module "1" "⬡" "Servicios"    "$SVC_STATE" "$SVC_VER"  "→ submenú"
 
-  # [2] Code Tools — estado compuesto Claude + OpenCode
+  # [2] Code Tools — Claude Code + OpenCode
   CT_STATE="ready"
   [ "$CC_STATE" = "not_installed" ] && [ "$OC_STATE" = "not_installed" ] && CT_STATE="not_installed"
   CT_VER="cc:${CC_VER:-?} oc:${OC_VER:-?}"
-  draw_module "2" "◆" "Code Tools"   "$CT_STATE"  "$CT_VER"  "→ submenú"
+  draw_module "2" "◆" "Code Tools"   "$CT_STATE"  "$CT_VER"   "→ submenú"
 
   case "$OL_STATE"  in running|stopped) OL_CMD="→ submenú" ;; *) OL_CMD="" ;; esac
-  draw_module "3" "◎" "Ollama"        "$OL_STATE"  "$OL_VER"  "$OL_CMD"
+  draw_module "3" "◎" "Ollama"        "$OL_STATE"  "$OL_VER"   "$OL_CMD"
 
   case "$EX_STATE"  in ready)           EX_CMD="→ submenú"  ;; *) EX_CMD=""  ;; esac
-  draw_module "4" "◈" "Expo/EAS/Git"  "$EX_STATE"  "$EX_VER"  "$EX_CMD"
+  draw_module "4" "◈" "Expo/EAS/Git"  "$EX_STATE"  "$EX_VER"   "$EX_CMD"
 
   case "$PY_STATE"  in ready)           PY_CMD="→ submenú"  ;; *) PY_CMD=""  ;; esac
-  draw_module "5" "◉" "Python"        "$PY_STATE"  "$PY_VER"  "$PY_CMD"
+  draw_module "5" "◉" "Python"        "$PY_STATE"  "$PY_VER"   "$PY_CMD"
 
-  # Remote: muestra estado compuesto SSH●/DB● en la línea extra
   case "$RM_STATE"  in running|stopped) RM_CMD="→ submenú" ;; *) RM_CMD="" ;; esac
   RM_DISPLAY_VER="$RM_VER"
   [ -n "$RM_EXTRA" ] && RM_DISPLAY_VER="${RM_VER} ${RM_EXTRA}"
@@ -3528,7 +3902,7 @@ while true; do
 
   case "$OPT" in
     1)
-      [ "$N8N_STATE" = "not_installed" ] && install_module "n8n" "n8n" && continue || submenu_n8n "$N8N_STATE" ;;
+      submenu_servicios ;;
     2)
       submenu_code_tools ;;
     3)
@@ -3553,6 +3927,7 @@ while true; do
 
       SCRIPTS=("install_n8n.sh" "install_claude.sh" "install_ollama.sh" "install_expo.sh" \
                 "install_python.sh" "install_ssh.sh" "install_remote.sh" \
+                "install_opencode.sh" "install_openclaw.sh" \
                 "menu.sh" "backup.sh" "restore.sh")
       UPDATE_OK=0; UPDATE_FAIL=0
 
