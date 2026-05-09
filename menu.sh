@@ -21,7 +21,7 @@
 #    [0] Backup / Restore
 #
 #  REPO: https://github.com/Honkonx/termux-ai-stack
-#  VERSIÓN: 4.1.0 | Abril 2026
+#  VERSIÓN: 4.3.0 | Mayo 2026
 # ============================================================
 
 TERMUX_PREFIX="/data/data/com.termux/files/usr"
@@ -30,6 +30,12 @@ export PATH="$TERMUX_PREFIX/bin:$TERMUX_PREFIX/sbin:$PATH"
 REPO_RAW="https://raw.githubusercontent.com/Honkonx/termux-ai-stack/main/scripts"
 REGISTRY="$HOME/.android_server_registry"
 EAS_PROJECT_FILE="$HOME/.eas_active_project"
+
+# ── Caché de checks proot (evita relanzar proot-distro en cada render) ──
+_CC_CACHE=""   ; _CC_REFRESH=0          # check_claude  — caché manual existente
+_OC_CACHE=""   ; _OC_CACHE_TS=0         # check_opencode
+_CLAW_CACHE="" ; _CLAW_CACHE_TS=0       # check_openclaw
+_PROOT_CACHE_TTL=10                     # segundos — refresca si TTL expiró o [r]
 
 # ── Colores ──────────────────────────────────────────────────
 RED='\033[0;31m'
@@ -132,14 +138,80 @@ EOF
   echo "ready|${ver}|"
 }
 
+# ── Check combinado proot — UNA sola invocación para opencode + openclaw ──────
+# Formato salida: "OC_STATUS|OC_VER|OC_EXTRA@@CL_STATUS|CL_VER|CL_EXTRA"
+# Separador @@ evita conflicto con | usado en campos individuales
+_check_proot_combined() {
+  local raw
+  raw=$(proot-distro login debian -- bash -c '
+    # ── opencode ──
+    OC_BIN=$(command -v opencode 2>/dev/null)
+    if [ -n "$OC_BIN" ]; then
+      OC_VER=$(opencode --version 2>/dev/null | grep -oE "[0-9]+\.[0-9]+\.[0-9]+" | head -1)
+      [ -z "$OC_VER" ] && OC_VER="?"
+      printf "found|%s" "$OC_VER"
+    else
+      printf "not_installed|"
+    fi
+    printf "@@"
+    # ── openclaw (requiere NVM) ──
+    export NVM_DIR="$HOME/.nvm"
+    [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" 2>/dev/null
+    CL_BIN=$(command -v openclaw 2>/dev/null)
+    if [ -n "$CL_BIN" ]; then
+      printf "found|"
+    else
+      printf "not_installed|"
+    fi
+  ' 2>/dev/null)
+
+  # Parsear las dos mitades
+  local oc_raw cl_raw
+  oc_raw="${raw%%@@*}"
+  cl_raw="${raw##*@@}"
+
+  # ── opencode → estado final con tmux (en Termux, no proot) ──
+  local oc_status oc_ver
+  oc_status="${oc_raw%%|*}"
+  oc_ver="${oc_raw#*|}"
+  if [ "$oc_status" = "found" ]; then
+    if tmux has-session -t "opencode" 2>/dev/null; then
+      _OC_CACHE="running|${oc_ver}|:3000"
+    else
+      _OC_CACHE="stopped|${oc_ver}|"
+    fi
+  else
+    _OC_CACHE="not_installed||"
+  fi
+
+  # ── openclaw → estado final con curl (en Termux, no proot) ──
+  local cl_status
+  cl_status="${cl_raw%%|*}"
+  if [ "$cl_status" = "found" ]; then
+    local cl_ver
+    cl_ver=$(grep "^openclaw\.version=" "$REGISTRY" 2>/dev/null | cut -d'=' -f2)
+    [ -z "$cl_ver" ] && cl_ver="?"
+    if curl -sf --max-time 1 http://127.0.0.1:18789 &>/dev/null; then
+      _CLAW_CACHE="running|${cl_ver}|:18789"
+    else
+      _CLAW_CACHE="stopped|${cl_ver}|"
+    fi
+  else
+    _CLAW_CACHE="not_installed||"
+  fi
+
+  # Actualizar timestamps
+  local now=$SECONDS
+  _OC_CACHE_TS=$now
+  _CLAW_CACHE_TS=$now
+}
+
 check_opencode() {
-  # Detectar si opencode está instalado en proot Debian
   local oc_ver=""
   if proot-distro login debian -- bash -c 'command -v opencode' &>/dev/null 2>&1; then
     oc_ver=$(proot-distro login debian -- bash -c 'opencode --version 2>/dev/null | head -1' 2>/dev/null \
       | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
     [ -z "$oc_ver" ] && oc_ver="?"
-    # Ver si el servidor web está corriendo (tmux sesión opencode)
     tmux has-session -t "opencode" 2>/dev/null \
       && echo "running|${oc_ver}|:3000" \
       || echo "stopped|${oc_ver}|"
@@ -149,19 +221,37 @@ check_opencode() {
 }
 
 check_openclaw() {
-  # "running|version|:18789" | "stopped|version|" | "not_installed||"
   local cl_ver=""
   if proot-distro login debian -- bash -c \
     'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
      command -v openclaw' &>/dev/null 2>&1; then
     cl_ver=$(grep "^openclaw\.version=" "$REGISTRY" 2>/dev/null | cut -d'=' -f2)
     [ -z "$cl_ver" ] && cl_ver="?"
-    curl -sf http://127.0.0.1:18789 &>/dev/null \
+    curl -sf --max-time 1 http://127.0.0.1:18789 &>/dev/null \
       && echo "running|${cl_ver}|:18789" \
       || echo "stopped|${cl_ver}|"
   else
     echo "not_installed||"
   fi
+}
+
+# ── Wrappers con caché TTL ─────────────────────────────────────
+# Ambos consumen el caché poblado por _check_proot_combined
+# Si el caché expiró, llaman al combinado — 1 proot para los dos
+check_opencode_cached() {
+  local now=$SECONDS
+  if [ -z "$_OC_CACHE" ] || [ $(( now - _OC_CACHE_TS )) -gt $_PROOT_CACHE_TTL ]; then
+    _check_proot_combined   # rellena _OC_CACHE y _CLAW_CACHE juntos
+  fi
+  echo "$_OC_CACHE"
+}
+
+check_openclaw_cached() {
+  local now=$SECONDS
+  if [ -z "$_CLAW_CACHE" ] || [ $(( now - _CLAW_CACHE_TS )) -gt $_PROOT_CACHE_TTL ]; then
+    _check_proot_combined   # ídem — si ya fue llamado arriba, el TS evita re-ejecutar
+  fi
+  echo "$_CLAW_CACHE"
 }
 
 check_ollama() {
@@ -1469,21 +1559,6 @@ _cl_open_browser() {
   fi
 }
 
-check_openclaw() {
-  local cl_ver=""
-  if proot-distro login debian -- bash -c \
-    'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
-     command -v openclaw' &>/dev/null 2>&1; then
-    cl_ver=$(grep "^openclaw\.version=" "$REGISTRY" 2>/dev/null | cut -d'=' -f2)
-    [ -z "$cl_ver" ] && cl_ver="?"
-    curl -sf http://127.0.0.1:18789 &>/dev/null \
-      && echo "running|${cl_ver}|:18789" \
-      || echo "stopped|${cl_ver}|"
-  else
-    echo "not_installed||"
-  fi
-}
-
 submenu_openclaw() {
   local CL_PROJ_DIR="$HOME/proyectos"
   while true; do
@@ -1939,7 +2014,7 @@ submenu_code_tools() {
     # Leer estados frescos cada vez que se entra
     local CC_S CC_V CC_E OC_S OC_V OC_E
     IFS='|' read -r CC_S CC_V CC_E <<< "$(check_claude)"
-    IFS='|' read -r OC_S OC_V OC_E <<< "$(check_opencode)"
+    IFS='|' read -r OC_S OC_V OC_E <<< "$(check_opencode_cached)"
 
     # Estado y versión por herramienta
     local CC_PILL OC_PILL CC_LINE OC_LINE
@@ -3829,18 +3904,22 @@ submenu_desinstalar() {
     echo -e "  ║  ${NC}[4] Expo / EAS CLI${RED}${BOLD}                     ║"
     echo -e "  ║  ${NC}[5] Python + SQLite${RED}${BOLD}                    ║"
     echo -e "  ║  ${NC}[6] Remote (SSH + Dashboard + CF-SSH)${RED}${BOLD}  ║"
+    echo -e "  ║  ${NC}[7] OpenCode${RED}${BOLD}                           ║"
+    echo -e "  ║  ${NC}[8] OpenClaw${RED}${BOLD}                           ║"
     echo -e "  ║  ${NC}[b] Cancelar${RED}${BOLD}                           ║"
     echo -e "  ╚══════════════════════════════════════════╝${NC}"
     echo ""; echo -n "  Módulo a desinstalar: "
  read -r OPT < /dev/tty
 
     case "$OPT" in
-      1) uninstall_module "n8n"    "n8n + proot Debian"          ; break ;;
-      2) uninstall_module "claude" "Claude Code"                  ; break ;;
-      3) uninstall_module "ollama" "Ollama"                       ; break ;;
-      4) uninstall_module "expo"   "Expo / EAS CLI"               ; break ;;
-      5) uninstall_module "python" "Python + SQLite"              ; break ;;
-      6) uninstall_module "remote" "Remote (SSH + Dashboard)"     ; break ;;
+      1) uninstall_module "n8n"      "n8n + proot Debian"          ; break ;;
+      2) uninstall_module "claude"   "Claude Code"                  ; break ;;
+      3) uninstall_module "ollama"   "Ollama"                       ; break ;;
+      4) uninstall_module "expo"     "Expo / EAS CLI"               ; break ;;
+      5) uninstall_module "python"   "Python + SQLite"              ; break ;;
+      6) uninstall_module "remote"   "Remote (SSH + Dashboard)"     ; break ;;
+      7) uninstall_module "opencode" "OpenCode"                     ; break ;;
+      8) uninstall_module "openclaw" "OpenClaw"                     ; break ;;
       b|B|"") break ;;
     esac
   done
@@ -3855,7 +3934,7 @@ submenu_servicios() {
 
     local N8_S N8_V N8_E CL_S CL_V CL_E
     IFS='|' read -r N8_S N8_V N8_E <<< "$(check_n8n)"
-    IFS='|' read -r CL_S CL_V CL_E <<< "$(check_openclaw)"
+    IFS='|' read -r CL_S CL_V CL_E <<< "$(check_openclaw_cached)"
 
     local N8_PILL CL_PILL
     case "$N8_S" in
@@ -3898,24 +3977,83 @@ submenu_servicios() {
   done
 }
 
+# ── Helpers rendimiento & keepalive ──────────────────────────
+_perf_info() { echo -e "  ${CYAN}[INFO]${NC} $1"; }
+_perf_ok()   { echo -e "  ${GREEN}[OK]${NC} $1"; }
+_perf_warn() { echo -e "  ${YELLOW}[AVISO]${NC} $1"; }
+_wakelock_active() { pgrep -f "termux-wake-lock" &>/dev/null; }
+_has_termux_api()  { command -v termux-wake-lock &>/dev/null; }
+_bashrc_has()      { grep -q "$1" "$HOME/.bashrc" 2>/dev/null; }
+_add_bashrc()      { grep -q "$1" "$HOME/.bashrc" 2>/dev/null || echo "$1" >> "$HOME/.bashrc"; }
+
 # ════════════════════════════════════════════
 #  LOOP PRINCIPAL
 # ════════════════════════════════════════════
 while true; do
   clear
 
-  # ── Estado módulos ────────────────────────────────────────────
-  IFS='|' read -r N8N_STATE N8N_VER N8N_EXTRA <<< "$(check_n8n)"
-  IFS='|' read -r CL_STATE  CL_VER  CL_EXTRA  <<< "$(check_openclaw)"
+  # ── Estado módulos (paralelo) ─────────────────────────────────
+  # Los checks rápidos (registry + tmux) corren en background junto
+  # al check proot combinado — tiempo total = el más lento, no la suma.
+  # Archivos temp en $HOME (no /tmp — noexec en Android 15)
+  local _TMP="$HOME/.menu_check_$$"
+
+  # Checks rápidos — background
+  { check_n8n;                        } > "${_TMP}_n8n"    &
+  { check_ollama;                     } > "${_TMP}_ol"     &
+  { check_expo;                       } > "${_TMP}_ex"     &
+  { check_python;                     } > "${_TMP}_py"     &
+  { check_remote;                     } > "${_TMP}_rm"     &
+
+  # Claude: usa caché si está vigente, si no lo regenera en background
   if [ -z "$_CC_CACHE" ] || [ "$_CC_REFRESH" = "1" ]; then
-    _CC_CACHE=$(check_claude); _CC_REFRESH=0
+    { _CC_CACHE=$(check_claude); _CC_REFRESH=0;
+      echo "$_CC_CACHE";         } > "${_TMP}_cc"          &
+    _CC_FROM_FILE=1
+  else
+    _CC_FROM_FILE=0
   fi
-  IFS='|' read -r CC_STATE  CC_VER  CC_EXTRA  <<< "$_CC_CACHE"
-  IFS='|' read -r OL_STATE  OL_VER  OL_EXTRA  <<< "$(check_ollama)"
-  IFS='|' read -r EX_STATE  EX_VER  EX_EXTRA  <<< "$(check_expo)"
-  IFS='|' read -r PY_STATE  PY_VER  PY_EXTRA  <<< "$(check_python)"
-  IFS='|' read -r RM_STATE  RM_VER  RM_EXTRA  <<< "$(check_remote)"
-  IFS='|' read -r OC_STATE  OC_VER  OC_EXTRA  <<< "$(check_opencode)"
+
+  # Proot combinado: si caché expiró lo relanza; si no, escribe caché directo
+  local _now=$SECONDS
+  if [ -z "$_OC_CACHE" ] || [ $(( _now - _OC_CACHE_TS )) -gt $_PROOT_CACHE_TTL ] || \
+     [ -z "$_CLAW_CACHE" ] || [ $(( _now - _CLAW_CACHE_TS )) -gt $_PROOT_CACHE_TTL ]; then
+    # Necesita proot — lanzar en background; mientras tanto usa valores previos si existen
+    { _check_proot_combined
+      echo "$_OC_CACHE"   > "${_TMP}_oc"
+      echo "$_CLAW_CACHE" > "${_TMP}_cl"
+    } &
+    _PROOT_FROM_FILE=1
+  else
+    _PROOT_FROM_FILE=0
+  fi
+
+  # Esperar todos los backgrounds
+  wait
+
+  # Leer resultados de archivos temp
+  IFS='|' read -r N8N_STATE N8N_VER N8N_EXTRA < "${_TMP}_n8n"
+  IFS='|' read -r OL_STATE  OL_VER  OL_EXTRA  < "${_TMP}_ol"
+  IFS='|' read -r EX_STATE  EX_VER  EX_EXTRA  < "${_TMP}_ex"
+  IFS='|' read -r PY_STATE  PY_VER  PY_EXTRA  < "${_TMP}_py"
+  IFS='|' read -r RM_STATE  RM_VER  RM_EXTRA  < "${_TMP}_rm"
+
+  if [ "$_CC_FROM_FILE" = "1" ]; then
+    _CC_CACHE=$(cat "${_TMP}_cc" 2>/dev/null)
+  fi
+  IFS='|' read -r CC_STATE CC_VER CC_EXTRA <<< "$_CC_CACHE"
+
+  if [ "$_PROOT_FROM_FILE" = "1" ]; then
+    _OC_CACHE=$(cat   "${_TMP}_oc" 2>/dev/null)
+    _CLAW_CACHE=$(cat "${_TMP}_cl" 2>/dev/null)
+    local _now2=$SECONDS
+    _OC_CACHE_TS=$_now2; _CLAW_CACHE_TS=$_now2
+  fi
+  IFS='|' read -r CL_STATE CL_VER CL_EXTRA  <<< "$_CLAW_CACHE"
+  IFS='|' read -r OC_STATE OC_VER OC_EXTRA  <<< "$_OC_CACHE"
+
+  # Limpiar archivos temp
+  rm -f "${_TMP}"_* 2>/dev/null
 
   # ── Info sistema ──────────────────────────────────────────────
   IP=$(_get_ip)
@@ -3938,8 +4076,8 @@ while true; do
   # ── Módulos ───────────────────────────────────────────────────
   # [1] Servicios — n8n + OpenClaw (ambos son gateways/servidores)
   SVC_STATE="not_installed"
-  [ "$N8N_STATE" != "not_installed" ] || [ "$CL_STATE" != "not_installed" ] && SVC_STATE="ready"
-  [ "$N8N_STATE" = "running" ] || [ "$CL_STATE" = "running" ] && SVC_STATE="running"
+  { [ "$N8N_STATE" != "not_installed" ] || [ "$CL_STATE" != "not_installed" ]; } && SVC_STATE="ready"
+  { [ "$N8N_STATE" = "running" ]        || [ "$CL_STATE" = "running" ]; }        && SVC_STATE="running"
   SVC_VER=""
   [ "$N8N_STATE" != "not_installed" ] && SVC_VER="n8n:${N8N_VER:-?}"
   [ "$CL_STATE"  != "not_installed" ] && SVC_VER="${SVC_VER:+${SVC_VER} }claw:${CL_VER:-?}"
@@ -3998,7 +4136,10 @@ while true; do
     d|D)
       submenu_desinstalar ;;
     r|R)
-      _CC_REFRESH=1; _CC_CACHE=""; continue ;;
+      _CC_REFRESH=1; _CC_CACHE=""
+      _OC_CACHE="";   _OC_CACHE_TS=0
+      _CLAW_CACHE=""; _CLAW_CACHE_TS=0
+      continue ;;
     u|U)
       clear; echo ""
       echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
@@ -4032,16 +4173,6 @@ while true; do
     h|H)
       show_help ;;
     p|P)
-      # ── Helpers locales ────────────────────────────────────────
-      _perf_info() { echo -e "  ${CYAN}[INFO]${NC} $1"; }
-      _perf_ok()   { echo -e "  ${GREEN}[OK]${NC} $1"; }
-      _perf_warn() { echo -e "  ${YELLOW}[AVISO]${NC} $1"; }
-
-      # ── Detectar estado actual ──────────────────────────────────
-      _wakelock_active() { pgrep -f "termux-wake-lock" &>/dev/null; }
-      _has_termux_api()  { command -v termux-wake-lock &>/dev/null; }
-      _bashrc_has()      { grep -q "$1" "$HOME/.bashrc" 2>/dev/null; }
-
       WL_STATUS="$(_wakelock_active && echo "${GREEN}● activo${NC}" || echo "${YELLOW}○ inactivo${NC}")"
       API_STATUS="$(_has_termux_api && echo "${GREEN}✓${NC}" || echo "${YELLOW}✗ instalar pkg termux-api${NC}")"
 
@@ -4089,11 +4220,6 @@ while true; do
             _perf_info "Aplicando variables y aliases en ~/.bashrc..."
             BASHRC="$HOME/.bashrc"
             touch "$BASHRC"
-
-            # Variables de entorno
-            _add_bashrc() {
-              grep -q "$1" "$BASHRC" 2>/dev/null || echo "$1" >> "$BASHRC"
-            }
 
             _add_bashrc "export MALLOC_ARENA_MAX=2"
             _add_bashrc "export OLLAMA_MAX_LOADED_MODELS=1"
