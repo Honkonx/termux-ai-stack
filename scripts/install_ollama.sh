@@ -107,9 +107,9 @@ if command -v ollama &>/dev/null; then
 fi
 
 # ============================================================
-# DETECCIÓN DE HARDWARE — GPU + CPU features
+# DETECCIÓN DE HARDWARE — GPU + CPU features (silencioso)
+# Los resultados se muestran en el Paso B después de elegir método
 # ============================================================
-titulo "DETECCIÓN DE HARDWARE"
 
 detect_vulkan_type() {
   local vk_type=""
@@ -216,22 +216,18 @@ case "$HW_GPU" in
     : ;;
 esac
 
-printf "  GPU: %-20s CPU: %s\n" "$HW_GPU" "$HW_CPU"
-echo -e "  Recomendado: ${GREEN}${HW_MODE}${NC}"
-echo ""
-
 # ── Paso A — Método de instalación ───────────────────────────
-echo -e "  ${CYAN}${BOLD}╔══════════════════════════════════════════╗"
+clear; echo ""
+echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
 echo -e "  ║  ¿Cómo instalar Ollama?                  ║"
 echo -e "  ╚══════════════════════════════════════════╝${NC}"
 echo ""
-echo -e "  ${GREEN}[1]${NC} Instalación limpia  — compila/instala desde cero"
-echo -e "  ${CYAN}[2]${NC} Desde GitHub Releases — descarga binario precompilado"
+echo -e "  ${GREEN}[1]${NC} Instalación limpia"
+echo -e "  ${CYAN}[2]${NC} Desde GitHub Releases"
 echo -e "  ${DIM}[b]${NC} Cancelar"
 echo ""
 echo -n "  Opción: "
 read -r METODO_CHOICE < /dev/tty
-echo ""
 
 case "$METODO_CHOICE" in
   b|B) echo "Cancelado."; exit 0 ;;
@@ -239,40 +235,39 @@ case "$METODO_CHOICE" in
   *)   INSTALL_METHOD="clean"  ;;
 esac
 
-# ── Paso B — Submenú según método elegido ────────────────────
+# ── Paso B — Submenú limpio según método ─────────────────────
+clear; echo ""
+titulo "DETECCIÓN DE HARDWARE"
+printf "  GPU: %-20s CPU: %s\n" "$HW_GPU" "$HW_CPU"
+echo -e "  Recomendado: ${GREEN}${HW_MODE}${NC}"
+echo ""
 
 if [ "$INSTALL_METHOD" = "clean" ]; then
-  echo -e "  ${CYAN}${BOLD}╔══════════════════════════════════════════╗"
+  echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
   echo -e "  ║  Instalación limpia — elige versión      ║"
   echo -e "  ╚══════════════════════════════════════════╝${NC}"
-  echo ""
-  echo -e "  ${CYAN}[1]${NC} Estándar    — pkg install ollama (genérico)"
-  if [ "$HW_MODE" = "cpu_optimized" ] || [ "$HW_MODE" = "gpu_vulkan" ]; then
-    echo -e "  ${GREEN}[2]${NC} Optimizada  — compilar llama.cpp+${HW_CPU} ★ recomendado"
-  else
-    echo -e "  ${YELLOW}[2]${NC} Optimizada  — no disponible (CPU sin i8mm/dotprod)"
-  fi
-  if $HW_GPU_AVAILABLE; then
-    echo -e "  ${GREEN}[3]${NC} Vulkan GPU  — compilar llama.cpp+Vulkan"
-  else
-    echo -e "  ${YELLOW}[3]${NC} Vulkan GPU  — no disponible"
-  fi
 else
-  echo -e "  ${CYAN}${BOLD}╔══════════════════════════════════════════╗"
+  echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
   echo -e "  ║  GitHub Releases — elige versión         ║"
   echo -e "  ╚══════════════════════════════════════════╝${NC}"
-  echo ""
-  echo -e "  ${CYAN}[1]${NC} Estándar    — descargar part4-ollama-standard"
-  if [ "$HW_MODE" = "cpu_optimized" ] || [ "$HW_MODE" = "gpu_vulkan" ]; then
-    echo -e "  ${GREEN}[2]${NC} Optimizada  — descargar part4-ollama-optimized ★ recomendado"
-  else
-    echo -e "  ${YELLOW}[2]${NC} Optimizada  — no disponible (CPU sin i8mm/dotprod)"
-  fi
-  if $HW_GPU_AVAILABLE; then
-    echo -e "  ${GREEN}[3]${NC} Vulkan GPU  — descargar part4-ollama-vulkan"
-  else
-    echo -e "  ${YELLOW}[3]${NC} Vulkan GPU  — no disponible"
-  fi
+fi
+echo ""
+
+# [1] Estándar — siempre disponible
+echo -e "  ${CYAN}[1]${NC} Estándar    — genérico"
+
+# [2] Optimizada — según CPU
+if [ "$HW_MODE" = "cpu_optimized" ] || [ "$HW_MODE" = "gpu_vulkan" ]; then
+  echo -e "  ${GREEN}[2]${NC} Optimizada  — recomendado ★"
+else
+  echo -e "  ${YELLOW}[2]${NC} Optimizada  — no disponible"
+fi
+
+# [3] Vulkan GPU — según GPU
+if $HW_GPU_AVAILABLE; then
+  echo -e "  ${GREEN}[3]${NC} Vulkan GPU  — disponible"
+else
+  echo -e "  ${YELLOW}[3]${NC} Vulkan GPU  — no disponible"
 fi
 
 echo ""
@@ -304,8 +299,6 @@ case "$VERSION_CHOICE" in
   *) INSTALL_MODE="standard" ;;
 esac
 
-echo ""
-echo -e "  Método: ${CYAN}${INSTALL_METHOD}${NC}   Versión: ${GREEN}${INSTALL_MODE}${NC}"
 echo ""
 echo -n "  ¿Continuar? (s/n): "
 read -r CONFIRM < /dev/tty
