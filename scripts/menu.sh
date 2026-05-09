@@ -21,7 +21,7 @@
 #    [0] Backup / Restore
 #
 #  REPO: https://github.com/Honkonx/termux-ai-stack
-#  VERSIÓN: 4.3.0 | Mayo 2026
+#  VERSIÓN: 4.3.1 | Mayo 2026
 # ============================================================
 
 TERMUX_PREFIX="/data/data/com.termux/files/usr"
@@ -3996,29 +3996,29 @@ while true; do
   # Los checks rápidos (registry + tmux) corren en background junto
   # al check proot combinado — tiempo total = el más lento, no la suma.
   # Archivos temp en $HOME (no /tmp — noexec en Android 15)
-  local _TMP="$HOME/.menu_check_$$"
+  # NOTA: no usar 'local' aquí — este bloque está en el while principal, no en una función
+  _TMP="$HOME/.menu_check_$$"
 
   # Checks rápidos — background
-  { check_n8n;                        } > "${_TMP}_n8n"    &
-  { check_ollama;                     } > "${_TMP}_ol"     &
-  { check_expo;                       } > "${_TMP}_ex"     &
-  { check_python;                     } > "${_TMP}_py"     &
-  { check_remote;                     } > "${_TMP}_rm"     &
+  { check_n8n;    } > "${_TMP}_n8n" &
+  { check_ollama; } > "${_TMP}_ol"  &
+  { check_expo;   } > "${_TMP}_ex"  &
+  { check_python; } > "${_TMP}_py"  &
+  { check_remote; } > "${_TMP}_rm"  &
 
   # Claude: usa caché si está vigente, si no lo regenera en background
   if [ -z "$_CC_CACHE" ] || [ "$_CC_REFRESH" = "1" ]; then
-    { _CC_CACHE=$(check_claude); _CC_REFRESH=0;
-      echo "$_CC_CACHE";         } > "${_TMP}_cc"          &
+    { _CC_CACHE=$(check_claude); _CC_REFRESH=0
+      echo "$_CC_CACHE"; } > "${_TMP}_cc" &
     _CC_FROM_FILE=1
   else
     _CC_FROM_FILE=0
   fi
 
-  # Proot combinado: si caché expiró lo relanza; si no, escribe caché directo
-  local _now=$SECONDS
+  # Proot combinado: si caché expiró lo relanza en background
+  _now=$SECONDS
   if [ -z "$_OC_CACHE" ] || [ $(( _now - _OC_CACHE_TS )) -gt $_PROOT_CACHE_TTL ] || \
      [ -z "$_CLAW_CACHE" ] || [ $(( _now - _CLAW_CACHE_TS )) -gt $_PROOT_CACHE_TTL ]; then
-    # Necesita proot — lanzar en background; mientras tanto usa valores previos si existen
     { _check_proot_combined
       echo "$_OC_CACHE"   > "${_TMP}_oc"
       echo "$_CLAW_CACHE" > "${_TMP}_cl"
@@ -4046,11 +4046,11 @@ while true; do
   if [ "$_PROOT_FROM_FILE" = "1" ]; then
     _OC_CACHE=$(cat   "${_TMP}_oc" 2>/dev/null)
     _CLAW_CACHE=$(cat "${_TMP}_cl" 2>/dev/null)
-    local _now2=$SECONDS
-    _OC_CACHE_TS=$_now2; _CLAW_CACHE_TS=$_now2
+    _OC_CACHE_TS=$SECONDS
+    _CLAW_CACHE_TS=$SECONDS
   fi
-  IFS='|' read -r CL_STATE CL_VER CL_EXTRA  <<< "$_CLAW_CACHE"
-  IFS='|' read -r OC_STATE OC_VER OC_EXTRA  <<< "$_OC_CACHE"
+  IFS='|' read -r CL_STATE CL_VER CL_EXTRA <<< "$_CLAW_CACHE"
+  IFS='|' read -r OC_STATE OC_VER OC_EXTRA <<< "$_OC_CACHE"
 
   # Limpiar archivos temp
   rm -f "${_TMP}"_* 2>/dev/null
@@ -4124,13 +4124,17 @@ while true; do
     2)
       submenu_code_tools ;;
     3)
-      [ "$OL_STATE" = "not_installed" ] && install_module "Ollama" "ollama" && continue || submenu_ollama "$OL_STATE" ;;
+      [ "$OL_STATE" = "not_installed" ] && install_module "Ollama" "ollama" && \
+        { _OC_CACHE=""; _CLAW_CACHE=""; _OC_CACHE_TS=0; _CLAW_CACHE_TS=0; _CC_REFRESH=1; continue; } || submenu_ollama "$OL_STATE" ;;
     4)
-      [ "$EX_STATE" = "not_installed" ] && install_module "Expo/EAS/Git" "expo" && continue || submenu_expo ;;
+      [ "$EX_STATE" = "not_installed" ] && install_module "Expo/EAS/Git" "expo" && \
+        { _OC_CACHE=""; _CLAW_CACHE=""; _OC_CACHE_TS=0; _CLAW_CACHE_TS=0; _CC_REFRESH=1; continue; } || submenu_expo ;;
     5)
-      [ "$PY_STATE" = "not_installed" ] && install_module "Python" "python" && continue || submenu_python "$PY_VER" ;;
+      [ "$PY_STATE" = "not_installed" ] && install_module "Python" "python" && \
+        { _OC_CACHE=""; _CLAW_CACHE=""; _OC_CACHE_TS=0; _CLAW_CACHE_TS=0; _CC_REFRESH=1; continue; } || submenu_python "$PY_VER" ;;
     6)
-      [ "$RM_STATE" = "not_installed" ] && install_module "Remote/SSH/Dashboard" "remote" && continue || submenu_remote ;;
+      [ "$RM_STATE" = "not_installed" ] && install_module "Remote/SSH/Dashboard" "remote" && \
+        { _OC_CACHE=""; _CLAW_CACHE=""; _OC_CACHE_TS=0; _CLAW_CACHE_TS=0; _CC_REFRESH=1; continue; } || submenu_remote ;;
     0)
       submenu_backup ;;
     d|D)
