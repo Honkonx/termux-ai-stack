@@ -623,16 +623,23 @@ else
   P8_TMP="$TMP_DIR/opencode_pack"
   mkdir -p "$P8_TMP"
 
-  # Exportar solo archivos de OpenCode desde el proot
+  # Exportar archivos de OpenCode desde el proot
+  # Rutas confirmadas en dispositivo (S14):
+  #   root/.opencode/         binario 140MB + datos principales
+  #   root/.config/           configuración
+  #   root/.local/            datos locales
+  #   root/.cache/opencode/   solo subcarpeta opencode (no todo .cache)
+  #   tmp/opencode/           directorio de trabajo temporal
   proot-distro login "$DISTRO_NAME" -- bash << 'PROOT_OC'
 export HOME=/root
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 ITEMS=""
-[ -d /root/.local/share/opencode ]  && ITEMS="$ITEMS /root/.local/share/opencode"
-[ -d /root/.config/opencode ]       && ITEMS="$ITEMS /root/.config/opencode"
-# .bashrc solo si tiene líneas de opencode — no sobreescribir el bashrc completo
-grep -q "opencode" /root/.bashrc 2>/dev/null && ITEMS="$ITEMS /root/.bashrc"
+[ -d /root/.opencode ]              && ITEMS="$ITEMS root/.opencode"
+[ -d /root/.config ]                && ITEMS="$ITEMS root/.config"
+[ -d /root/.local ]                 && ITEMS="$ITEMS root/.local"
+[ -d /root/.cache/opencode ]        && ITEMS="$ITEMS root/.cache/opencode"
+[ -d /tmp/opencode ]                && ITEMS="$ITEMS tmp/opencode"
 
 if [ -z "$ITEMS" ]; then
   echo "[SKIP] No se encontraron archivos de OpenCode"
@@ -640,7 +647,7 @@ if [ -z "$ITEMS" ]; then
 fi
 
 echo "Empaquetando OpenCode: $ITEMS"
-tar -cJf /tmp/opencode_backup.tar.xz $ITEMS 2>/dev/null && \
+tar -cJf /tmp/opencode_backup.tar.xz -C / $ITEMS 2>/dev/null && \
   echo "[DONE]" || { echo "[FAIL]"; exit 1; }
 PROOT_OC
 
@@ -666,40 +673,39 @@ if ! $HAS_OPENCLAW; then
   skip "OpenClaw no encontrado en proot — omitiendo part9"
 else
   # Exportar archivos de OpenClaw desde el proot
-  # IMPORTANTE: limpiar token y config personal antes de empaquetar
+  # Rutas confirmadas en dispositivo (S14):
+  #   root/.npm/                  cache npm
+  #   root/.nvm/                  Node 22 vía NVM
+  #   root/.openclaw/             config OpenClaw (token limpiado)
+  #   root/openclaw-shim.cjs      shim de red Android
+  #   tmp/node-compile-cache/     cache compilación
+  #   tmp/openclaw/               directorio trabajo temporal
   proot-distro login "$DISTRO_NAME" -- bash << 'PROOT_OCL'
 export HOME=/root
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 ITEMS=""
-[ -d /root/.nvm ]               && ITEMS="$ITEMS /root/.nvm"
-[ -f /root/openclaw-shim.cjs ]  && ITEMS="$ITEMS /root/openclaw-shim.cjs"
+[ -d /root/.npm ]                   && ITEMS="$ITEMS root/.npm"
+[ -d /root/.nvm ]                   && ITEMS="$ITEMS root/.nvm"
+[ -f /root/openclaw-shim.cjs ]      && ITEMS="$ITEMS root/openclaw-shim.cjs"
+[ -d /tmp/node-compile-cache ]      && ITEMS="$ITEMS tmp/node-compile-cache"
+[ -d /tmp/openclaw ]                && ITEMS="$ITEMS tmp/openclaw"
 
-# Limpiar config personal antes de empaquetar (backup público)
-# Solo guardar la estructura — sin token ni workspace personal
+# .openclaw: limpiar token antes de empaquetar
 if [ -d /root/.openclaw ]; then
-  TMP_CFG="/tmp/openclaw_clean"
-  mkdir -p "$TMP_CFG"
-  # Copiar solo openclaw.json con token vacío
   if [ -f /root/.openclaw/openclaw.json ]; then
     python3 -c "
-import json,sys
+import json
 try:
   d=json.load(open('/root/.openclaw/openclaw.json'))
-  # Limpiar token
   if 'gateway' in d and 'auth' in d['gateway']:
     d['gateway']['auth']['token']=''
-  # Limpiar workspace personal
   d.pop('workspace',None)
-  json.dump(d,open('${TMP_CFG}/openclaw.json','w'),indent=2)
+  json.dump(d,open('/root/.openclaw/openclaw.json','w'),indent=2)
 except: pass
 " 2>/dev/null
   fi
-  [ -f "${TMP_CFG}/openclaw.json" ] && {
-    mkdir -p /tmp/openclaw_export/.openclaw
-    cp "${TMP_CFG}/openclaw.json" /tmp/openclaw_export/.openclaw/
-    ITEMS="$ITEMS /tmp/openclaw_export/.openclaw"
-  }
+  ITEMS="$ITEMS root/.openclaw"
 fi
 
 if [ -z "$ITEMS" ]; then
@@ -708,7 +714,7 @@ if [ -z "$ITEMS" ]; then
 fi
 
 echo "Empaquetando OpenClaw: $ITEMS"
-tar -cJf /tmp/openclaw_backup.tar.xz $ITEMS 2>/dev/null && \
+tar -cJf /tmp/openclaw_backup.tar.xz -C / $ITEMS 2>/dev/null && \
   echo "[DONE]" || { echo "[FAIL]"; exit 1; }
 
 # Limpiar temporales
