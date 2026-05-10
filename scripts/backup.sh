@@ -424,16 +424,20 @@ else
 export HOME=/root
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
+# Rutas confirmadas en dispositivo (S14):
+#   /usr/lib/node_modules/   contiene: corepack, n8n, npm
+#   /usr/local/bin/cloudflared
+#   /root/.cache/node_gyp/
+#   /root/.wget-hsts
+# NO incluir: .bashrc (va en rootfs base)
 ITEMS=""
-[ -d /usr/local/lib/node_modules/n8n ]       && ITEMS="$ITEMS /usr/local/lib/node_modules/n8n"
-[ -d /usr/local/lib/node_modules/npm ]       && ITEMS="$ITEMS /usr/local/lib/node_modules/npm"
-[ -f /usr/local/bin/n8n ]                    && ITEMS="$ITEMS /usr/local/bin/n8n"
-[ -f /usr/local/bin/cloudflared ]            && ITEMS="$ITEMS /usr/local/bin/cloudflared"
-[ -d /root/.n8n ]                            && ITEMS="$ITEMS /root/.n8n"
-[ -f /root/.bashrc ]                         && ITEMS="$ITEMS /root/.bashrc"
-[ -f /root/.cf_token ]                       && ITEMS="$ITEMS /root/.cf_token"
-[ -f /usr/local/bin/node ]                   && ITEMS="$ITEMS /usr/local/bin/node"
-[ -d /usr/local/lib/node_modules/npm ]       && ITEMS="$ITEMS /usr/local/lib/node_modules/npm"
+[ -d /usr/lib/node_modules/n8n ]        && ITEMS="$ITEMS usr/lib/node_modules/n8n"
+[ -d /usr/lib/node_modules/corepack ]   && ITEMS="$ITEMS usr/lib/node_modules/corepack"
+[ -d /usr/lib/node_modules/npm ]        && ITEMS="$ITEMS usr/lib/node_modules/npm"
+[ -f /usr/local/bin/cloudflared ]       && ITEMS="$ITEMS usr/local/bin/cloudflared"
+[ -d /root/.cache/node_gyp ]            && ITEMS="$ITEMS root/.cache/node_gyp"
+[ -f /root/.wget-hsts ]                 && ITEMS="$ITEMS root/.wget-hsts"
+[ -d /root/.n8n ]                       && ITEMS="$ITEMS root/.n8n"
 
 if [ -z "$ITEMS" ]; then
   echo "[ERROR] No se encontraron archivos de n8n"
@@ -441,7 +445,7 @@ if [ -z "$ITEMS" ]; then
 fi
 
 echo "Empaquetando: $ITEMS"
-tar -cJf /tmp/n8n_backup.tar.xz $ITEMS 2>/dev/null && \
+tar -cJf /tmp/n8n_backup.tar.xz -C / $ITEMS 2>/dev/null && \
   echo "[DONE]" || { echo "[FAIL]"; exit 1; }
 PROOT_INNER
 
@@ -459,73 +463,43 @@ fi
 fi # end should_run n8n
 
 # ════════════════════════════════════════════════════════════
-# PARTE 6 — Proot Debian rootfs completo
+# PARTE 6 — Proot Debian rootfs base
+# Comprime el rootfs completo tal como está en disco.
+# Para un backup limpio (sin módulos) borrar las carpetas
+# de módulos antes de ejecutar este backup.
 # ════════════════════════════════════════════════════════════
 if should_run "proot"; then
-
-# ── Determinar qué variante de proot hacer ───────────────────
-PROOT_VARIANT=""
-if [ -z "$TARGET_MODULE" ]; then
-  # Backup completo: preguntar cuál
-  echo ""
-  echo -e "  ${CYAN}¿Qué backup de proot crear?${NC}"
-  echo ""
-  echo -e "  ${CYAN}[1]${NC} proot-base — Rootfs Debian limpio (sin módulos)"
-  echo -e "  ${CYAN}[2]${NC} proot-n8n  — Rootfs Debian + n8n + cloudflared"
-  echo -e "  ${CYAN}[b]${NC} Omitir proot"
-  echo ""
-  echo -n "  Opción: "
-  read -r P6_OPT < /dev/tty
-  case "$P6_OPT" in
-    1) PROOT_VARIANT="proot-base" ;;
-    2) PROOT_VARIANT="proot-n8n"  ;;
-    b|B|"") PROOT_VARIANT="skip" ;;
-    *) PROOT_VARIANT="skip" ;;
-  esac
-elif [ "$TARGET_MODULE" = "proot-base" ]; then
-  PROOT_VARIANT="proot-base"
-elif [ "$TARGET_MODULE" = "proot-n8n" ]; then
-  PROOT_VARIANT="proot-n8n"
-fi
-
-if [ "$PROOT_VARIANT" = "skip" ]; then
-  info "Proot omitido"
-elif [ -z "$PROOT_VARIANT" ]; then
-  skip "Variante de proot no especificada — omitiendo"
-else
-
-titulo "PARTE 6 — Proot Debian (${PROOT_VARIANT})"
+titulo "PARTE 6 — Proot Debian (rootfs completo)"
 
 if ! $HAS_PROOT; then
   skip "Proot Debian no encontrado — omitiendo"
 else
   ROOTFS_SIZE=$(du -sh "$ROOTFS_PATH" 2>/dev/null | cut -f1)
-  echo "  Rootfs    : $ROOTFS_PATH"
-  echo "  Variante  : $PROOT_VARIANT"
-  echo "  Tamaño    : $ROOTFS_SIZE (sin comprimir)"
-  echo -e "  ${YELLOW}Tiempo estimado: 10-20 min — mantén la pantalla encendida${NC}"
+  echo "  Rootfs : $ROOTFS_PATH"
+  echo "  Tamaño : $ROOTFS_SIZE (sin comprimir)"
+  echo -e "  ${YELLOW}⚠  Comprime TODO lo que hay en el rootfs actual${NC}"
+  echo -e "  ${YELLOW}   Para backup base limpio: asegúrate de que no haya módulos instalados${NC}"
+  echo -e "  ${YELLOW}   Tiempo estimado: 10-20 min — mantén la pantalla encendida${NC}"
   echo ""
-  echo -n "  ¿Crear ${PROOT_VARIANT} ahora? (s/n): "
+  echo -n "  ¿Crear backup del rootfs ahora? (s/n): "
   read -r DO_PART6 < /dev/tty
 
   if [ "$DO_PART6" = "s" ] || [ "$DO_PART6" = "S" ]; then
-    P6_OUT="$TMP_DIR/${PROOT_VARIANT}-${VERSION}.tar.xz"
-    info "Comprimiendo rootfs Debian (${PROOT_VARIANT})..."
+    P6_OUT="$TMP_DIR/proot-base-${VERSION}.tar.xz"
+    info "Comprimiendo rootfs Debian..."
     tar -cJf "$P6_OUT" -C "$ROOTFS_BASE" "$DISTRO_NAME" 2>/dev/null
     if [ -f "$P6_OUT" ] && [ -s "$P6_OUT" ]; then
       SIZE=$(du -h "$P6_OUT" | cut -f1)
-      log "${PROOT_VARIANT} → $SIZE"
+      log "proot-base → $SIZE"
       GENERATED+=("$P6_OUT")
     else
-      warn "No se pudo crear ${PROOT_VARIANT}"
+      warn "No se pudo crear el backup del rootfs"
       rm -f "$P6_OUT"
     fi
   else
-    info "${PROOT_VARIANT} omitida"
+    info "Rootfs omitido"
   fi
 fi
-
-fi # end PROOT_VARIANT != skip
 fi # end should_run proot
 
 # ════════════════════════════════════════════════════════════
@@ -623,23 +597,16 @@ else
   P8_TMP="$TMP_DIR/opencode_pack"
   mkdir -p "$P8_TMP"
 
-  # Exportar archivos de OpenCode desde el proot
-  # Rutas confirmadas en dispositivo (S14):
-  #   root/.opencode/         binario 140MB + datos principales
-  #   root/.config/           configuración
-  #   root/.local/            datos locales
-  #   root/.cache/opencode/   solo subcarpeta opencode (no todo .cache)
-  #   tmp/opencode/           directorio de trabajo temporal
+  # Exportar solo archivos de OpenCode desde el proot
   proot-distro login "$DISTRO_NAME" -- bash << 'PROOT_OC'
 export HOME=/root
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 ITEMS=""
-[ -d /root/.opencode ]              && ITEMS="$ITEMS root/.opencode"
-[ -d /root/.config ]                && ITEMS="$ITEMS root/.config"
-[ -d /root/.local ]                 && ITEMS="$ITEMS root/.local"
-[ -d /root/.cache/opencode ]        && ITEMS="$ITEMS root/.cache/opencode"
-[ -d /tmp/opencode ]                && ITEMS="$ITEMS tmp/opencode"
+[ -d /root/.local/share/opencode ]  && ITEMS="$ITEMS /root/.local/share/opencode"
+[ -d /root/.config/opencode ]       && ITEMS="$ITEMS /root/.config/opencode"
+# .bashrc solo si tiene líneas de opencode — no sobreescribir el bashrc completo
+grep -q "opencode" /root/.bashrc 2>/dev/null && ITEMS="$ITEMS /root/.bashrc"
 
 if [ -z "$ITEMS" ]; then
   echo "[SKIP] No se encontraron archivos de OpenCode"
@@ -647,7 +614,7 @@ if [ -z "$ITEMS" ]; then
 fi
 
 echo "Empaquetando OpenCode: $ITEMS"
-tar -cJf /tmp/opencode_backup.tar.xz -C / $ITEMS 2>/dev/null && \
+tar -cJf /tmp/opencode_backup.tar.xz $ITEMS 2>/dev/null && \
   echo "[DONE]" || { echo "[FAIL]"; exit 1; }
 PROOT_OC
 
@@ -673,39 +640,40 @@ if ! $HAS_OPENCLAW; then
   skip "OpenClaw no encontrado en proot — omitiendo part9"
 else
   # Exportar archivos de OpenClaw desde el proot
-  # Rutas confirmadas en dispositivo (S14):
-  #   root/.npm/                  cache npm
-  #   root/.nvm/                  Node 22 vía NVM
-  #   root/.openclaw/             config OpenClaw (token limpiado)
-  #   root/openclaw-shim.cjs      shim de red Android
-  #   tmp/node-compile-cache/     cache compilación
-  #   tmp/openclaw/               directorio trabajo temporal
+  # IMPORTANTE: limpiar token y config personal antes de empaquetar
   proot-distro login "$DISTRO_NAME" -- bash << 'PROOT_OCL'
 export HOME=/root
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 ITEMS=""
-[ -d /root/.npm ]                   && ITEMS="$ITEMS root/.npm"
-[ -d /root/.nvm ]                   && ITEMS="$ITEMS root/.nvm"
-[ -f /root/openclaw-shim.cjs ]      && ITEMS="$ITEMS root/openclaw-shim.cjs"
-[ -d /tmp/node-compile-cache ]      && ITEMS="$ITEMS tmp/node-compile-cache"
-[ -d /tmp/openclaw ]                && ITEMS="$ITEMS tmp/openclaw"
+[ -d /root/.nvm ]               && ITEMS="$ITEMS /root/.nvm"
+[ -f /root/openclaw-shim.cjs ]  && ITEMS="$ITEMS /root/openclaw-shim.cjs"
 
-# .openclaw: limpiar token antes de empaquetar
+# Limpiar config personal antes de empaquetar (backup público)
+# Solo guardar la estructura — sin token ni workspace personal
 if [ -d /root/.openclaw ]; then
+  TMP_CFG="/tmp/openclaw_clean"
+  mkdir -p "$TMP_CFG"
+  # Copiar solo openclaw.json con token vacío
   if [ -f /root/.openclaw/openclaw.json ]; then
     python3 -c "
-import json
+import json,sys
 try:
   d=json.load(open('/root/.openclaw/openclaw.json'))
+  # Limpiar token
   if 'gateway' in d and 'auth' in d['gateway']:
     d['gateway']['auth']['token']=''
+  # Limpiar workspace personal
   d.pop('workspace',None)
-  json.dump(d,open('/root/.openclaw/openclaw.json','w'),indent=2)
+  json.dump(d,open('${TMP_CFG}/openclaw.json','w'),indent=2)
 except: pass
 " 2>/dev/null
   fi
-  ITEMS="$ITEMS root/.openclaw"
+  [ -f "${TMP_CFG}/openclaw.json" ] && {
+    mkdir -p /tmp/openclaw_export/.openclaw
+    cp "${TMP_CFG}/openclaw.json" /tmp/openclaw_export/.openclaw/
+    ITEMS="$ITEMS /tmp/openclaw_export/.openclaw"
+  }
 fi
 
 if [ -z "$ITEMS" ]; then
@@ -714,7 +682,7 @@ if [ -z "$ITEMS" ]; then
 fi
 
 echo "Empaquetando OpenClaw: $ITEMS"
-tar -cJf /tmp/openclaw_backup.tar.xz -C / $ITEMS 2>/dev/null && \
+tar -cJf /tmp/openclaw_backup.tar.xz $ITEMS 2>/dev/null && \
   echo "[DONE]" || { echo "[FAIL]"; exit 1; }
 
 # Limpiar temporales

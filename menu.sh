@@ -3752,26 +3752,30 @@ submenu_backup() {
       2)
         clear; echo ""
         echo -e "  ${CYAN}Selecciona módulo a respaldar:${NC}"; echo ""
-        echo "  [0] base   — scripts + tema + configs"
-        echo "  [2] claude — Claude Code"
-        echo "  [3] expo   — EAS CLI"
-        echo "  [4] ollama — Ollama (sin modelos)"
-        echo "  [5] n8n    — n8n + cloudflared"
-        echo "  [6] proot  — Rootfs Debian completo"
-        echo "  [7] remote — SSH + Dashboard configs"
+        echo "  [0] base     — scripts + tema + configs"
+        echo "  [2] claude   — Claude Code"
+        echo "  [3] expo     — EAS CLI"
+        echo "  [4] ollama   — Ollama (sin modelos)"
+        echo "  [5] n8n      — n8n + cloudflared"
+        echo "  [6] proot    — Rootfs Debian (lo que haya)"
+        echo "  [7] remote   — SSH + Dashboard configs"
+        echo "  [8] opencode — OpenCode (proot)"
+        echo "  [9] openclaw — OpenClaw (proot)"
         echo "  [b] Cancelar"
         echo ""; echo -n "  Módulo: "
  read -r MOD_OPT < /dev/tty
 
         local BAK_MOD=""
         case "$MOD_OPT" in
-          0|b0) BAK_MOD="base"   ;;
-          2)    BAK_MOD="claude" ;;
-          3)    BAK_MOD="expo"   ;;
-          4)    BAK_MOD="ollama" ;;
-          5)    BAK_MOD="n8n"    ;;
-          6)    BAK_MOD="proot"  ;;
-          7)    BAK_MOD="remote" ;;
+          0|b0) BAK_MOD="base"     ;;
+          2)    BAK_MOD="claude"   ;;
+          3)    BAK_MOD="expo"     ;;
+          4)    BAK_MOD="ollama"   ;;
+          5)    BAK_MOD="n8n"      ;;
+          6)    BAK_MOD="proot"    ;;
+          7)    BAK_MOD="remote"   ;;
+          8)    BAK_MOD="opencode" ;;
+          9)    BAK_MOD="openclaw" ;;
           b|B|"") continue ;;
           *) echo -e "  ${RED}[ERROR]${NC} Opción inválida"; read -r _ < /dev/tty; continue ;;
         esac
