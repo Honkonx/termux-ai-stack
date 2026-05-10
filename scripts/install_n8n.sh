@@ -353,8 +353,11 @@ if [ "${CLEAN_ROOTFS:-true}" = "false" ]; then
 elif check_done "debian_install"; then
   log "Debian ya instalado [checkpoint]"
 else
-  if proot-distro list 2>/dev/null | grep -q "debian.*installed"; then
-    log "Debian ya presente en proot-distro"
+  # ── Detección rootfs existente — NUNCA intentar instalar si ya existe ──
+  ROOTFS_DIR_CHECK="$TERMUX_PREFIX/var/lib/proot-distro/installed-rootfs/debian"
+  if [ -d "$ROOTFS_DIR_CHECK" ] && [ -f "$ROOTFS_DIR_CHECK/bin/bash" ]; then
+    log "Rootfs Debian ya existe en disco — saltando instalación"
+    log "Ruta: $ROOTFS_DIR_CHECK"
   else
     echo ""
     echo -e "  ${YELLOW}Descargando rootfs Debian Bookworm ARM64...${NC}"
@@ -367,9 +370,9 @@ else
     ROOTFS_URL=$(curl -fsSL "$DISTRO_URL" 2>/dev/null | grep "DISTRO_TARBALL_URL" | head -1 | cut -d'"' -f2)
 
     if [ -n "$ROOTFS_URL" ] && command -v wget &>/dev/null; then
-      ROOTFS_DIR="${TERMUX_PREFIX}/var/lib/proot-distro/dlcache"
-      mkdir -p "$ROOTFS_DIR"
-      ROOTFS_FILE="$ROOTFS_DIR/$(basename "$ROOTFS_URL")"
+      ROOTFS_DLDIR="${TERMUX_PREFIX}/var/lib/proot-distro/dlcache"
+      mkdir -p "$ROOTFS_DLDIR"
+      ROOTFS_FILE="$ROOTFS_DLDIR/$(basename "$ROOTFS_URL")"
 
       info "URL: $ROOTFS_URL"
       info "Destino: $ROOTFS_FILE"
