@@ -425,15 +425,15 @@ export HOME=/root
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 ITEMS=""
-[ -d /usr/local/lib/node_modules/n8n ]       && ITEMS="$ITEMS /usr/local/lib/node_modules/n8n"
-[ -d /usr/local/lib/node_modules/npm ]       && ITEMS="$ITEMS /usr/local/lib/node_modules/npm"
-[ -f /usr/local/bin/n8n ]                    && ITEMS="$ITEMS /usr/local/bin/n8n"
+[ -d /usr/lib/node_modules/n8n ]             && ITEMS="$ITEMS /usr/lib/node_modules/n8n"
+[ -d /usr/lib/node_modules/npm ]             && ITEMS="$ITEMS /usr/lib/node_modules/npm"
+[ -f /usr/bin/n8n ]                          && ITEMS="$ITEMS /usr/bin/n8n"
 [ -f /usr/local/bin/cloudflared ]            && ITEMS="$ITEMS /usr/local/bin/cloudflared"
 [ -d /root/.cache/node-gyp ]                 && ITEMS="$ITEMS /root/.cache/node-gyp"
 [ -f /root/.wget-hsts ]                      && ITEMS="$ITEMS /root/.wget-hsts"
 [ -f /root/.cf_token ]                       && ITEMS="$ITEMS /root/.cf_token"
-[ -f /usr/local/bin/node ]                   && ITEMS="$ITEMS /usr/local/bin/node"
-[ -d /usr/local/lib/node_modules/npm ]       && ITEMS="$ITEMS /usr/local/lib/node_modules/npm"
+[ -f /usr/local/bin/node ]                   && ITEMS="$ITEMS /usr/bin/node"
+[ -d /usr/lib/node_modules/npm ]             && ITEMS="$ITEMS /usr/lib/node_modules/npm"
 
 if [ -z "$ITEMS" ]; then
   echo "[ERROR] No se encontraron archivos de n8n"
