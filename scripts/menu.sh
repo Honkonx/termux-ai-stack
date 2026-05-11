@@ -3825,6 +3825,7 @@ uninstall_module() {
       grep -v "alias claude=" "$HOME/.bashrc" > "$HOME/.bashrc.tmp" 2>/dev/null && mv "$HOME/.bashrc.tmp" "$HOME/.bashrc"
       grep -v "^claude_code\." "$REGISTRY" > "$REGISTRY.tmp" 2>/dev/null && mv "$REGISTRY.tmp" "$REGISTRY"
       echo -e "  ${GREEN}[OK]${NC} Claude Code desinstalado" ;;
+      
     ollama)
       tmux kill-session -t "ollama-server" 2>/dev/null || true
       pkg uninstall ollama -y 2>/dev/null || true
@@ -3832,22 +3833,51 @@ uninstall_module() {
       grep -v "^ollama\." "$REGISTRY" > "$REGISTRY.tmp" 2>/dev/null && mv "$REGISTRY.tmp" "$REGISTRY"
       echo -e "  ${GREEN}[OK]${NC} Ollama desinstalado"
       echo -e "  ${YELLOW}⚠${NC}  ~/.ollama no eliminado — bórralo si quieres liberar espacio" ;;
+      
     n8n)
+      # Detener tmux
       tmux kill-session -t "n8n-server" 2>/dev/null || true
-      proot-distro remove debian 2>/dev/null || true
+      
+      # Eliminar archivos de n8n dentro del proot (sin borrar el rootfs)
+      if proot-distro login debian -- bash -c 'true' &>/dev/null 2>&1; then
+        proot-distro login debian -- bash -c '
+          echo "[INFO] Eliminando n8n y cloudflared..."
+          rm -rf /usr/lib/node_modules/n8n 2>/dev/null
+          rm -rf /usr/lib/node_modules/corepack 2>/dev/null
+          rm -rf /usr/lib/node_modules/npm 2>/dev/null
+          rm -f /usr/bin/n8n 2>/dev/null
+          rm -f /usr/local/bin/cloudflared 2>/dev/null
+          rm -f /usr/bin/node 2>/dev/null
+          rm -rf /root/.cache/node-gyp 2>/dev/null
+          rm -f /root/.wget-hsts 2>/dev/null
+          rm -f /root/.cf_token 2>/dev/null
+          rm -rf /root/.n8n 2>/dev/null
+          echo "[OK] Archivos de n8n eliminados"
+        ' 2>/dev/null
+      fi
+      
+      # Limpiar scripts locales
       rm -f "$HOME/start_servidor.sh" "$HOME/stop_servidor.sh" "$HOME/ver_url.sh" 2>/dev/null
+      rm -f "$HOME/n8n_status.sh" "$HOME/n8n_log.sh" "$HOME/n8n_update.sh" "$HOME/n8n_backup.sh" 2>/dev/null
+      rm -f "$HOME/cf_token.sh" 2>/dev/null
+      rm -f "$HOME/.cf_token" "$HOME/.last_cf_url" 2>/dev/null
+      
       grep -v "^n8n\." "$REGISTRY" > "$REGISTRY.tmp" 2>/dev/null && mv "$REGISTRY.tmp" "$REGISTRY"
-      echo -e "  ${GREEN}[OK]${NC} n8n + proot Debian desinstalado" ;;
+      echo -e "  ${GREEN}[OK]${NC} n8n desinstalado (proot Debian conservado)"
+      echo -e "  ${DIM}Nota: El rootfs Debian sigue disponible para otros servicios.${NC}" ;;
+      
     expo)
       npm uninstall -g eas-cli 2>/dev/null || true
       rm -f "${TERMUX_PREFIX}/bin/eas" 2>/dev/null
       grep -v "^expo\." "$REGISTRY" > "$REGISTRY.tmp" 2>/dev/null && mv "$REGISTRY.tmp" "$REGISTRY"
       echo -e "  ${GREEN}[OK]${NC} Expo / EAS CLI desinstalado" ;;
+      
     python)
       pkg uninstall python sqlite -y 2>/dev/null || true
       rm -f "$HOME/.install_python_checkpoint" 2>/dev/null
       grep -v "^python\." "$REGISTRY" > "$REGISTRY.tmp" 2>/dev/null && mv "$REGISTRY.tmp" "$REGISTRY"
       echo -e "  ${GREEN}[OK]${NC} Python + SQLite desinstalados" ;;
+      
     remote)
       pkill sshd 2>/dev/null || true
       tmux kill-session -t "cf-ssh-tunnel" 2>/dev/null || true
@@ -3859,38 +3889,74 @@ uninstall_module() {
       grep -v "^ssh\.\|^dashboard\." "$REGISTRY" > "$REGISTRY.tmp" 2>/dev/null && mv "$REGISTRY.tmp" "$REGISTRY"
       echo -e "  ${GREEN}[OK]${NC} Remote (SSH + Dashboard + CF-SSH) desinstalado"
       echo -e "  ${DIM}(~/.ssh/authorized_keys conservado)${NC}" ;;
+      
     opencode)
-      # Detener servidor web si está corriendo
+      # Detener servidor web
       if [ -f "$HOME/.opencode_web.pid" ]; then
         kill "$(cat "$HOME/.opencode_web.pid")" 2>/dev/null || true
         rm -f "$HOME/.opencode_web.pid"
       fi
       pkill -f "opencode web" 2>/dev/null || true
-      # Borrar archivos de OpenCode dentro del proot
+      
+      # Borrar TODOS los archivos de OpenCode dentro del proot
       if proot-distro login debian -- bash -c 'true' &>/dev/null 2>&1; then
-        proot-distro login debian -- bash -c \
-          'rm -rf /root/.local/share/opencode /root/.config/opencode 2>/dev/null; echo "[OK]"' 2>/dev/null
+        proot-distro login debian -- bash -c '
+          echo "[INFO] Eliminando archivos de OpenCode..."
+          rm -rf /root/.opencode 2>/dev/null
+          rm -rf /root/.config/opencode 2>/dev/null
+          rm -rf /root/.local/share/opencode 2>/dev/null
+          rm -rf /root/.cache/opencode 2>/dev/null
+          rm -rf /tmp/opencode 2>/dev/null
+          echo "[OK] Archivos eliminados"
+        ' 2>/dev/null
       fi
+      
       grep -v "^opencode\." "$REGISTRY" > "$REGISTRY.tmp" 2>/dev/null && mv "$REGISTRY.tmp" "$REGISTRY"
-      echo -e "  ${GREEN}[OK]${NC} OpenCode desinstalado"
-      echo -e "  ${DIM}(proot Debian conservado — solo se eliminó OpenCode)${NC}" ;;
+      
+      echo -e "  ${GREEN}[OK]${NC} OpenCode desinstalado completamente"
+      echo -e "  ${DIM}Rutas eliminadas:${NC}"
+      echo -e "  ${DIM}  /root/.opencode/        (~140MB)${NC}"
+      echo -e "  ${DIM}  /root/.config/opencode/${NC}"
+      echo -e "  ${DIM}  /root/.local/share/opencode/${NC}"
+      echo -e "  ${DIM}  /root/.cache/opencode/${NC}"
+      echo -e "  ${DIM}  /tmp/opencode/${NC}"
+      echo -e "  ${DIM}(proot Debian conservado para n8n y otros servicios)${NC}" ;;
+      
     openclaw)
-      # Detener gateway si está corriendo
+      # Detener gateway
       pkill -f "openclaw" 2>/dev/null || true
       pkill -f "node.*openclaw" 2>/dev/null || true
-      [ -f "$HOME/.openclaw_gateway.pid" ] && \
+      if [ -f "$HOME/.openclaw_gateway.pid" ]; then
         kill "$(cat "$HOME/.openclaw_gateway.pid")" 2>/dev/null || true
-      # Borrar archivos de OpenClaw dentro del proot
-      # .nvm contiene Node 22 exclusivo de OpenClaw — n8n usa Node 20 del sistema
-      if proot-distro login debian -- bash -c 'true' &>/dev/null 2>&1; then
-        proot-distro login debian -- bash -c \
-          'rm -rf /root/.nvm /root/.openclaw /root/openclaw-shim.cjs 2>/dev/null; echo "[OK]"' 2>/dev/null
+        rm -f "$HOME/.openclaw_gateway.pid"
       fi
+      
+      # Borrar TODOS los archivos de OpenClaw dentro del proot
+      if proot-distro login debian -- bash -c 'true' &>/dev/null 2>&1; then
+        proot-distro login debian -- bash -c '
+          echo "[INFO] Eliminando archivos de OpenClaw..."
+          rm -rf /root/.nvm 2>/dev/null
+          rm -rf /root/.openclaw 2>/dev/null
+          rm -f /root/openclaw-shim.cjs 2>/dev/null
+          rm -rf /root/.npm 2>/dev/null
+          rm -rf /tmp/node-compile-cache 2>/dev/null
+          rm -rf /tmp/openclaw 2>/dev/null
+          echo "[OK] Archivos eliminados"
+        ' 2>/dev/null
+      fi
+      
       # Limpiar scripts y archivos de control en Termux
       rm -f "$HOME/openclaw_start.sh" "$HOME/openclaw_stop.sh" "$HOME/openclaw_token.sh" 2>/dev/null
-      rm -f "$HOME/.openclaw_gateway.pid" "$HOME/.openclaw_gateway.log" 2>/dev/null
+      rm -f "$HOME/.openclaw_gateway.log" 2>/dev/null
+      
       grep -v "^openclaw\." "$REGISTRY" > "$REGISTRY.tmp" 2>/dev/null && mv "$REGISTRY.tmp" "$REGISTRY"
-      echo -e "  ${GREEN}[OK]${NC} OpenClaw desinstalado (NVM + Node22 + gateway)"
+      
+      echo -e "  ${GREEN}[OK]${NC} OpenClaw desinstalado completamente"
+      echo -e "  ${DIM}Rutas eliminadas:${NC}"
+      echo -e "  ${DIM}  /root/.nvm/               (Node 22 + NVM)${NC}"
+      echo -e "  ${DIM}  /root/.openclaw/          (configuración)${NC}"
+      echo -e "  ${DIM}  /root/.npm/               (caché npm)${NC}"
+      echo -e "  ${DIM}  /root/openclaw-shim.cjs   (shim de red)${NC}"
       echo -e "  ${DIM}(proot Debian y n8n conservados)${NC}" ;;
   esac
   echo ""; read -r _ < /dev/tty
