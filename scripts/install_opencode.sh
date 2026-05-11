@@ -120,8 +120,7 @@ if ! command -v proot-distro &>/dev/null; then
 fi
 
 # Detectar distro Debian instalada
-DISTRO_NAME=$(proot-distro list 2>/dev/null | grep -i "debian\|bookworm" | \
-  awk '{print $1}' | head -1)
+DISTRO_NAME=$(proot-distro list 2>/dev/null | grep -i "debian" | awk '{print $1}' | head -1)
 [ -z "$DISTRO_NAME" ] && DISTRO_NAME="debian"
 
 if ! proot-distro login "$DISTRO_NAME" -- bash -c 'echo ok' &>/dev/null 2>&1; then
@@ -130,6 +129,57 @@ if ! proot-distro login "$DISTRO_NAME" -- bash -c 'echo ok' &>/dev/null 2>&1; th
 fi
 
 log "proot Debian disponible"
+
+# ============================================================
+# PASO 1.5 — Asegurar que Debian rootfs existe
+# ============================================================
+titulo "PASO 1.5 — Verificando rootfs Debian"
+
+DISTRO_NAME="debian"
+ROOTFS_PATH="${TERMUX_PREFIX}/var/lib/proot-distro/installed-rootfs/${DISTRO_NAME}"
+
+if [ ! -d "$ROOTFS_PATH" ] || [ ! -f "$ROOTFS_PATH/bin/bash" ]; then
+  warn "Rootfs Debian no encontrado en $ROOTFS_PATH"
+  echo ""
+  echo -e "  ${CYAN}¿Cómo instalar Debian?${NC}"
+  echo ""
+  echo -e "  ${GREEN}[1]${NC} Desde GitHub Releases  (rápido ~5-10 min, proot-base)"
+  echo -e "  ${GREEN}[2]${NC} Instalación limpia     (proot-distro install, ~15-25 min)"
+  echo -e "  ${GREEN}[b]${NC} Cancelar"
+  echo ""
+  echo -n "  Opción: "
+  read -r INSTALL_ROOTFS_OPT < /dev/tty
+
+  case "$INSTALL_ROOTFS_OPT" in
+    1)
+      info "Descargando rootfs desde GitHub Releases..."
+      if [ ! -f "$HOME/restore.sh" ]; then
+        curl -fsSL "https://raw.githubusercontent.com/Honkonx/termux-ai-stack/main/scripts/restore.sh" \
+          -o "$HOME/restore.sh" && chmod +x "$HOME/restore.sh"
+      fi
+      bash "$HOME/restore.sh" --module proot-base --source github || \
+        error "Fallo la restauración del rootfs Debian"
+      ;;
+    2)
+      info "Instalando Debian con proot-distro..."
+      proot-distro install debian || error "No se pudo instalar Debian"
+      ;;
+    b|B|"")
+      error "Cancelado por el usuario"
+      ;;
+    *)
+      error "Opción inválida"
+      ;;
+  esac
+
+  # Verificar que se instaló correctamente
+  if [ ! -d "$ROOTFS_PATH" ] || [ ! -f "$ROOTFS_PATH/bin/bash" ]; then
+    error "Rootfs Debian no disponible después de la instalación"
+  fi
+  log "Rootfs Debian listo"
+else
+  log "Rootfs Debian ya existe"
+fi
 
 # ============================================================
 # PASO 2 — Dependencias en Debian

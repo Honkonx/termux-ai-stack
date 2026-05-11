@@ -175,13 +175,14 @@ ensure_restore_sh() {
 
 case "$INSTALL_MODE" in
   1)
-    # Todo desde GitHub: proot (part6) + n8n (part5)
-    # NO hace exit 0 — continua al PASO 5 para generar scripts de control
+    # Todo desde GitHub: proot-base + n8n-data
     info "Opcion 1 - Todo desde GitHub Releases..."
     ensure_restore_sh
-    bash "$HOME/restore.sh" --module proot --source github || \
+    # Primero restaurar rootfs Debian limpio
+    bash "$HOME/restore.sh" --module proot-base --source github || \
       error "Fallo restore del rootfs Debian desde GitHub"
-    bash "$HOME/restore.sh" --module n8n   --source github || \
+    # Luego restaurar n8n (binario + datos)
+    bash "$HOME/restore.sh" --module n8n --source github || \
       error "Fallo restore de n8n desde GitHub"
     mark_done "debian_install"
     mark_done "n8n_install"
@@ -198,7 +199,7 @@ case "$INSTALL_MODE" in
     # Rootfs GitHub + n8n limpio (npm)
     info "Opcion 3 - Rootfs desde GitHub + n8n instalacion limpia..."
     ensure_restore_sh
-    bash "$HOME/restore.sh" --module proot --source github || \
+    bash "$HOME/restore.sh" --module proot-base --source github || \
       error "Fallo restore del rootfs Debian desde GitHub"
     mark_done "debian_install"
     CLEAN_ROOTFS=false
