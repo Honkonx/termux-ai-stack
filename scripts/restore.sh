@@ -843,10 +843,12 @@ restore_part7() {
 restore_part8() {
   titulo "PARTE 8 — OpenCode (en proot)"
 
-  if [ -z "$DISTRO_NAME" ]; then
+    if [ -z "$DISTRO_NAME" ]; then
     warn "Proot Debian no encontrado — OpenCode requiere proot"
     echo -e "  Restaura primero el rootfs: restaurar módulo 'proot-base'"
-
+    return 1
+  fi
+  
   info "Inyectando OpenCode en el rootfs existente ($DISTRO_NAME)..."
   local OC_EXTRACT="${ROOTFS_PATH}tmp/opencode_restore"
   mkdir -p "$OC_EXTRACT"
