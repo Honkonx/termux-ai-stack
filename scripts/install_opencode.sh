@@ -123,15 +123,10 @@ fi
 DISTRO_NAME=$(proot-distro list 2>/dev/null | grep -i "debian" | awk '{print $1}' | head -1)
 [ -z "$DISTRO_NAME" ] && DISTRO_NAME="debian"
 
-if ! proot-distro login "$DISTRO_NAME" -- bash -c 'echo ok' &>/dev/null 2>&1; then
-  warn "Debian no está instalado. Instalando..."
-  proot-distro install debian || error "No se pudo instalar Debian en proot."
-fi
-
-log "proot Debian disponible"
+log "proot-distro disponible"
 
 # ============================================================
-# PASO 1.5 — Asegurar que Debian rootfs existe
+# PASO 1.5 — Asegurar que rootfs Debian existe
 # ============================================================
 titulo "PASO 1.5 — Verificando rootfs Debian"
 
@@ -143,7 +138,7 @@ if [ ! -d "$ROOTFS_PATH" ] || [ ! -f "$ROOTFS_PATH/bin/bash" ]; then
   echo ""
   echo -e "  ${CYAN}¿Cómo instalar Debian?${NC}"
   echo ""
-  echo -e "  ${GREEN}[1]${NC} Desde GitHub Releases  (rápido ~5-10 min, proot-base)"
+  echo -e "  ${GREEN}[1]${NC} Desde GitHub Releases  (~10 min, descarga part6-proot-base)"
   echo -e "  ${GREEN}[2]${NC} Instalación limpia     (proot-distro install, ~15-25 min)"
   echo -e "  ${GREEN}[b]${NC} Cancelar"
   echo ""
@@ -153,28 +148,30 @@ if [ ! -d "$ROOTFS_PATH" ] || [ ! -f "$ROOTFS_PATH/bin/bash" ]; then
   case "$INSTALL_ROOTFS_OPT" in
     1)
       info "Descargando rootfs desde GitHub Releases..."
-      if [ ! -f "$HOME/restore.sh" ]; then
+      RESTORE_SCRIPT="$HOME/restore.sh"
+      if [ ! -f "$RESTORE_SCRIPT" ]; then
         curl -fsSL "https://raw.githubusercontent.com/Honkonx/termux-ai-stack/main/scripts/restore.sh" \
-          -o "$HOME/restore.sh" && chmod +x "$HOME/restore.sh"
+          -o "$RESTORE_SCRIPT" && chmod +x "$RESTORE_SCRIPT" || \
+          error "No se pudo descargar restore.sh"
       fi
-      bash "$HOME/restore.sh" --module proot-base --source github || \
-        error "Fallo la restauración del rootfs Debian"
+      bash "$RESTORE_SCRIPT" --module proot-base --source github || \
+        error "Falló la descarga del rootfs desde GitHub"
       ;;
     2)
-      info "Instalando Debian con proot-distro..."
+      info "Instalando Debian con proot-distro (puede tardar 15-25 min)..."
       proot-distro install debian || error "No se pudo instalar Debian"
       ;;
     b|B|"")
       error "Cancelado por el usuario"
       ;;
     *)
-      error "Opción inválida"
+      error "Opción inválida: $INSTALL_ROOTFS_OPT"
       ;;
   esac
 
-  # Verificar que se instaló correctamente
+  # Verificar resultado
   if [ ! -d "$ROOTFS_PATH" ] || [ ! -f "$ROOTFS_PATH/bin/bash" ]; then
-    error "Rootfs Debian no disponible después de la instalación"
+    error "Rootfs Debian no disponible tras la instalación — verifica el proceso"
   fi
   log "Rootfs Debian listo"
 else
