@@ -852,27 +852,26 @@ restore_part8() {
   download_and_verify "part8-opencode"
   
   info "Inyectando OpenCode en el rootfs existente ($DISTRO_NAME)..."
-  local OC_EXTRACT="${ROOTFS_PATH}tmp/opencode_restore"
-  mkdir -p "$OC_EXTRACT"
-  cp "$DOWNLOADED_FILE" "${ROOTFS_PATH}tmp/opencode_restore.tar.xz"
+  mkdir -p "${ROOTFS_PATH}/tmp"
+  cp "$DOWNLOADED_FILE" "${ROOTFS_PATH}/tmp/opencode_restore.tar.xz"
 
-  proot-distro login "$DISTRO_NAME" -- bash << 'PROOT_OC_R'
-export HOME=/root
-export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-
-ARCHIVE="/tmp/opencode_restore.tar.xz"
-[ ! -f "$ARCHIVE" ] && { echo "[ERROR] Archivo no encontrado en proot"; exit 1; }
-
-echo "[INFO] Extrayendo OpenCode en /..."
-tar -xJf "$ARCHIVE" -C / 2>/dev/null || \
-  tar -xJf "$ARCHIVE" -C / --ignore-failed-read 2>/dev/null || \
-  { echo "[ERROR] Extracción fallida"; exit 1; }
-
-# Verificar
-command -v opencode &>/dev/null && echo "[OK] opencode verificado" || echo "[AVISO] opencode no encontrado en PATH"
-rm -f "$ARCHIVE"
-echo "[DONE]"
-PROOT_OC_R
+  proot-distro login "$DISTRO_NAME" -- bash -c '
+    export HOME=/root
+    export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    ARCHIVE="/tmp/opencode_restore.tar.xz"
+    if [ ! -f "$ARCHIVE" ]; then
+      echo "[ERROR] Archivo no encontrado en proot"
+      exit 1
+    fi
+    echo "[INFO] Extrayendo OpenCode en /..."
+    tar -xJf "$ARCHIVE" -C / 2>/dev/null || tar -xJf "$ARCHIVE" -C / --ignore-failed-read 2>/dev/null || {
+      echo "[ERROR] Extracción fallida"
+      exit 1
+    }
+    command -v opencode >/dev/null 2>&1 && echo "[OK] opencode verificado" || echo "[AVISO] opencode no encontrado en PATH"
+    rm -f "$ARCHIVE"
+    echo "[DONE]"
+  '
 
   [ $? -ne 0 ] && { warn "Fallo restaurando OpenCode"; return 1; }
 
