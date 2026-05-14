@@ -538,43 +538,92 @@ _n8n_repair_scripts() {
 
   # --- start_servidor.sh ---
   echo -n "  Creando start_servidor.sh... "
-  cat > "$HOME/start_servidor.sh" << 'SCRIPT'
+  _REPAIR_PROTO=$(cat "$HOME/.n8n_protocol" 2>/dev/null || echo "https")
+  cat > "$HOME/start_servidor.sh" << SCRIPT
 #!/data/data/com.termux/files/usr/bin/bash
 # wake-lock auto — agregado por termux-ai-stack
 termux-wake-lock 2>/dev/null &
 
-LAST_URL="$HOME/.last_cf_url"
+LAST_URL="\$HOME/.last_cf_url"
+SESSION="n8n-server"
+
+# Leer WEBHOOK_URL desde ~/.env_n8n
+WEBHOOK_URL_CFG=\$(grep "^N8N_WEBHOOK_URL=" "\$HOME/.env_n8n" 2>/dev/null | cut -d'=' -f2)
+
+if [ -z "\$WEBHOOK_URL_CFG" ] && [ -f "\$HOME/.cf_token" ] && [ -s "\$HOME/.cf_token" ]; then
+  echo "[!] Token cloudflared configurado pero sin WEBHOOK_URL."
+  echo "    Configura tu dominio: menú → n8n → [8]"
+  echo ""
+fi
 
 echo "[*] Iniciando n8n + cloudflared en sesión tmux..."
-tmux kill-session -t "n8n-server" 2>/dev/null || true
+tmux kill-session -t "\$SESSION" 2>/dev/null || true
+sleep 1
 
-tmux new-session -d -s "n8n-server" bash -c '
-  proot-distro login debian -- bash -c "
-    export HOME=/root
-    export N8N_RUNNERS_ENABLED=true
-    n8n start &
-    N8N_PID=\$!
-    sleep 8
-    if [ -f /root/.cf_token ]; then
-      cloudflared tunnel --no-autoupdate run --token \$(cat /root/.cf_token) 2>&1 | tee /root/cf_url.log &
-    else
-      cloudflared tunnel --no-autoupdate --url http://localhost:5678 2>&1 | tee /root/cf_url.log &
-    fi
-    sleep 5
-    URL=\$(grep -o \"https://[a-zA-Z0-9.-]*\.trycloudflare\.com\" /root/cf_url.log | head -1)
-    [ -n \"\$URL\" ] && echo \"\$URL\" > /data/data/com.termux/files/home/.last_cf_url
-    wait \$N8N_PID
-  "
-'
+# ── Ventana 0: n8n ───────────────────────────────────────────
+tmux new-session -d -s "\$SESSION" -n "n8n"
 
-sleep 6
-URL=$(cat "$LAST_URL" 2>/dev/null)
+N8N_CMD="export HOME=/root"
+N8N_CMD="\${N8N_CMD} && export NODE_FUNCTION_ALLOW_BUILTIN=child_process,fs,path,os"
+N8N_CMD="\${N8N_CMD} && export NODE_FUNCTION_ALLOW_EXTERNAL=*"
+N8N_CMD="\${N8N_CMD} && export N8N_HOST=0.0.0.0"
+N8N_CMD="\${N8N_CMD} && export N8N_PORT=5678"
+N8N_CMD="\${N8N_CMD} && export N8N_PROXY_HOPS=1"
+N8N_CMD="\${N8N_CMD} && export N8N_PROTOCOL=${_REPAIR_PROTO}"
+N8N_CMD="\${N8N_CMD} && export N8N_SECURE_COOKIE=false"
+N8N_CMD="\${N8N_CMD} && export N8N_RUNNERS_ENABLED=true"
+N8N_CMD="\${N8N_CMD} && export N8N_RUNNERS_HEARTBEAT_INTERVAL=300"
+[ -n "\$WEBHOOK_URL_CFG" ] && N8N_CMD="\${N8N_CMD} && export WEBHOOK_URL=\${WEBHOOK_URL_CFG}"
+N8N_CMD="\${N8N_CMD} && n8n start"
+
+[ -n "\$WEBHOOK_URL_CFG" ] && echo "[*] Webhook URL: \$WEBHOOK_URL_CFG"
+echo "[*] Protocolo: ${_REPAIR_PROTO}"
+tmux send-keys -t "\$SESSION:n8n" \
+  "proot-distro login debian -- bash -c '\${N8N_CMD}'" Enter
+
+echo "[*] Esperando que n8n inicie (35 seg)..."
+sleep 35
+
+# ── Ventana 1: cloudflared ───────────────────────────────────
+echo "[*] Iniciando cloudflared tunnel (ventana separada)..."
+tmux new-window -t "\$SESSION" -n "tunnel"
+
+if [ -f "\$HOME/.cf_token" ]; then
+  CF_TOK=\$(cat "\$HOME/.cf_token")
+  tmux send-keys -t "\$SESSION:tunnel" \
+    "proot-distro login debian -- bash -c 'cloudflared tunnel --no-autoupdate run --token \${CF_TOK} 2>&1 | tee /root/cf_url.log'" Enter
+else
+  tmux send-keys -t "\$SESSION:tunnel" \
+    "proot-distro login debian -- bash -c 'cloudflared tunnel --no-autoupdate --url http://localhost:5678 2>&1 | tee /root/cf_url.log'" Enter
+fi
+
+echo "[*] Obteniendo URL pública (40 seg)..."
+sleep 40
+
+# ── URL pública ──────────────────────────────────────────────
+if [ -n "\$WEBHOOK_URL_CFG" ]; then
+  CF_URL="\$WEBHOOK_URL_CFG"
+else
+  CF_URL=\$(proot-distro login debian -- bash -c \
+    "grep -o 'https://[a-zA-Z0-9.-]*\\.trycloudflare\\.com' /root/cf_url.log 2>/dev/null | head -1" 2>/dev/null)
+fi
+
+IP=\$(ip addr show wlan0 2>/dev/null | grep "inet " | awk '{print \$2}' | cut -d'/' -f1)
+[ -z "\$IP" ] && IP=\$(ifconfig 2>/dev/null | grep -A1 "wlan0" | grep "inet " | awk '{print \$2}')
+[ -n "\$CF_URL" ] && echo "\$CF_URL" > "\$HOME/.last_cf_url"
+
 echo ""
-echo "[OK] n8n corriendo — sesión tmux: n8n-server"
-[ -n "$URL" ] && echo "[OK] URL pública: $URL" || echo "[INFO] URL disponible en ~30s — usa: n8n-url"
-echo ""
-echo "  Ctrl+B D → salir sin detener | n8n-log → ver logs"
 echo "╔════════════════════════════════════════╗"
+echo "║   n8n ACTIVO · proot Debian            ║"
+echo "╠════════════════════════════════════════╣"
+echo "║  Teléfono: http://localhost:5678       ║"
+[ -n "\$IP" ]     && echo "║  WiFi PC:  http://\$IP:5678"
+[ -n "\$CF_URL" ] && echo "║  Internet: \$CF_URL" || echo "║  Internet: usa n8n-url en ~20s"
+[ -f "\$HOME/.cf_token" ] && echo "║  Modo: URL FIJA ✓" || echo "║  Modo: URL temporal"
+[ -n "\$WEBHOOK_URL_CFG" ] && echo "║  Webhook:  \$WEBHOOK_URL_CFG"
+echo "║  Protocolo: ${_REPAIR_PROTO}                          ║"
+echo "╠════════════════════════════════════════╣"
+echo "║  child_process: HABILITADO ✓           ║"
 echo "║  n8n-log → logs en vivo               ║"
 echo "║  Ctrl+B D → salir sin detener         ║"
 echo "╚════════════════════════════════════════╝"
@@ -714,6 +763,8 @@ submenu_n8n() {
     [ -f "$HOME/.cf_token" ] && [ -s "$HOME/.cf_token" ] && \
       echo -e "  ║  ${NC}Tunnel: URL fija ${GREEN}●${NC}${CYAN}${BOLD}                   ║" || \
       echo -e "  ║  ${NC}Tunnel: URL temporal ${YELLOW}○${NC}${CYAN}${BOLD}                 ║"
+    _N8N_PROTO=$(cat "$HOME/.n8n_protocol" 2>/dev/null || echo "https")
+    echo -e "  ║  ${NC}Protocolo: ${GREEN}${_N8N_PROTO}${NC}${CYAN}${BOLD}                       ║"
     echo    "  ╠══════════════════════════════════════════╣"
     echo -e "  ║  ${NC}[1] Iniciar n8n + cloudflared${CYAN}${BOLD}          ║"
     echo -e "  ║  ${NC}[2] Detener n8n + cloudflared${CYAN}${BOLD}          ║"
@@ -725,6 +776,7 @@ submenu_n8n() {
     echo -e "  ║  ${NC}[8] Configurar URL webhook${CYAN}${BOLD}             ║"
     echo -e "  ║  ${NC}[9] Reparar scripts de control${CYAN}${BOLD}         ║"
     echo -e "  ║  ${DIM}    regenera start/stop/url/status/log   ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[10] Protocolo HTTP / HTTPS${CYAN}${BOLD}            ║"
     echo -e "  ║  ${NC}[b] Volver al menú principal${CYAN}${BOLD}           ║"
     echo -e "  ╚══════════════════════════════════════════╝${NC}"
     echo ""; echo -n "  Opción: "
@@ -829,6 +881,33 @@ submenu_n8n() {
       9)
         clear; echo ""
         _n8n_repair_scripts
+        echo ""; read -r _ < /dev/tty ;;
+      10)
+        clear; echo ""
+        echo -e "  ${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
+        echo    "  ║  ⬡ N8N — Protocolo                      ║"
+        echo -e "  ╚══════════════════════════════════════════╝${NC}"
+        echo ""
+        _PROTO_ACTUAL=$(cat "$HOME/.n8n_protocol" 2>/dev/null || echo "https")
+        echo -e "  Protocolo actual: ${GREEN}${_PROTO_ACTUAL}${NC}"
+        echo ""
+        echo -e "  [1] HTTPS  ${DIM}(cloudflared, producción)${NC}"
+        echo -e "  [2] HTTP   ${DIM}(LAN directo, debug, sin SSL)${NC}"
+        echo ""
+        echo -n "  Opción (ENTER = cancelar): "
+        read -r _PROTO_OPT < /dev/tty
+        case "$_PROTO_OPT" in
+          1)
+            echo "https" > "$HOME/.n8n_protocol"
+            echo -e "  ${GREEN}[OK]${NC} Protocolo → HTTPS guardado."
+            echo -e "  ${CYAN}[INFO]${NC} Usa [9] Reparar scripts para aplicar, luego reinicia n8n." ;;
+          2)
+            echo "http" > "$HOME/.n8n_protocol"
+            echo -e "  ${GREEN}[OK]${NC} Protocolo → HTTP guardado."
+            echo -e "  ${CYAN}[INFO]${NC} Usa [9] Reparar scripts para aplicar, luego reinicia n8n." ;;
+          *)
+            echo -e "  ${YELLOW}[AVISO]${NC} Sin cambios." ;;
+        esac
         echo ""; read -r _ < /dev/tty ;;
       b|B|"") break ;;
     esac

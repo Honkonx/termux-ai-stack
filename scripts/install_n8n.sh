@@ -451,7 +451,6 @@ export npm_config_python=$(which python3)
 export PYTHON=$(which python3)
 export N8N_HOST=0.0.0.0
 export N8N_PORT=5678
-export N8N_PROTOCOL=https
 export N8N_SECURE_COOKIE=false
 PROFILE
 echo "[OK] Variables configuradas"
@@ -523,7 +522,7 @@ N8N_CMD="\${N8N_CMD} && export NODE_FUNCTION_ALLOW_EXTERNAL=*"
 N8N_CMD="\${N8N_CMD} && export N8N_HOST=0.0.0.0"
 N8N_CMD="\${N8N_CMD} && export N8N_PORT=5678"
 N8N_CMD="\${N8N_CMD} && export N8N_PROXY_HOPS=1"
-N8N_CMD="\${N8N_CMD} && export N8N_PROTOCOL=https"
+N8N_CMD="\${N8N_CMD} && export N8N_PROTOCOL=\$(cat \$HOME/.n8n_protocol 2>/dev/null || echo https)"
 N8N_CMD="\${N8N_CMD} && export N8N_SECURE_COOKIE=false"
 N8N_CMD="\${N8N_CMD} && export N8N_RUNNERS_ENABLED=true"
 N8N_CMD="\${N8N_CMD} && export N8N_RUNNERS_HEARTBEAT_INTERVAL=300"
