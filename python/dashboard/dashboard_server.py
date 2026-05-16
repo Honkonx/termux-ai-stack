@@ -24,6 +24,13 @@ PORT_WS       = 8081  # WebSocket PTY server
 
 BOT_HISTORY_DB = os.path.join(HOME, "bot_history.db")
 PREFS_FILE     = os.path.join(HOME, "ui_prefs.json")
+
+# ── Rutas de scripts (estructura ~/scripts/) ──────────────────
+SCRIPTS_DIR      = os.path.join(HOME, "scripts")
+N8N_SCRIPTS      = os.path.join(SCRIPTS_DIR, "n8n")
+OLLAMA_SCRIPTS   = os.path.join(SCRIPTS_DIR, "ollama")
+OPENCLAW_SCRIPTS = os.path.join(SCRIPTS_DIR, "openclaw")
+REMOTE_SCRIPTS   = os.path.join(SCRIPTS_DIR, "remote")
 _cmd_log       = collections.deque(maxlen=30)
 _chat_jobs     = {}   # {job_id: {status, response, error}}
 
@@ -176,9 +183,9 @@ def do_start(module_id):
             return False, str(e)
 
     scripts = {
-        "n8n":      os.path.join(HOME, "start_servidor.sh"),
-        "ollama":   os.path.join(HOME, "ollama_start.sh"),
-        "openclaw": os.path.join(HOME, "openclaw_start.sh"),
+        "n8n":      os.path.join(N8N_SCRIPTS,      "start_servidor.sh"),
+        "ollama":   os.path.join(OLLAMA_SCRIPTS,   "ollama_start.sh"),
+        "openclaw": os.path.join(OPENCLAW_SCRIPTS, "openclaw_start.sh"),
     }
     script = scripts.get(module_id)
     if not script or not os.path.exists(script):
@@ -486,9 +493,9 @@ def openclaw_info():
 def do_stop(module_id):
     # ── n8n: corre dentro de proot + tmux → usar stop_servidor.sh ──
     if module_id == "n8n":
-        script = os.path.join(HOME, "stop_servidor.sh")
+        script = os.path.join(N8N_SCRIPTS, "stop_servidor.sh")
         if not os.path.exists(script):
-            msg = "stop_servidor.sh no encontrado en ~/"
+            msg = "stop_servidor.sh no encontrado en ~/scripts/n8n/"
             log_action(module_id, "stop", False, msg)
             return False, msg
         try:
@@ -539,7 +546,7 @@ def do_stop(module_id):
 
     # ── OpenClaw: matar via PID guardado en ~/.openclaw_gateway.pid ──
     if module_id == "openclaw":
-        script = os.path.join(HOME, "openclaw_stop.sh")
+        script = os.path.join(OPENCLAW_SCRIPTS, "openclaw_stop.sh")
         if os.path.exists(script):
             try:
                 subprocess.Popen(["bash", script],

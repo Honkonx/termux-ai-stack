@@ -825,8 +825,10 @@ titulo "PASO 7 — Scripts de visión y utilidades"
 if check_done "ollama_vision_scripts"; then
   log "Scripts de visión ya creados [checkpoint]"
 else
+  mkdir -p "$HOME/python"
+
   # ── vision_bot.py ─────────────────────────────────────────
-  cat > "$HOME/vision_bot.py" << 'VISION_PYEOF'
+  cat > "$HOME/python/vision_bot.py" << 'VISION_PYEOF'
 #!/data/data/com.termux/files/usr/bin/python3
 """
 vision_bot.py — Bot de visión para termux-ai-stack
@@ -962,11 +964,11 @@ if __name__ == "__main__":
     else:
         parser.print_help()
 VISION_PYEOF
-  chmod +x "$HOME/vision_bot.py"
-  log "vision_bot.py creado en $HOME/vision_bot.py"
+  chmod +x "$HOME/python/vision_bot.py"
+  log "vision_bot.py creado en ~/python/vision_bot.py"
 
   # ── bot_utils.py (helpers SQLite reutilizables) ───────────
-  cat > "$HOME/bot_utils.py" << 'UTILS_PYEOF'
+  cat > "$HOME/python/bot_utils.py" << 'UTILS_PYEOF'
 #!/data/data/com.termux/files/usr/bin/python3
 """
 bot_utils.py — Helpers SQLite reutilizables para termux-ai-stack
@@ -1025,24 +1027,28 @@ def stats(conn, chat_id=None):
         "total_mensajes": conn.execute("SELECT COUNT(*) FROM historial").fetchone()[0],
         "chats": conn.execute("SELECT COUNT(DISTINCT chat_id) FROM historial").fetchone()[0]}
 UTILS_PYEOF
-  chmod +x "$HOME/bot_utils.py"
-  log "bot_utils.py creado en $HOME/bot_utils.py"
+  chmod +x "$HOME/python/bot_utils.py"
+  log "bot_utils.py creado en ~/python/bot_utils.py"
 
   # ── image_archive.py (archivo de imágenes con SQLite + nube) ─
   info "Descargando image_archive.py desde repo..."
-  if curl -fsSL     "https://raw.githubusercontent.com/Honkonx/termux-ai-stack/main/python/image_archive.py"     -o "$HOME/image_archive.py" 2>/dev/null; then
-    chmod +x "$HOME/image_archive.py"
-    log "image_archive.py descargado en $HOME/image_archive.py"
+  if curl -fsSL \
+    "https://raw.githubusercontent.com/Honkonx/termux-ai-stack/main/python/image_archive.py" \
+    -o "$HOME/python/image_archive.py" 2>/dev/null; then
+    chmod +x "$HOME/python/image_archive.py"
+    log "image_archive.py descargado en ~/python/image_archive.py"
   else
     warn "No se pudo descargar image_archive.py desde GitHub"
     warn "Descárgalo manualmente desde: python/image_archive.py"
   fi
 
   # ── image_archive_config.example (plantilla de nube) ─────────
-  if curl -fsSL     "https://raw.githubusercontent.com/Honkonx/termux-ai-stack/main/python/image_archive_config.example"     -o "$HOME/image_archive_config.example" 2>/dev/null; then
-    log "image_archive_config.example descargado en $HOME/"
+  if curl -fsSL \
+    "https://raw.githubusercontent.com/Honkonx/termux-ai-stack/main/python/image_archive_config.example" \
+    -o "$HOME/python/image_archive_config.example" 2>/dev/null; then
+    log "image_archive_config.example descargado en ~/python/"
     info "Para activar nube (R2/Drive):"
-    info "  cp ~/image_archive_config.example ~/.image_archive_config"
+    info "  cp ~/python/image_archive_config.example ~/.image_archive_config"
     info "  nano ~/.image_archive_config"
   fi
 
