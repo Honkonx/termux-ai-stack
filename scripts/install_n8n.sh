@@ -54,6 +54,9 @@ titulo() { echo -e "\n${CYAN}${BOLD}━━━ $1 ━━━${NC}\n"; }
 REGISTRY="$HOME/.android_server_registry"
 CHECKPOINT="$HOME/.install_n8n_checkpoint"
 
+# ── Rutas de scripts ──────────────────────────────────────────
+N8N_SCRIPTS="$HOME/scripts/n8n"
+
 check_done() { grep -q "^$1$" "$CHECKPOINT" 2>/dev/null; }
 mark_done()  { echo "$1" >> "$CHECKPOINT"; }
 
@@ -489,8 +492,10 @@ if check_done "scripts"; then
   log "Scripts ya creados [checkpoint]"
 else
 
+mkdir -p "$N8N_SCRIPTS"
+
 # --- start_servidor.sh ---
-cat > "$HOME/start_servidor.sh" << SCRIPT
+cat > "$N8N_SCRIPTS/start_servidor.sh" << SCRIPT
 #!/data/data/com.termux/files/usr/bin/bash
 # wake-lock para evitar que Android mate el proceso
 termux-wake-lock 2>/dev/null &
@@ -580,11 +585,11 @@ echo "║  n8n-log → logs en vivo               ║"
 echo "║  Ctrl+B D → salir sin detener         ║"
 echo "╚════════════════════════════════════════╝"
 SCRIPT
-chmod +x "$HOME/start_servidor.sh"
+chmod +x "$N8N_SCRIPTS/start_servidor.sh"
 log "start_servidor.sh creado (con NODE_FUNCTION_ALLOW_BUILTIN + fix cloudflared)"
 
 # --- stop_servidor.sh ---
-cat > "$HOME/stop_servidor.sh" << 'SCRIPT'
+cat > "$N8N_SCRIPTS/stop_servidor.sh" << 'SCRIPT'
 #!/data/data/com.termux/files/usr/bin/bash
 echo "[*] Deteniendo n8n y cloudflared..."
 proot-distro login debian -- bash -c \
@@ -593,11 +598,11 @@ tmux kill-session -t "n8n-server" 2>/dev/null || true
 rm -f "$HOME/.last_cf_url" 2>/dev/null
 echo "[OK] Todo detenido."
 SCRIPT
-chmod +x "$HOME/stop_servidor.sh"
+chmod +x "$N8N_SCRIPTS/stop_servidor.sh"
 log "stop_servidor.sh creado"
 
 # --- ver_url.sh ---
-cat > "$HOME/ver_url.sh" << 'SCRIPT'
+cat > "$N8N_SCRIPTS/ver_url.sh" << 'SCRIPT'
 #!/data/data/com.termux/files/usr/bin/bash
 URL=""
 [ -f "$HOME/.last_cf_url" ] && URL=$(cat "$HOME/.last_cf_url")
@@ -608,11 +613,11 @@ fi
 [ -n "$URL" ] && echo "" && echo "  ▸ $URL" && echo "" || \
   echo "[!] URL no disponible — ejecuta n8n-start primero"
 SCRIPT
-chmod +x "$HOME/ver_url.sh"
+chmod +x "$N8N_SCRIPTS/ver_url.sh"
 log "ver_url.sh creado"
 
 # --- n8n_status.sh ---
-cat > "$HOME/n8n_status.sh" << 'SCRIPT'
+cat > "$N8N_SCRIPTS/n8n_status.sh" << 'SCRIPT'
 #!/data/data/com.termux/files/usr/bin/bash
 echo ""
 echo "╔══════════════════════════════════════╗"
@@ -633,31 +638,31 @@ IP=$(ip addr show wlan0 2>/dev/null | grep "inet " | awk '{print $2}' | cut -d'/
 echo "╚══════════════════════════════════════╝"
 echo ""
 SCRIPT
-chmod +x "$HOME/n8n_status.sh"
+chmod +x "$N8N_SCRIPTS/n8n_status.sh"
 log "n8n_status.sh creado"
 
 # --- n8n_log.sh ---
-cat > "$HOME/n8n_log.sh" << 'SCRIPT'
+cat > "$N8N_SCRIPTS/n8n_log.sh" << 'SCRIPT'
 #!/data/data/com.termux/files/usr/bin/bash
 tmux has-session -t "n8n-server" 2>/dev/null && \
   tmux attach-session -t "n8n-server" || \
   echo "[!] n8n no está corriendo — ejecuta: n8n-start"
 SCRIPT
-chmod +x "$HOME/n8n_log.sh"
+chmod +x "$N8N_SCRIPTS/n8n_log.sh"
 log "n8n_log.sh creado"
 
 # --- n8n_update.sh ---
-cat > "$HOME/n8n_update.sh" << 'SCRIPT'
+cat > "$N8N_SCRIPTS/n8n_update.sh" << 'SCRIPT'
 #!/data/data/com.termux/files/usr/bin/bash
 echo "[*] Actualizando n8n..."
 proot-distro login debian -- bash -c \
   'export HOME=/root && npm update -g n8n && echo "n8n: $(n8n --version)"'
 SCRIPT
-chmod +x "$HOME/n8n_update.sh"
+chmod +x "$N8N_SCRIPTS/n8n_update.sh"
 log "n8n_update.sh creado"
 
 # --- n8n_backup.sh ---
-cat > "$HOME/n8n_backup.sh" << 'SCRIPT'
+cat > "$N8N_SCRIPTS/n8n_backup.sh" << 'SCRIPT'
 #!/data/data/com.termux/files/usr/bin/bash
 FECHA=$(date +%Y%m%d_%H%M)
 DESTINO="/sdcard/Download/n8n_workflows_$FECHA.tar.gz"
@@ -668,11 +673,11 @@ proot-distro login debian -- bash -c "cat /tmp/n8n_backup.tar.gz" > "$DESTINO" 2
 SIZE=$(du -h "$DESTINO" 2>/dev/null | cut -f1)
 echo "[OK] Backup workflows: $DESTINO ($SIZE)"
 SCRIPT
-chmod +x "$HOME/n8n_backup.sh"
+chmod +x "$N8N_SCRIPTS/n8n_backup.sh"
 log "n8n_backup.sh creado"
 
 # --- cf_token.sh ---
-cat > "$HOME/cf_token.sh" << 'SCRIPT'
+cat > "$N8N_SCRIPTS/cf_token.sh" << 'SCRIPT'
 #!/data/data/com.termux/files/usr/bin/bash
 echo ""
 echo "  Token actual: $([ -f ~/.cf_token ] && echo 'configurado (URL fija)' || echo 'no configurado (URL temporal)')"
@@ -686,10 +691,10 @@ else
   echo "[OK] Token eliminado — próximo inicio usará URL temporal"
 fi
 SCRIPT
-chmod +x "$HOME/cf_token.sh"
+chmod +x "$N8N_SCRIPTS/cf_token.sh"
 log "cf_token.sh creado"
 
-# --- debian.sh ---
+# --- debian.sh --- (punto de entrada — va en ~/)
 cat > "$HOME/debian.sh" << 'SCRIPT'
 #!/data/data/com.termux/files/usr/bin/bash
 proot-distro login debian
@@ -719,14 +724,14 @@ else
 # ════════════════════════════════
 #  n8n · aliases
 # ════════════════════════════════
-alias n8n-start='bash ~/start_servidor.sh'
-alias n8n-stop='bash ~/stop_servidor.sh'
-alias n8n-url='bash ~/ver_url.sh'
-alias n8n-status='bash ~/n8n_status.sh'
-alias n8n-log='bash ~/n8n_log.sh'
-alias n8n-update='bash ~/n8n_update.sh'
-alias n8n-backup='bash ~/n8n_backup.sh'
-alias cf-token='bash ~/cf_token.sh'
+alias n8n-start='bash ~/scripts/n8n/start_servidor.sh'
+alias n8n-stop='bash ~/scripts/n8n/stop_servidor.sh'
+alias n8n-url='bash ~/scripts/n8n/ver_url.sh'
+alias n8n-status='bash ~/scripts/n8n/n8n_status.sh'
+alias n8n-log='bash ~/scripts/n8n/n8n_log.sh'
+alias n8n-update='bash ~/scripts/n8n/n8n_update.sh'
+alias n8n-backup='bash ~/scripts/n8n/n8n_backup.sh'
+alias cf-token='bash ~/scripts/n8n/cf_token.sh'
 alias debian='bash ~/debian.sh'
 alias help='bash ~/help.sh'
 ALIASES
@@ -750,7 +755,7 @@ else
 export PATH=/data/data/com.termux/files/usr/bin:/data/data/com.termux/files/usr/sbin:\$PATH
 sleep 25
 termux-wake-lock
-bash ~/start_servidor.sh
+bash ~/scripts/n8n/start_servidor.sh
 SCRIPT
   chmod +x "$BOOT_DIR/start_n8n.sh"
   mark_done "boot"

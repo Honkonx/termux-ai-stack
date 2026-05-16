@@ -47,6 +47,9 @@ titulo() { echo -e "\n${CYAN}${BOLD}━━━ $1 ━━━${NC}\n"; }
 REGISTRY="$HOME/.android_server_registry"
 CHECKPOINT="$HOME/.install_expo_checkpoint"
 
+# ── Rutas de scripts ──────────────────────────────────────────
+EXPO_SCRIPTS="$HOME/scripts/expo"
+
 check_done() { grep -q "^$1$" "$CHECKPOINT" 2>/dev/null; }
 mark_done()  { echo "$1" >> "$CHECKPOINT"; }
 
@@ -308,8 +311,10 @@ if check_done "expo_scripts"; then
   log "Scripts ya creados [checkpoint]"
 else
 
+mkdir -p "$EXPO_SCRIPTS"
+
 # --- eas_build.sh ---
-cat > "$HOME/eas_build.sh" << 'SCRIPT'
+cat > "$EXPO_SCRIPTS/eas_build.sh" << 'SCRIPT'
 #!/data/data/com.termux/files/usr/bin/bash
 # USO: expo-build [ruta_proyecto] [preview|production]
 #   preview    → APK instalable directo (~5-10 min)
@@ -348,11 +353,11 @@ echo "  (Puedes cerrar Termux — el build sigue en la nube)"
 echo ""
 eas build --platform android --profile "$PERFIL"
 SCRIPT
-chmod +x "$HOME/eas_build.sh"
+chmod +x "$EXPO_SCRIPTS/eas_build.sh"
 log "eas_build.sh creado"
 
 # --- eas_status.sh ---
-cat > "$HOME/eas_status.sh" << 'SCRIPT'
+cat > "$EXPO_SCRIPTS/eas_status.sh" << 'SCRIPT'
 #!/data/data/com.termux/files/usr/bin/bash
 # Estados: IN_QUEUE · IN_PROGRESS · FINISHED · ERRORED
 echo ""
@@ -360,11 +365,11 @@ echo "━━━ Builds en Expo Cloud (últimos 5) ━━━"
 echo ""
 eas build:list --platform android --limit 5
 SCRIPT
-chmod +x "$HOME/eas_status.sh"
+chmod +x "$EXPO_SCRIPTS/eas_status.sh"
 log "eas_status.sh creado"
 
 # --- eas_submit.sh ---
-cat > "$HOME/eas_submit.sh" << 'SCRIPT'
+cat > "$EXPO_SCRIPTS/eas_submit.sh" << 'SCRIPT'
 #!/data/data/com.termux/files/usr/bin/bash
 # Sube un build production a Google Play Store
 # Requiere: build production completado + credenciales en expo.dev
@@ -374,11 +379,11 @@ echo "━━━ EAS Submit → Google Play ━━━"
 echo ""
 eas submit --platform android
 SCRIPT
-chmod +x "$HOME/eas_submit.sh"
+chmod +x "$EXPO_SCRIPTS/eas_submit.sh"
 log "eas_submit.sh creado"
 
 # --- git_push.sh ---
-cat > "$HOME/git_push.sh" << 'SCRIPT'
+cat > "$EXPO_SCRIPTS/git_push.sh" << 'SCRIPT'
 #!/data/data/com.termux/files/usr/bin/bash
 # USO: expo-push [ruta_proyecto] ["mensaje del commit"]
 PROYECTO="${1:-$(pwd)}"
@@ -399,11 +404,11 @@ git push
 echo ""
 echo "[OK] Cambios subidos al repositorio"
 SCRIPT
-chmod +x "$HOME/git_push.sh"
+chmod +x "$EXPO_SCRIPTS/git_push.sh"
 log "git_push.sh creado"
 
 # --- expo_info.sh ---
-cat > "$HOME/expo_info.sh" << 'SCRIPT'
+cat > "$EXPO_SCRIPTS/expo_info.sh" << 'SCRIPT'
 #!/data/data/com.termux/files/usr/bin/bash
 echo ""
 echo "╔══════════════════════════════════════╗"
@@ -424,7 +429,7 @@ echo "║  expo-login                         ║"
 echo "╚══════════════════════════════════════╝"
 echo ""
 SCRIPT
-chmod +x "$HOME/expo_info.sh"
+chmod +x "$EXPO_SCRIPTS/expo_info.sh"
 log "expo_info.sh creado"
 
 mark_done "expo_scripts"
@@ -486,12 +491,12 @@ else
 # ════════════════════════════════
 #  Expo / EAS · aliases
 # ════════════════════════════════
-alias expo-build='bash ~/eas_build.sh'
-alias expo-status='bash ~/eas_status.sh'
-alias expo-submit='bash ~/eas_submit.sh'
-alias expo-push='bash ~/git_push.sh'
+alias expo-build='bash ~/scripts/expo/eas_build.sh'
+alias expo-status='bash ~/scripts/expo/eas_status.sh'
+alias expo-submit='bash ~/scripts/expo/eas_submit.sh'
+alias expo-push='bash ~/scripts/expo/git_push.sh'
 alias expo-login='eas login'
-alias expo-info='bash ~/expo_info.sh'
+alias expo-info='bash ~/scripts/expo/expo_info.sh'
 ALIASES
 
   mark_done "expo_aliases"

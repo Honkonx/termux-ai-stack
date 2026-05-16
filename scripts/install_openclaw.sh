@@ -47,6 +47,9 @@ titulo() { echo -e "\n${CYAN}${BOLD}━━━ $1 ━━━${NC}\n"; }
 REGISTRY="$HOME/.android_server_registry"
 CHECKPOINT="$HOME/.install_openclaw_checkpoint"
 
+# ── Rutas de scripts ──────────────────────────────────────────
+OPENCLAW_SCRIPTS="$HOME/scripts/openclaw"
+
 check_done() { grep -q "^$1$" "$CHECKPOINT" 2>/dev/null; }
 mark_done()  { echo "$1" >> "$CHECKPOINT"; }
 
@@ -115,7 +118,7 @@ read -r CONFIRM < /dev/tty
 [ "$CONFIRM" != "s" ] && [ "$CONFIRM" != "S" ] && { echo "Cancelado."; exit 0; }
 
 # ============================================================
-# PASO 1 — Verificar proot-distro
+# PASO 1 — Verificar proot-distro y Debian
 # ============================================================
 titulo "PASO 1 — Verificando entorno proot"
 
@@ -127,58 +130,11 @@ if ! command -v proot-distro &>/dev/null; then
     error "No se pudo instalar proot-distro."
 fi
 
-# ============================================================
-# PASO 1.5 — Asegurar que rootfs Debian existe
-# ============================================================
-titulo "PASO 1.5 — Verificando rootfs Debian"
-
-DISTRO_NAME="debian"
-ROOTFS_PATH="${TERMUX_PREFIX}/var/lib/proot-distro/installed-rootfs/${DISTRO_NAME}"
-
-if [ ! -d "$ROOTFS_PATH" ] || [ ! -f "$ROOTFS_PATH/bin/bash" ]; then
-  warn "Rootfs Debian no encontrado en $ROOTFS_PATH"
-  echo ""
-  echo -e "  ${CYAN}¿Cómo instalar Debian?${NC}"
-  echo ""
-  echo -e "  ${GREEN}[1]${NC} Desde GitHub Releases  (~10 min, descarga part6-proot-base)"
-  echo -e "  ${GREEN}[2]${NC} Instalación limpia     (proot-distro install, ~15-25 min)"
-  echo -e "  ${GREEN}[b]${NC} Cancelar"
-  echo ""
-  echo -n "  Opción: "
-  read -r INSTALL_ROOTFS_OPT < /dev/tty
-
-  case "$INSTALL_ROOTFS_OPT" in
-    1)
-      info "Descargando rootfs desde GitHub Releases..."
-      RESTORE_SCRIPT="$HOME/restore.sh"
-      if [ ! -f "$RESTORE_SCRIPT" ]; then
-        curl -fsSL "https://raw.githubusercontent.com/Honkonx/termux-ai-stack/main/scripts/restore.sh" \
-          -o "$RESTORE_SCRIPT" && chmod +x "$RESTORE_SCRIPT" || \
-          error "No se pudo descargar restore.sh"
-      fi
-      bash "$RESTORE_SCRIPT" --module proot-base --source github || \
-        error "Falló la descarga del rootfs desde GitHub"
-      ;;
-    2)
-      info "Instalando Debian con proot-distro (puede tardar 15-25 min)..."
-      proot-distro install debian || error "No se pudo instalar Debian"
-      ;;
-    b|B|"")
-      error "Cancelado por el usuario"
-      ;;
-    *)
-      error "Opción inválida: $INSTALL_ROOTFS_OPT"
-      ;;
-  esac
-
-  # Verificar resultado
-  if [ ! -d "$ROOTFS_PATH" ] || [ ! -f "$ROOTFS_PATH/bin/bash" ]; then
-    error "Rootfs Debian no disponible tras la instalación — verifica el proceso"
-  fi
-  log "Rootfs Debian listo"
-else
-  log "Rootfs Debian ya existe"
+if ! proot-distro login debian -- bash -c 'echo ok' &>/dev/null 2>&1; then
+  error "Debian no está instalado en proot. Instálalo primero con: proot-distro install debian"
 fi
+
+log "proot Debian disponible"
 
 # ============================================================
 # PASO 2 — NVM + Node 22 en proot
@@ -373,8 +329,10 @@ titulo "PASO 7 — Scripts de control desde Termux"
 if check_done "openclaw_scripts"; then
   log "Scripts ya creados [checkpoint]"
 else
+  mkdir -p "$OPENCLAW_SCRIPTS"
+
   # ── openclaw_start.sh ─────────────────────────────────────
-  cat > "$HOME/openclaw_start.sh" << 'SCRIPT'
+  cat > "$OPENCLAW_SCRIPTS/openclaw_start.sh" << 'SCRIPT'
 #!/data/data/com.termux/files/usr/bin/bash
 # Lanzador OpenClaw Gateway — termux-ai-stack
 # Arranca el gateway en background desde Termux nativo
@@ -455,11 +413,11 @@ else
   echo ""
 fi
 SCRIPT
-  chmod +x "$HOME/openclaw_start.sh"
+  chmod +x "$OPENCLAW_SCRIPTS/openclaw_start.sh"
   log "openclaw_start.sh creado"
 
   # ── openclaw_stop.sh ──────────────────────────────────────
-  cat > "$HOME/openclaw_stop.sh" << 'SCRIPT'
+  cat > "$OPENCLAW_SCRIPTS/openclaw_stop.sh" << 'SCRIPT'
 #!/data/data/com.termux/files/usr/bin/bash
 # Detener OpenClaw Gateway — termux-ai-stack
 PID_FILE="$HOME/.openclaw_gateway.pid"
@@ -486,11 +444,11 @@ else
 fi
 echo ""
 SCRIPT
-  chmod +x "$HOME/openclaw_stop.sh"
+  chmod +x "$OPENCLAW_SCRIPTS/openclaw_stop.sh"
   log "openclaw_stop.sh creado"
 
   # ── openclaw_token.sh ─────────────────────────────────────
-  cat > "$HOME/openclaw_token.sh" << 'SCRIPT'
+  cat > "$OPENCLAW_SCRIPTS/openclaw_token.sh" << 'SCRIPT'
 #!/data/data/com.termux/files/usr/bin/bash
 # Mostrar URL con token de OpenClaw — termux-ai-stack
 PORT=18789
@@ -527,7 +485,7 @@ else
 fi
 echo ""
 SCRIPT
-  chmod +x "$HOME/openclaw_token.sh"
+  chmod +x "$OPENCLAW_SCRIPTS/openclaw_token.sh"
   log "openclaw_token.sh creado"
 
   mark_done "openclaw_scripts"
@@ -551,9 +509,9 @@ else
 # ════════════════════════════════
 #  OpenClaw · aliases Termux
 # ════════════════════════════════
-alias openclaw-start='bash ~/openclaw_start.sh'
-alias openclaw-stop='bash ~/openclaw_stop.sh'
-alias openclaw-token='bash ~/openclaw_token.sh'
+alias openclaw-start='bash ~/scripts/openclaw/openclaw_start.sh'
+alias openclaw-stop='bash ~/scripts/openclaw/openclaw_stop.sh'
+alias openclaw-token='bash ~/scripts/openclaw/openclaw_token.sh'
 alias openclaw-status='curl -sf http://127.0.0.1:18789 &>/dev/null && echo "OpenClaw activo :18789" || echo "OpenClaw detenido"'
 alias openclaw-tui='proot-distro login debian -- bash -c "source ~/.bashrc 2>/dev/null; openclaw tui"'
 ALIASES

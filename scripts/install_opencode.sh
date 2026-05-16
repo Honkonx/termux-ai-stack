@@ -46,6 +46,9 @@ titulo() { echo -e "\n${CYAN}${BOLD}━━━ $1 ━━━${NC}\n"; }
 REGISTRY="$HOME/.android_server_registry"
 CHECKPOINT="$HOME/.install_opencode_checkpoint"
 
+# ── Rutas de scripts ──────────────────────────────────────────
+OPENCODE_SCRIPTS="$HOME/scripts/opencode"
+
 check_done() { grep -q "^$1$" "$CHECKPOINT" 2>/dev/null; }
 mark_done()  { echo "$1" >> "$CHECKPOINT"; }
 
@@ -123,10 +126,15 @@ fi
 DISTRO_NAME=$(proot-distro list 2>/dev/null | grep -i "debian" | awk '{print $1}' | head -1)
 [ -z "$DISTRO_NAME" ] && DISTRO_NAME="debian"
 
-log "proot-distro disponible"
+if ! proot-distro login "$DISTRO_NAME" -- bash -c 'echo ok' &>/dev/null 2>&1; then
+  warn "Debian no está instalado. Instalando..."
+  proot-distro install debian || error "No se pudo instalar Debian en proot."
+fi
+
+log "proot Debian disponible"
 
 # ============================================================
-# PASO 1.5 — Asegurar que rootfs Debian existe
+# PASO 1.5 — Asegurar que Debian rootfs existe
 # ============================================================
 titulo "PASO 1.5 — Verificando rootfs Debian"
 
@@ -138,7 +146,7 @@ if [ ! -d "$ROOTFS_PATH" ] || [ ! -f "$ROOTFS_PATH/bin/bash" ]; then
   echo ""
   echo -e "  ${CYAN}¿Cómo instalar Debian?${NC}"
   echo ""
-  echo -e "  ${GREEN}[1]${NC} Desde GitHub Releases  (~10 min, descarga part6-proot-base)"
+  echo -e "  ${GREEN}[1]${NC} Desde GitHub Releases  (rápido ~5-10 min, proot-base)"
   echo -e "  ${GREEN}[2]${NC} Instalación limpia     (proot-distro install, ~15-25 min)"
   echo -e "  ${GREEN}[b]${NC} Cancelar"
   echo ""
@@ -148,30 +156,28 @@ if [ ! -d "$ROOTFS_PATH" ] || [ ! -f "$ROOTFS_PATH/bin/bash" ]; then
   case "$INSTALL_ROOTFS_OPT" in
     1)
       info "Descargando rootfs desde GitHub Releases..."
-      RESTORE_SCRIPT="$HOME/restore.sh"
-      if [ ! -f "$RESTORE_SCRIPT" ]; then
+      if [ ! -f "$HOME/restore.sh" ]; then
         curl -fsSL "https://raw.githubusercontent.com/Honkonx/termux-ai-stack/main/scripts/restore.sh" \
-          -o "$RESTORE_SCRIPT" && chmod +x "$RESTORE_SCRIPT" || \
-          error "No se pudo descargar restore.sh"
+          -o "$HOME/restore.sh" && chmod +x "$HOME/restore.sh"
       fi
-      bash "$RESTORE_SCRIPT" --module proot-base --source github || \
-        error "Falló la descarga del rootfs desde GitHub"
+      bash "$HOME/restore.sh" --module proot-base --source github || \
+        error "Fallo la restauración del rootfs Debian"
       ;;
     2)
-      info "Instalando Debian con proot-distro (puede tardar 15-25 min)..."
+      info "Instalando Debian con proot-distro..."
       proot-distro install debian || error "No se pudo instalar Debian"
       ;;
     b|B|"")
       error "Cancelado por el usuario"
       ;;
     *)
-      error "Opción inválida: $INSTALL_ROOTFS_OPT"
+      error "Opción inválida"
       ;;
   esac
 
-  # Verificar resultado
+  # Verificar que se instaló correctamente
   if [ ! -d "$ROOTFS_PATH" ] || [ ! -f "$ROOTFS_PATH/bin/bash" ]; then
-    error "Rootfs Debian no disponible tras la instalación — verifica el proceso"
+    error "Rootfs Debian no disponible después de la instalación"
   fi
   log "Rootfs Debian listo"
 else
@@ -245,8 +251,10 @@ titulo "PASO 4 — Lanzador y scripts de control"
 if check_done "opencode_scripts"; then
   log "Scripts ya creados [checkpoint]"
 else
+  mkdir -p "$OPENCODE_SCRIPTS"
+
   # Script de inicio del servidor web
-  cat > "$HOME/opencode_start.sh" << SCRIPT
+  cat > "$OPENCODE_SCRIPTS/opencode_start.sh" << SCRIPT
 #!/data/data/com.termux/files/usr/bin/bash
 # Lanzador OpenCode Web — termux-ai-stack
 DISTRO="${DISTRO_NAME}"
@@ -276,11 +284,11 @@ else
   echo -e "${RED}[ERROR]${NC} No se pudo iniciar. Verifica con: proot-distro login debian"
 fi
 SCRIPT
-  chmod +x "$HOME/opencode_start.sh"
+  chmod +x "$OPENCODE_SCRIPTS/opencode_start.sh"
   log "opencode_start.sh creado"
 
   # Script de parada
-  cat > "$HOME/opencode_stop.sh" << 'SCRIPT'
+  cat > "$OPENCODE_SCRIPTS/opencode_stop.sh" << 'SCRIPT'
 #!/data/data/com.termux/files/usr/bin/bash
 SESSION="opencode"
 if tmux has-session -t "$SESSION" 2>/dev/null; then
@@ -290,7 +298,7 @@ else
   echo "OpenCode no estaba corriendo"
 fi
 SCRIPT
-  chmod +x "$HOME/opencode_stop.sh"
+  chmod +x "$OPENCODE_SCRIPTS/opencode_stop.sh"
   log "opencode_stop.sh creado"
 
   mark_done "opencode_scripts"
@@ -313,8 +321,8 @@ else
 # ════════════════════════════════
 #  OpenCode · aliases
 # ════════════════════════════════
-alias opencode-web='bash ~/opencode_start.sh'
-alias opencode-stop='bash ~/opencode_stop.sh'
+alias opencode-web='bash ~/scripts/opencode/opencode_start.sh'
+alias opencode-stop='bash ~/scripts/opencode/opencode_stop.sh'
 alias opencode-status='tmux has-session -t opencode 2>/dev/null && echo "OpenCode corriendo en :3000" || echo "OpenCode detenido"'
 alias opencode-tui='proot-distro login debian -- bash -c "source ~/.bashrc 2>/dev/null; opencode"'
 alias debian='proot-distro login debian'

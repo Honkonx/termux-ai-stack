@@ -52,6 +52,9 @@ titulo() { echo -e "\n${CYAN}${BOLD}━━━ $1 ━━━${NC}\n"; }
 REGISTRY="$HOME/.android_server_registry"
 CHECKPOINT="$HOME/.install_ollama_checkpoint"
 
+# ── Rutas de scripts ──────────────────────────────────────────
+OLLAMA_SCRIPTS="$HOME/scripts/ollama"
+
 check_done() { grep -q "^$1$" "$CHECKPOINT" 2>/dev/null; }
 mark_done()  { echo "$1" >> "$CHECKPOINT"; }
 
@@ -605,8 +608,10 @@ titulo "PASO 3 — Script de inicio"
 if check_done "ollama_scripts"; then
   log "Scripts ya creados [checkpoint]"
 else
+  mkdir -p "$OLLAMA_SCRIPTS"
+
   # Script de inicio en tmux
-  cat > "$HOME/ollama_start.sh" << 'SCRIPT'
+  cat > "$OLLAMA_SCRIPTS/ollama_start.sh" << 'SCRIPT'
 #!/data/data/com.termux/files/usr/bin/bash
 SESSION="ollama-server"
 
@@ -629,10 +634,10 @@ else
   echo "Error iniciando Ollama. Revisa logs con: tmux attach -t $SESSION"
 fi
 SCRIPT
-  chmod +x "$HOME/ollama_start.sh"
+  chmod +x "$OLLAMA_SCRIPTS/ollama_start.sh"
 
   # Script de parada
-  cat > "$HOME/ollama_stop.sh" << 'SCRIPT'
+  cat > "$OLLAMA_SCRIPTS/ollama_stop.sh" << 'SCRIPT'
 #!/data/data/com.termux/files/usr/bin/bash
 SESSION="ollama-server"
 if tmux has-session -t "$SESSION" 2>/dev/null; then
@@ -642,7 +647,7 @@ else
   echo "Ollama no estaba corriendo"
 fi
 SCRIPT
-  chmod +x "$HOME/ollama_stop.sh"
+  chmod +x "$OLLAMA_SCRIPTS/ollama_stop.sh"
 
   log "ollama_start.sh creado"
   log "ollama_stop.sh creado"
@@ -670,8 +675,8 @@ else
 # ════════════════════════════════
 #  Ollama · aliases
 # ════════════════════════════════
-alias ollama-start='bash ~/ollama_start.sh'
-alias ollama-stop='bash ~/ollama_stop.sh'
+alias ollama-start='bash ~/scripts/ollama/ollama_start.sh'
+alias ollama-stop='bash ~/scripts/ollama/ollama_stop.sh'
 alias ollama-status='curl -s http://localhost:11434 && echo " (corriendo)" || echo "Ollama no responde en :11434"'
 alias ollama-list='ollama list'
 alias ollama-run='ollama run'
