@@ -342,14 +342,25 @@ else
       SCRIPTS_OK=0
       SCRIPTS_FAIL=0
 
+      # Scripts que van en ~/  (puntos de entrada)
       for script in \
-        menu.sh menu_nativo.sh menu_proot.sh \
+        menu.sh \
         backup.sh restore.sh \
         install_n8n.sh install_claude.sh install_ollama.sh \
         install_expo.sh install_python.sh install_ssh.sh \
         install_remote.sh install_opencode.sh install_openclaw.sh
       do
         if download_file "$REPO_RAW_SCRIPT/$script" "$HOME/$script" "$script"; then
+          SCRIPTS_OK=$((SCRIPTS_OK + 1))
+        else
+          SCRIPTS_FAIL=$((SCRIPTS_FAIL + 1))
+        fi
+      done
+
+      # Módulos de menú van en ~/scripts/
+      mkdir -p "$HOME/scripts"
+      for script in menu_nativo.sh menu_proot.sh; do
+        if download_file "$REPO_RAW_SCRIPT/$script" "$HOME/scripts/$script" "$script"; then
           SCRIPTS_OK=$((SCRIPTS_OK + 1))
         else
           SCRIPTS_FAIL=$((SCRIPTS_FAIL + 1))
@@ -394,6 +405,7 @@ else
 
           # Copiar scripts al home
           if [ -d "$BASE_EXTRACT/home" ]; then
+            # Scripts raíz (puntos de entrada)
             for f in "$BASE_EXTRACT/home/"*.sh; do
               [ -f "$f" ] && cp "$f" "$HOME/" && chmod +x "$HOME/$(basename "$f")"
             done
@@ -401,7 +413,20 @@ else
               [ -f "$f" ] && cp "$f" "$HOME/"
             done
             COPIED=$(ls "$BASE_EXTRACT/home/"*.sh 2>/dev/null | wc -l)
-            log "$COPIED scripts instalados desde release"
+            # Scripts de subcarpetas (~/scripts/*)
+            for subdir in scripts/n8n scripts/ollama scripts/remote \
+                          scripts/openclaw scripts/opencode scripts/expo scripts; do
+              src="$BASE_EXTRACT/home/$subdir"
+              [ -d "$src" ] || continue
+              mkdir -p "$HOME/$subdir"
+              for f in "$src/"*; do
+                [ -f "$f" ] || continue
+                cp "$f" "$HOME/$subdir/"
+                [[ "$f" == *.sh ]] && chmod +x "$HOME/$subdir/$(basename "$f")"
+                COPIED=$((COPIED + 1))
+              done
+            done
+            log "$COPIED archivos instalados desde release"
           fi
 
           # Tema si no se aplicó antes (o actualizarlo)
@@ -425,7 +450,7 @@ else
           rm -f "$BASE_TMP"
           # Fallback automático a scripts individuales
           for script in \
-            menu.sh menu_nativo.sh menu_proot.sh \
+            menu.sh \
             backup.sh restore.sh \
             install_n8n.sh install_claude.sh install_ollama.sh \
             install_expo.sh install_python.sh install_ssh.sh \
@@ -433,18 +458,26 @@ else
           do
             download_file "$REPO_RAW_SCRIPT/$script" "$HOME/$script" "$script"
           done
+          mkdir -p "$HOME/scripts"
+          for script in menu_nativo.sh menu_proot.sh; do
+            download_file "$REPO_RAW_SCRIPT/$script" "$HOME/scripts/$script" "$script"
+          done
           mark_done "base_scripts"
         fi
       else
         warn "No se encontró part0-termux-base en el release — usando Modo B..."
         for script in \
-          menu.sh menu_nativo.sh menu_proot.sh \
+          menu.sh \
           backup.sh restore.sh \
           install_n8n.sh install_claude.sh install_ollama.sh \
           install_expo.sh install_python.sh install_ssh.sh \
           install_remote.sh install_opencode.sh install_openclaw.sh
         do
           download_file "$REPO_RAW_SCRIPT/$script" "$HOME/$script" "$script"
+        done
+        mkdir -p "$HOME/scripts"
+        for script in menu_nativo.sh menu_proot.sh; do
+          download_file "$REPO_RAW_SCRIPT/$script" "$HOME/scripts/$script" "$script"
         done
         mark_done "base_scripts"
       fi
@@ -456,7 +489,7 @@ fi
 echo ""
 info "Scripts disponibles en ~/:"
 for script in \
-  menu.sh menu_nativo.sh menu_proot.sh \
+  menu.sh \
   backup.sh restore.sh \
   install_n8n.sh install_claude.sh install_ollama.sh \
   install_expo.sh install_python.sh install_ssh.sh \
@@ -467,6 +500,15 @@ do
     echo -e "  ${GREEN}✓${NC} ~/$script  (${SIZE} bytes)"
   else
     echo -e "  ${YELLOW}?${NC} ~/$script  (no disponible)"
+  fi
+done
+info "Scripts en ~/scripts/:"
+for script in menu_nativo.sh menu_proot.sh; do
+  if [ -f "$HOME/scripts/$script" ] && [ -s "$HOME/scripts/$script" ]; then
+    SIZE=$(wc -c < "$HOME/scripts/$script" 2>/dev/null)
+    echo -e "  ${GREEN}✓${NC} ~/scripts/$script  (${SIZE} bytes)"
+  else
+    echo -e "  ${YELLOW}?${NC} ~/scripts/$script  (no disponible)"
   fi
 done
 
@@ -493,8 +535,8 @@ else
 #  termux-ai-stack · configuración base
 # ════════════════════════════════════════
 alias menu='bash ~/menu.sh'
-alias remote='bash ~/ssh_start.sh'
-alias dashboard='bash ~/dashboard_start.sh'
+alias remote='bash ~/scripts/remote/ssh_start.sh'
+alias dashboard='bash ~/scripts/remote/dashboard_start.sh'
 
 # Auto-ejecutar menu al abrir Termux
 if [ -z "$TMUX" ] && [ -z "$ANDROID_SERVER_READY" ]; then
@@ -640,7 +682,7 @@ RESUMEN
 echo -e "${NC}"
 
 echo "  SCRIPTS EN ~/:"
-for f in menu.sh menu_nativo.sh menu_proot.sh \
+for f in menu.sh \
           install_n8n.sh install_claude.sh install_ollama.sh \
           install_expo.sh install_python.sh install_ssh.sh install_remote.sh \
           install_opencode.sh install_openclaw.sh \
@@ -648,6 +690,14 @@ for f in menu.sh menu_nativo.sh menu_proot.sh \
   [ -f "$HOME/$f" ] && \
     echo -e "  ${GREEN}✓${NC} ~/$f" || \
     echo -e "  ${YELLOW}?${NC} ~/$f (no disponible)"
+done
+
+echo ""
+echo "  SCRIPTS EN ~/scripts/:"
+for f in menu_nativo.sh menu_proot.sh; do
+  [ -f "$HOME/scripts/$f" ] && \
+    echo -e "  ${GREEN}✓${NC} ~/scripts/$f" || \
+    echo -e "  ${YELLOW}?${NC} ~/scripts/$f (no disponible)"
 done
 
 echo ""

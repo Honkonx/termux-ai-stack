@@ -386,15 +386,27 @@ restore_part0() {
 
   # Scripts al home
   if [ -d "$EXTRACT_TMP/home" ]; then
-    # Copiar scripts
+    # Copiar scripts de raíz (~/)
     for f in "$EXTRACT_TMP/home/"*.sh; do
       [ -f "$f" ] && cp "$f" "$HOME/" && chmod +x "$HOME/$(basename "$f")"
     done
-    # Copiar Python scripts
+    # Copiar Python scripts de raíz
     for f in "$EXTRACT_TMP/home/"*.py; do
       [ -f "$f" ] && cp "$f" "$HOME/"
     done
-    log "Scripts copiados a ~/"
+    # Copiar subcarpetas ~/scripts/* (módulos de menú + scripts generados)
+    for subdir in scripts scripts/n8n scripts/ollama scripts/remote \
+                  scripts/openclaw scripts/opencode scripts/expo; do
+      src="$EXTRACT_TMP/home/$subdir"
+      [ -d "$src" ] || continue
+      mkdir -p "$HOME/$subdir"
+      for f in "$src/"*; do
+        [ -f "$f" ] || continue
+        cp "$f" "$HOME/$subdir/"
+        [[ "$f" == *.sh ]] && chmod +x "$HOME/$subdir/$(basename "$f")"
+      done
+    done
+    log "Scripts copiados a ~/ y ~/scripts/"
   fi
 
   # Registry — restaurar solo claves base, preservar estado de módulos existentes
@@ -635,9 +647,13 @@ restore_part4() {
   }
 
   [ -d "$EXTRACT_TMP/home" ] && {
-    cp "$EXTRACT_TMP/home/"*.sh "$HOME/" 2>/dev/null
-    chmod +x "$HOME/ollama_start.sh" "$HOME/ollama_stop.sh" 2>/dev/null
-    log "Scripts ollama restaurados"
+    mkdir -p "$HOME/scripts/ollama"
+    for f in "$EXTRACT_TMP/home/"*.sh; do
+      [ -f "$f" ] && cp "$f" "$HOME/scripts/ollama/"
+    done
+    chmod +x "$HOME/scripts/ollama/ollama_start.sh" \
+             "$HOME/scripts/ollama/ollama_stop.sh" 2>/dev/null
+    log "Scripts ollama restaurados en ~/scripts/ollama/"
   }
 
   update_registry "ollama" "${OL_PART_KEY##*-}"
@@ -801,16 +817,18 @@ restore_part7() {
   fi
 
   # ── SSH: scripts de control ───────────────────────────────
+  mkdir -p "$HOME/scripts/remote"
   for f in "$EXTRACT_TMP/home/"*.sh; do
-    [ -f "$f" ] && cp "$f" "$HOME/" && chmod +x "$HOME/$(basename "$f")"
+    [ -f "$f" ] && cp "$f" "$HOME/scripts/remote/" && \
+      chmod +x "$HOME/scripts/remote/$(basename "$f")"
   done
 
   # ── Dashboard ────────────────────────────────────────────
   for f in dashboard_server.py dashboard_start.sh dashboard_stop.sh index.html; do
     [ -f "$EXTRACT_TMP/dashboard/$f" ] && {
-      cp "$EXTRACT_TMP/dashboard/$f" "$HOME/$f"
-      [[ "$f" == *.sh ]] && chmod +x "$HOME/$f"
-      log "$f restaurado"
+      cp "$EXTRACT_TMP/dashboard/$f" "$HOME/scripts/remote/$f"
+      [[ "$f" == *.sh ]] && chmod +x "$HOME/scripts/remote/$f"
+      log "$f restaurado en ~/scripts/remote/"
     }
   done
 
@@ -832,8 +850,8 @@ restore_part7() {
   update_registry "ssh" "$(ssh -V 2>&1 | awk '{print $1}' | tr -d 'OpenSSH_' | head -1)"
   update_registry "dashboard" "restored"
   log "Remote (SSH + Dashboard) restaurado ✓"
-  echo -e "  ${CYAN}Para SSH:${NC}       bash ~/ssh_start.sh"
-  echo -e "  ${CYAN}Para Dashboard:${NC}  bash ~/dashboard_start.sh"
+  echo -e "  ${CYAN}Para SSH:${NC}       bash ~/scripts/remote/ssh_start.sh"
+  echo -e "  ${CYAN}Para Dashboard:${NC}  bash ~/scripts/remote/dashboard_start.sh"
   rm -rf "$EXTRACT_TMP"
 }
 

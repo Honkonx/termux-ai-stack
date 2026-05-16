@@ -150,6 +150,7 @@ check_openclaw_cached() {
 #  Regenera: start_servidor.sh, stop_servidor.sh,
 #  ver_url.sh, n8n_status.sh, n8n_log.sh,
 #  n8n_update.sh, n8n_backup.sh, cf_token.sh
+#  Destino: $N8N_SCRIPTS (~/scripts/n8n/)
 # ════════════════════════════════════════════
 _n8n_repair_scripts() {
   echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
@@ -166,12 +167,15 @@ _n8n_repair_scripts() {
   fi
   echo -e "${GREEN}✓${NC}"; echo ""
 
+  # Asegurar que existe el directorio destino
+  mkdir -p "$N8N_SCRIPTS"
+
   local _REPAIR_PROTO
   _REPAIR_PROTO=$(cat "$HOME/.n8n_protocol" 2>/dev/null || echo "https")
 
   # --- start_servidor.sh ---
   echo -n "  Creando start_servidor.sh... "
-  cat > "$HOME/start_servidor.sh" << SCRIPT
+  cat > "$N8N_SCRIPTS/start_servidor.sh" << SCRIPT
 #!/data/data/com.termux/files/usr/bin/bash
 # wake-lock auto — termux-ai-stack
 termux-wake-lock 2>/dev/null &
@@ -254,12 +258,12 @@ echo "╠═══════════════════════�
 echo "║  child_process: HABILITADO ✓           ║"
 echo "╚════════════════════════════════════════╝"
 SCRIPT
-  chmod +x "$HOME/start_servidor.sh"
+  chmod +x "$N8N_SCRIPTS/start_servidor.sh"
   echo -e "${GREEN}✓${NC}"
 
   # --- stop_servidor.sh ---
   echo -n "  Creando stop_servidor.sh... "
-  cat > "$HOME/stop_servidor.sh" << 'SCRIPT'
+  cat > "$N8N_SCRIPTS/stop_servidor.sh" << 'SCRIPT'
 #!/data/data/com.termux/files/usr/bin/bash
 echo "[*] Deteniendo n8n y cloudflared..."
 proot-distro login debian -- bash -c \
@@ -268,12 +272,12 @@ tmux kill-session -t "n8n-server" 2>/dev/null || true
 rm -f "$HOME/.last_cf_url" 2>/dev/null
 echo "[OK] Todo detenido."
 SCRIPT
-  chmod +x "$HOME/stop_servidor.sh"
+  chmod +x "$N8N_SCRIPTS/stop_servidor.sh"
   echo -e "${GREEN}✓${NC}"
 
   # --- ver_url.sh ---
   echo -n "  Creando ver_url.sh... "
-  cat > "$HOME/ver_url.sh" << 'SCRIPT'
+  cat > "$N8N_SCRIPTS/ver_url.sh" << 'SCRIPT'
 #!/data/data/com.termux/files/usr/bin/bash
 URL=""
 [ -f "$HOME/.last_cf_url" ] && URL=$(cat "$HOME/.last_cf_url")
@@ -284,12 +288,12 @@ fi
 [ -n "$URL" ] && echo "" && echo "  ▸ $URL" && echo "" || \
   echo "[!] URL no disponible — ejecuta n8n-start primero"
 SCRIPT
-  chmod +x "$HOME/ver_url.sh"
+  chmod +x "$N8N_SCRIPTS/ver_url.sh"
   echo -e "${GREEN}✓${NC}"
 
   # --- n8n_status.sh ---
   echo -n "  Creando n8n_status.sh... "
-  cat > "$HOME/n8n_status.sh" << 'SCRIPT'
+  cat > "$N8N_SCRIPTS/n8n_status.sh" << 'SCRIPT'
 #!/data/data/com.termux/files/usr/bin/bash
 echo ""
 echo "╔══════════════════════════════════════╗"
@@ -310,35 +314,35 @@ IP=$(ifconfig 2>/dev/null | grep -A1 "netmask 255\.255\." | grep "inet " | grep 
 echo "╚══════════════════════════════════════╝"
 echo ""
 SCRIPT
-  chmod +x "$HOME/n8n_status.sh"
+  chmod +x "$N8N_SCRIPTS/n8n_status.sh"
   echo -e "${GREEN}✓${NC}"
 
   # --- n8n_log.sh ---
   echo -n "  Creando n8n_log.sh... "
-  cat > "$HOME/n8n_log.sh" << 'SCRIPT'
+  cat > "$N8N_SCRIPTS/n8n_log.sh" << 'SCRIPT'
 #!/data/data/com.termux/files/usr/bin/bash
 tmux has-session -t "n8n-server" 2>/dev/null && \
   tmux attach-session -t "n8n-server" || \
   echo "[!] n8n no está corriendo — ejecuta: n8n-start"
 SCRIPT
-  chmod +x "$HOME/n8n_log.sh"
+  chmod +x "$N8N_SCRIPTS/n8n_log.sh"
   echo -e "${GREEN}✓${NC}"
 
   # --- n8n_update.sh ---
   echo -n "  Creando n8n_update.sh... "
-  cat > "$HOME/n8n_update.sh" << 'SCRIPT'
+  cat > "$N8N_SCRIPTS/n8n_update.sh" << 'SCRIPT'
 #!/data/data/com.termux/files/usr/bin/bash
 echo "[*] Actualizando n8n..."
 proot-distro login debian -- bash -c \
   'export HOME=/root && npm update -g n8n && echo "n8n: $(n8n --version)"'
 SCRIPT
-  chmod +x "$HOME/n8n_update.sh"
+  chmod +x "$N8N_SCRIPTS/n8n_update.sh"
   echo -e "${GREEN}✓${NC}"
 
   # --- n8n_backup.sh ---
   # NOTA: usa /tmp dentro del proot Debian (no Termux) — no aplica la regla noexec
   echo -n "  Creando n8n_backup.sh... "
-  cat > "$HOME/n8n_backup.sh" << 'SCRIPT'
+  cat > "$N8N_SCRIPTS/n8n_backup.sh" << 'SCRIPT'
 #!/data/data/com.termux/files/usr/bin/bash
 FECHA=$(date +%Y%m%d_%H%M)
 DESTINO="/sdcard/Download/n8n_workflows_$FECHA.tar.gz"
@@ -349,12 +353,12 @@ proot-distro login debian -- bash -c "cat /tmp/n8n_backup.tar.gz" > "$DESTINO" 2
 SIZE=$(du -h "$DESTINO" 2>/dev/null | cut -f1)
 echo "[OK] Backup: $DESTINO ($SIZE)"
 SCRIPT
-  chmod +x "$HOME/n8n_backup.sh"
+  chmod +x "$N8N_SCRIPTS/n8n_backup.sh"
   echo -e "${GREEN}✓${NC}"
 
   # --- cf_token.sh ---
   echo -n "  Creando cf_token.sh... "
-  cat > "$HOME/cf_token.sh" << 'SCRIPT'
+  cat > "$N8N_SCRIPTS/cf_token.sh" << 'SCRIPT'
 #!/data/data/com.termux/files/usr/bin/bash
 echo ""
 echo "  Token: $([ -f ~/.cf_token ] && echo 'configurado (URL fija)' || echo 'no configurado (URL temporal)')"
@@ -369,11 +373,11 @@ else
   echo "[OK] Modo URL temporal activado"
 fi
 SCRIPT
-  chmod +x "$HOME/cf_token.sh"
+  chmod +x "$N8N_SCRIPTS/cf_token.sh"
   echo -e "${GREEN}✓${NC}"
 
   echo ""
-  echo -e "  ${GREEN}[OK]${NC} 8 scripts regenerados correctamente"
+  echo -e "  ${GREEN}[OK]${NC} 8 scripts regenerados correctamente en ~/scripts/n8n/"
   echo -e "  ${DIM}start · stop · url · status · log · update · backup · cf_token${NC}"
 }
 
@@ -415,7 +419,7 @@ submenu_n8n() {
     case "$OPT" in
       1)
         clear; echo ""
-        if [ ! -f "$HOME/start_servidor.sh" ]; then
+        if [ ! -f "$N8N_SCRIPTS/start_servidor.sh" ]; then
           echo -e "  ${YELLOW}[AVISO]${NC} start_servidor.sh no encontrado."
           echo -n "  ¿Reparar scripts de control ahora? (s/n): "
           read -r _REPAIR < /dev/tty
@@ -425,8 +429,8 @@ submenu_n8n() {
             echo ""; read -r _ < /dev/tty; continue
           fi
         fi
-        if [ -f "$HOME/start_servidor.sh" ]; then
-          bash "$HOME/start_servidor.sh" < /dev/tty
+        if [ -f "$N8N_SCRIPTS/start_servidor.sh" ]; then
+          bash "$N8N_SCRIPTS/start_servidor.sh" < /dev/tty
         else
           echo -e "  ${RED}[ERROR]${NC} No se pudo crear start_servidor.sh — verifica que n8n esté instalado en proot"
         fi
@@ -434,14 +438,14 @@ submenu_n8n() {
         tmux has-session -t "n8n-server" 2>/dev/null && state="running" || state="stopped" ;;
       2)
         clear; echo ""
-        bash "$HOME/stop_servidor.sh" 2>/dev/null || \
+        bash "$N8N_SCRIPTS/stop_servidor.sh" 2>/dev/null || \
           tmux kill-session -t "n8n-server" 2>/dev/null
         sleep 1; echo -e "  ${GREEN}[OK]${NC} n8n detenido"
         echo ""; read -r _ < /dev/tty
         state="stopped" ;;
       3)
         clear; echo ""
-        bash "$HOME/ver_url.sh" 2>/dev/null || {
+        bash "$N8N_SCRIPTS/ver_url.sh" 2>/dev/null || {
           local URL; URL=$(cat "$HOME/.last_cf_url" 2>/dev/null)
           [ -n "$URL" ] \
             && echo -e "  ${GREEN}URL:${NC} $URL" \
@@ -463,7 +467,7 @@ submenu_n8n() {
         echo ""; read -r _ < /dev/tty ;;
       6)
         clear; echo ""
-        bash "$HOME/n8n_status.sh" 2>/dev/null || {
+        bash "$N8N_SCRIPTS/n8n_status.sh" 2>/dev/null || {
           echo -e "  ${BOLD}Estado n8n:${NC}"
           tmux has-session -t "n8n-server" 2>/dev/null \
             && echo -e "  ${GREEN}● Corriendo${NC}" \
@@ -1224,14 +1228,35 @@ PYEOF
 
 # ════════════════════════════════════════════
 #  SUBMENÚ SERVICIOS (n8n + OpenClaw)
+#  $1 = N8N_STATE precalculado desde el loop principal (opcional)
+#  $2 = CL_STATE  precalculado desde el loop principal (opcional)
+#  Si se pasan, se usan en el primer render — evita re-chequeo proot.
+#  En renders siguientes (al volver de sub-submenú) sí re-chequea.
 # ════════════════════════════════════════════
 submenu_servicios() {
+  # Estados iniciales: usar los valores del loop principal si se pasan
+  local _N8_INIT="${1:-}"
+  local _CL_INIT="${2:-}"
+  local _FIRST_RENDER=1
+
   while true; do
     clear; echo ""
 
     local N8_S N8_V N8_E CL_S CL_V CL_E
-    IFS='|' read -r N8_S N8_V N8_E <<< "$(check_n8n)"
-    IFS='|' read -r CL_S CL_V CL_E <<< "$(check_openclaw_cached)"
+
+    if [ "$_FIRST_RENDER" = "1" ] && [ -n "$_N8_INIT" ] && [ -n "$_CL_INIT" ]; then
+      # Primer render: usar estados ya calculados — sin proot adicional
+      N8_S="$_N8_INIT"
+      N8_V=$(grep "^n8n\.version=" "$REGISTRY" 2>/dev/null | cut -d'=' -f2)
+      [ -z "$N8_V" ] && N8_V="?"
+      N8_E=""
+      IFS='|' read -r CL_S CL_V CL_E <<< "$_CL_INIT"
+      _FIRST_RENDER=0
+    else
+      # Renders siguientes: chequeo real (usuario volvió de sub-submenú)
+      IFS='|' read -r N8_S N8_V N8_E <<< "$(check_n8n)"
+      IFS='|' read -r CL_S CL_V CL_E <<< "$(check_openclaw_cached)"
+    fi
 
     local N8_PILL CL_PILL
     case "$N8_S" in

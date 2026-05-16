@@ -68,6 +68,83 @@ DIM='\033[2m'
 NC='\033[0m'
 
 # ════════════════════════════════════════════
+#  RUTAS DE SCRIPTS
+#  Definidas una sola vez aquí — todos los
+#  módulos las heredan vía source.
+# ════════════════════════════════════════════
+SCRIPTS_DIR="$HOME/scripts"
+N8N_SCRIPTS="$SCRIPTS_DIR/n8n"
+OLLAMA_SCRIPTS="$SCRIPTS_DIR/ollama"
+OPENCLAW_SCRIPTS="$SCRIPTS_DIR/openclaw"
+OPENCODE_SCRIPTS="$SCRIPTS_DIR/opencode"
+REMOTE_SCRIPTS="$SCRIPTS_DIR/remote"
+EXPO_SCRIPTS="$SCRIPTS_DIR/expo"
+
+# ════════════════════════════════════════════
+#  CREAR ESTRUCTURA DE CARPETAS
+#  Idempotente — no falla si ya existen.
+# ════════════════════════════════════════════
+_ensure_dirs() {
+  mkdir -p \
+    "$N8N_SCRIPTS" \
+    "$OLLAMA_SCRIPTS" \
+    "$OPENCLAW_SCRIPTS" \
+    "$OPENCODE_SCRIPTS" \
+    "$REMOTE_SCRIPTS" \
+    "$EXPO_SCRIPTS"
+}
+
+# ════════════════════════════════════════════
+#  MIGRACIÓN AUTOMÁTICA
+#  Mueve scripts de ~/ a sus subcarpetas si
+#  todavía están en la raíz (usuarios que
+#  tenían el stack instalado antes del refactor).
+#  Solo se ejecuta si el script existe en ~/
+#  pero NO existe ya en la subcarpeta destino.
+# ════════════════════════════════════════════
+_migrate_legacy_scripts() {
+  local migrated=0
+
+  _mv_legacy() {
+    local f="$1" dest="$2"
+    if [ -f "$HOME/$f" ] && [ ! -f "$dest/$f" ]; then
+      mv "$HOME/$f" "$dest/$f" 2>/dev/null
+      chmod +x "$dest/$f" 2>/dev/null
+      migrated=$((migrated + 1))
+    fi
+  }
+
+  # n8n
+  _mv_legacy "start_servidor.sh"  "$N8N_SCRIPTS"
+  _mv_legacy "stop_servidor.sh"   "$N8N_SCRIPTS"
+  _mv_legacy "ver_url.sh"         "$N8N_SCRIPTS"
+  _mv_legacy "n8n_status.sh"      "$N8N_SCRIPTS"
+  _mv_legacy "n8n_log.sh"         "$N8N_SCRIPTS"
+  _mv_legacy "n8n_update.sh"      "$N8N_SCRIPTS"
+  _mv_legacy "n8n_backup.sh"      "$N8N_SCRIPTS"
+  _mv_legacy "cf_token.sh"        "$N8N_SCRIPTS"
+
+  # ollama
+  _mv_legacy "ollama_start.sh"    "$OLLAMA_SCRIPTS"
+  _mv_legacy "ollama_stop.sh"     "$OLLAMA_SCRIPTS"
+
+  # remote
+  _mv_legacy "ssh_start.sh"       "$REMOTE_SCRIPTS"
+  _mv_legacy "ssh_stop.sh"        "$REMOTE_SCRIPTS"
+  _mv_legacy "dashboard_start.sh" "$REMOTE_SCRIPTS"
+  _mv_legacy "dashboard_stop.sh"  "$REMOTE_SCRIPTS"
+  _mv_legacy "dashboard_server.py" "$REMOTE_SCRIPTS"
+
+  # openclaw
+  _mv_legacy "openclaw_start.sh"  "$OPENCLAW_SCRIPTS"
+  _mv_legacy "openclaw_stop.sh"   "$OPENCLAW_SCRIPTS"
+  _mv_legacy "openclaw_token.sh"  "$OPENCLAW_SCRIPTS"
+
+  [ "$migrated" -gt 0 ] && \
+    echo -e "  ${CYAN}[INFO]${NC} $migrated scripts migrados a ~/scripts/"
+}
+
+# ════════════════════════════════════════════
 #  HELPERS GLOBALES BASE
 #  Disponibles sin cargar ningún módulo.
 # ════════════════════════════════════════════
@@ -162,11 +239,11 @@ _ensure_restore_for_install() {
 #  CARGA BAJO DEMANDA
 #  Cada _require_* carga el módulo una sola
 #  vez. Las llamadas siguientes son no-op.
-#  Si el archivo no existe en ~/ lo descarga.
+#  Si el archivo no existe en ~/scripts/ lo descarga.
 # ════════════════════════════════════════════
 _require_nativo() {
   [ "$_NATIVO_LOADED" = "1" ] && return 0
-  local f="$HOME/menu_nativo.sh"
+  local f="$SCRIPTS_DIR/menu_nativo.sh"
   if [ ! -f "$f" ] || [ ! -s "$f" ]; then
     echo -e "\n  ${YELLOW}[AVISO]${NC} menu_nativo.sh no encontrado — descargando..."
     curl -fsSL "$REPO_RAW/menu_nativo.sh" -o "$f" 2>/dev/null || \
@@ -185,7 +262,7 @@ _require_nativo() {
 
 _require_proot() {
   [ "$_PROOT_LOADED" = "1" ] && return 0
-  local f="$HOME/menu_proot.sh"
+  local f="$SCRIPTS_DIR/menu_proot.sh"
   if [ ! -f "$f" ] || [ ! -s "$f" ]; then
     echo -e "\n  ${YELLOW}[AVISO]${NC} menu_proot.sh no encontrado — descargando..."
     curl -fsSL "$REPO_RAW/menu_proot.sh" -o "$f" 2>/dev/null || \
@@ -385,20 +462,25 @@ _invalidate_cache() {
 #  LOOP PRINCIPAL
 # ════════════════════════════════════════════
 while true; do
+
+  # ── Crear carpetas y migrar scripts legacy (primera iteración) ─
+  _ensure_dirs
+  _migrate_legacy_scripts
+
+  # ── Cargar módulos ANTES del clear ───────────────────────────
+  # Foreground obligatorio — los flags deben actualizarse en el padre.
+  # Al ser la primera iteracion muestra mensaje breve para evitar
+  # pantalla negra. Desde la segunda iteracion es no-op instantaneo.
+  if [ "$_NATIVO_LOADED" = "0" ] || [ "$_PROOT_LOADED" = "0" ]; then
+    echo -e "\n  ${CYAN}Cargando stack...${NC}"
+    [ "$_NATIVO_LOADED" = "0" ] && _require_nativo 2>/dev/null
+    [ "$_PROOT_LOADED"  = "0" ] && _require_proot  2>/dev/null
+  fi
+
   clear
 
-  # ── Asegurar módulos cargados para los checks ─────────────────
-  # Se cargan en background la primera vez para no bloquear el
-  # render. Si ya están cargados (_*_LOADED=1) es no-op inmediato.
-  # NOTA: no usar 'local' aquí — estamos en el loop, no en función.
+  # NOTA: no usar 'local' aqui — este bloque esta en el while, no en una funcion.
   _TMP="$HOME/.menu_check_$$"
-
-  # ── Cargar módulos en foreground la primera vez ───────────────
-  # IMPORTANTE: debe ser foreground (no &) para que _NATIVO_LOADED
-  # y _PROOT_LOADED se actualicen en el proceso padre.
-  # Desde la segunda iteración los flags son 1 → no-op instantáneo.
-  [ "$_NATIVO_LOADED" = "0" ] && _require_nativo 2>/dev/null
-  [ "$_PROOT_LOADED"  = "0" ] && _require_proot  2>/dev/null
 
   # ── Checks en paralelo ────────────────────────────────────────
   { check_n8n;    } > "${_TMP}_n8n" 2>/dev/null &
@@ -529,11 +611,11 @@ while true; do
   case "$OPT" in
     1)
       _require_proot || continue
-      submenu_servicios ;;
+      submenu_servicios "$N8N_STATE" "$CL_STATE" ;;
     2)
       _require_proot  || continue
       _require_nativo || continue
-      submenu_code_tools ;;
+      submenu_code_tools "$CC_STATE" "$OC_STATE" ;;
     3)
       _require_nativo || continue
       if [ "$OL_STATE" = "not_installed" ]; then
@@ -584,22 +666,45 @@ while true; do
       echo    "  ║   Actualizando scripts desde GitHub...  ║"
       echo -e "  ╚══════════════════════════════════════════╝${NC}"; echo ""
 
-      SCRIPTS=(
-        "menu.sh" "menu_nativo.sh" "menu_proot.sh"
+      # Scripts que van en ~/  (puntos de entrada)
+      ROOT_SCRIPTS=(
+        "menu.sh"
         "install_n8n.sh" "install_claude.sh" "install_ollama.sh"
         "install_expo.sh" "install_python.sh" "install_ssh.sh"
         "install_remote.sh" "install_opencode.sh" "install_openclaw.sh"
         "backup.sh" "restore.sh"
       )
+      # Scripts que van en ~/scripts/  (módulos de menú)
+      MENU_SCRIPTS=(
+        "menu_nativo.sh"
+        "menu_proot.sh"
+      )
+
       UPDATE_OK=0; UPDATE_FAIL=0
 
-      for SCRIPT in "${SCRIPTS[@]}"; do
+      # Descargar scripts de raíz a ~/
+      for SCRIPT in "${ROOT_SCRIPTS[@]}"; do
         echo -n "  Descargando $SCRIPT... "
         TMP_DL="$HOME/${SCRIPT}.tmp"
         curl -fsSL "$REPO_RAW/$SCRIPT" -o "$TMP_DL" 2>/dev/null || \
           wget -q "$REPO_RAW/$SCRIPT" -O "$TMP_DL" 2>/dev/null
         if [ -f "$TMP_DL" ] && [ -s "$TMP_DL" ]; then
           mv "$TMP_DL" "$HOME/$SCRIPT"; chmod +x "$HOME/$SCRIPT"
+          echo -e "${GREEN}✓${NC}"; UPDATE_OK=$((UPDATE_OK + 1))
+        else
+          rm -f "$TMP_DL"; echo -e "${RED}✗${NC}"; UPDATE_FAIL=$((UPDATE_FAIL + 1))
+        fi
+      done
+
+      # Descargar módulos de menú a ~/scripts/
+      mkdir -p "$SCRIPTS_DIR"
+      for SCRIPT in "${MENU_SCRIPTS[@]}"; do
+        echo -n "  Descargando $SCRIPT... "
+        TMP_DL="$SCRIPTS_DIR/${SCRIPT}.tmp"
+        curl -fsSL "$REPO_RAW/$SCRIPT" -o "$TMP_DL" 2>/dev/null || \
+          wget -q "$REPO_RAW/$SCRIPT" -O "$TMP_DL" 2>/dev/null
+        if [ -f "$TMP_DL" ] && [ -s "$TMP_DL" ]; then
+          mv "$TMP_DL" "$SCRIPTS_DIR/$SCRIPT"; chmod +x "$SCRIPTS_DIR/$SCRIPT"
           echo -e "${GREEN}✓${NC}"; UPDATE_OK=$((UPDATE_OK + 1))
         else
           rm -f "$TMP_DL"; echo -e "${RED}✗${NC}"; UPDATE_FAIL=$((UPDATE_FAIL + 1))
@@ -705,7 +810,7 @@ ALIAS_BOOST
             _perf_info "Configurando keepalive para evitar que Android mate Termux..."
             echo ""
             BOOT_DIR="$HOME/.termux/boot"; mkdir -p "$BOOT_DIR"
-            cat > "$BOOT_DIR/start_services.sh" << 'BOOT_EOF'
+            cat > "$BOOT_DIR/start_services.sh" << BOOT_EOF
 #!/data/data/com.termux/files/usr/bin/bash
 # Auto-generado por termux-ai-stack [p]
 termux-wake-lock 2>/dev/null &
@@ -714,10 +819,10 @@ termux-notification \
   --title "Termux AI Stack" \
   --content "Servicios iniciados — keepalive activo" \
   --id 1001 --ongoing 2>/dev/null &
-[ -f "$HOME/start_servidor.sh" ] && \
-  tmux new-session -d -s "n8n-server" "bash $HOME/start_servidor.sh" 2>/dev/null
-[ -f "$HOME/ollama_start.sh" ] && \
-  tmux new-session -d -s "ollama-server" "bash $HOME/ollama_start.sh" 2>/dev/null
+[ -f "$N8N_SCRIPTS/start_servidor.sh" ] && \
+  tmux new-session -d -s "n8n-server" "bash $N8N_SCRIPTS/start_servidor.sh" 2>/dev/null
+[ -f "$OLLAMA_SCRIPTS/ollama_start.sh" ] && \
+  tmux new-session -d -s "ollama-server" "bash $OLLAMA_SCRIPTS/ollama_start.sh" 2>/dev/null
 BOOT_EOF
             chmod +x "$BOOT_DIR/start_services.sh"
             _perf_ok "Boot script: $BOOT_DIR/start_services.sh"
@@ -756,8 +861,8 @@ BOOT_EOF
               chmod +x "$script"
               _perf_ok "$label: wake-lock inyectado"
             }
-            _patch_wakelock "$HOME/ollama_start.sh"   "Ollama"
-            _patch_wakelock "$HOME/start_servidor.sh" "n8n"
+            _patch_wakelock "$OLLAMA_SCRIPTS/ollama_start.sh" "Ollama"
+            _patch_wakelock "$N8N_SCRIPTS/start_servidor.sh"  "n8n"
             echo ""
             [ "$POPT" = "5" ] && { read -r _ < /dev/tty; continue; }
             ;;

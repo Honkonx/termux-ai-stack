@@ -122,7 +122,7 @@ if $HAS_PROOT; then
 fi
 
 # Remote: existe si hay sshd_config o dashboard_server.py
-{ [ -f "$SSHD_CONFIG" ] || [ -f "$HOME/dashboard_server.py" ]; } && HAS_REMOTE=true
+{ [ -f "$SSHD_CONFIG" ] || [ -f "$HOME/scripts/remote/dashboard_server.py" ]; } && HAS_REMOTE=true
 
 # ── Cleanup ───────────────────────────────────────────────────
 cleanup() {
@@ -207,22 +207,29 @@ P0_TMP="$TMP_DIR/base_pack"
 mkdir -p "$P0_TMP/home" "$P0_TMP/termux_config"
 
 # Scripts principales
+# Scripts que van en ~/  (puntos de entrada)
 for f in \
-  menu.sh menu_nativo.sh menu_proot.sh \
+  menu.sh \
   backup.sh restore.sh instalar.sh \
   install_n8n.sh install_claude.sh install_ollama.sh \
-  install_expo.sh install_python.sh install_ssh.sh \
+  install_expo.sh install_python.sh install_python.sh install_ssh.sh \
   install_remote.sh \
-  start_servidor.sh stop_servidor.sh ver_url.sh \
-  n8n_status.sh n8n_log.sh n8n_update.sh \
-  cf_token.sh debian.sh \
-  ollama_start.sh ollama_stop.sh \
-  eas_build.sh eas_status.sh eas_submit.sh \
-  git_push.sh expo_info.sh
+  debian.sh
   # NOTA: ssh_start.sh, ssh_stop.sh, dashboard_*.sh y dashboard_server.py
   # NO van en part0 — van en part7-remote para no falsear el estado del menú
 do
   [ -f "$HOME/$f" ] && cp "$HOME/$f" "$P0_TMP/home/$f"
+done
+
+# Scripts en ~/scripts/ (módulos de menú + subcarpetas generadas)
+for subdir in "" n8n ollama openclaw opencode expo; do
+  local_src="$HOME/scripts${subdir:+/$subdir}"
+  dest_sub="home/scripts${subdir:+/$subdir}"
+  [ -d "$local_src" ] || continue
+  mkdir -p "$P0_TMP/$dest_sub"
+  for f in "$local_src/"*.sh "$local_src/"*.py; do
+    [ -f "$f" ] && cp "$f" "$P0_TMP/$dest_sub/"
+  done
 done
 
 # Registry — solo claves base, NO claves de módulos específicos
@@ -256,7 +263,15 @@ cat > "$P0_TMP/RESTORE.txt" << EOF
 # RESTAURACIÓN MANUAL:
 #   tar -xJf part0-termux-base-*.tar.xz -C ~/restore_tmp/
 #   cp restore_tmp/home/*.sh ~/
-#   cp restore_tmp/home/*.py ~/
+#   cp restore_tmp/home/*.py ~/  2>/dev/null || true
+#   # Módulos de menú y scripts generados:
+#   for subdir in scripts scripts/n8n scripts/ollama scripts/openclaw scripts/opencode scripts/expo; do
+#     [ -d restore_tmp/home/\$subdir ] || continue
+#     mkdir -p ~/\$subdir
+#     cp restore_tmp/home/\$subdir/*.sh ~/\$subdir/ 2>/dev/null || true
+#     cp restore_tmp/home/\$subdir/*.py ~/\$subdir/ 2>/dev/null || true
+#     chmod +x ~/\$subdir/*.sh 2>/dev/null || true
+#   done
 #   cp -r restore_tmp/termux_config/.termux ~/.termux
 #   cp restore_tmp/home/.bashrc ~/.bashrc
 #   cp restore_tmp/home/.android_server_registry ~/
@@ -267,7 +282,7 @@ cat > "$P0_TMP/RESTORE.txt" << EOF
 EOF
 
 # Contar archivos
-SCRIPTS_COUNT=$(ls "$P0_TMP/home/"*.sh 2>/dev/null | wc -l)
+SCRIPTS_COUNT=$(find "$P0_TMP/home" -name "*.sh" 2>/dev/null | wc -l)
 info "Scripts incluidos: $SCRIPTS_COUNT"
 
 # Empaquetar todo junto
@@ -383,7 +398,7 @@ else
   fi
   [ -d "${TERMUX_PREFIX}/lib/ollama" ] && cp -r "${TERMUX_PREFIX}/lib/ollama" "$P4_TMP/lib_ollama"
   for f in ollama_start.sh ollama_stop.sh; do
-    [ -f "$HOME/$f" ] && cp "$HOME/$f" "$P4_TMP/home/"
+    [ -f "$HOME/scripts/ollama/$f" ] && cp "$HOME/scripts/ollama/$f" "$P4_TMP/home/"
   done
 
   cat > "$P4_TMP/RESTORE.txt" << EOF
@@ -558,7 +573,7 @@ fi
 
 # ── SSH: scripts de control ───────────────────────────────────
 for f in ssh_start.sh ssh_stop.sh; do
-  [ -f "$HOME/$f" ] && cp "$HOME/$f" "$P7_TMP/home/$f" && REMOTE_HAS_CONTENT=true
+  [ -f "$HOME/scripts/remote/$f" ] && cp "$HOME/scripts/remote/$f" "$P7_TMP/home/$f" && REMOTE_HAS_CONTENT=true
 done
 
 # ── Cloudflared SSH token (si existe) ────────────────────────
@@ -567,8 +582,8 @@ done
 
 # ── Dashboard: servidor y scripts ────────────────────────────
 for f in dashboard_server.py dashboard_start.sh dashboard_stop.sh; do
-  if [ -f "$HOME/$f" ]; then
-    cp "$HOME/$f" "$P7_TMP/dashboard/$f"
+  if [ -f "$HOME/scripts/remote/$f" ]; then
+    cp "$HOME/scripts/remote/$f" "$P7_TMP/dashboard/$f"
     REMOTE_HAS_CONTENT=true
     log "$f incluido"
   fi
@@ -602,10 +617,12 @@ cat > "$P7_TMP/RESTORE.txt" << EOF
 #     cp ssh_config/sshd_config $TERMUX_PREFIX/etc/ssh/sshd_config
 #     mkdir -p ~/.ssh && cp ssh_keys/authorized_keys ~/.ssh/
 #     chmod 600 ~/.ssh/authorized_keys
-#     cp home/*.sh ~/  &&  chmod +x ~/ssh_start.sh ~/ssh_stop.sh
+#     mkdir -p ~/scripts/remote
+#     cp home/*.sh ~/scripts/remote/  &&  chmod +x ~/scripts/remote/ssh_start.sh ~/scripts/remote/ssh_stop.sh
 #   Para Dashboard:
-#     cp dashboard/* ~/
-#     chmod +x ~/dashboard_start.sh ~/dashboard_stop.sh
+#     mkdir -p ~/scripts/remote
+#     cp dashboard/* ~/scripts/remote/
+#     chmod +x ~/scripts/remote/dashboard_start.sh ~/scripts/remote/dashboard_stop.sh
 EOF
 
 make_part "part7-remote" "$P7_TMP" "ssh_config" "ssh_keys" "dashboard" "home" "RESTORE.txt"

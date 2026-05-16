@@ -88,7 +88,7 @@ check_remote() {
 
   local has_remote=false
   [ "$ssh_installed" = "true" ] || [ "$dashboard_installed" = "true" ] && has_remote=true
-  [ -f "$HOME/dashboard_server.py" ] && has_remote=true
+  [ -f "$REMOTE_SCRIPTS/dashboard_server.py" ] && has_remote=true
 
   if [ "$has_remote" = "false" ]; then
     echo "not_installed||"; return
@@ -133,7 +133,7 @@ _ollama_ensure_server() {
   echo -n "  ¿Iniciarlo ahora? (s/n): "
   read -r _ANS < /dev/tty
   [ "$_ANS" = "s" ] || [ "$_ANS" = "S" ] || return 1
-  [ -f "$HOME/ollama_start.sh" ] && bash "$HOME/ollama_start.sh" &>/dev/null \
+  [ -f "$OLLAMA_SCRIPTS/ollama_start.sh" ] && bash "$OLLAMA_SCRIPTS/ollama_start.sh" &>/dev/null \
     || { ollama serve &>/dev/null & sleep 4; }
   sleep 2
   curl -sf "$OLLAMA_URL_LOCAL" &>/dev/null \
@@ -727,7 +727,7 @@ submenu_ollama() {
             sleep 1; echo -e "  ${GREEN}[OK]${NC} Servidor detenido"; state="stopped"
           }
         else
-          [ -f "$HOME/ollama_start.sh" ] && bash "$HOME/ollama_start.sh" \
+          [ -f "$OLLAMA_SCRIPTS/ollama_start.sh" ] && bash "$OLLAMA_SCRIPTS/ollama_start.sh" \
             || { ollama serve &>/dev/null & sleep 4; }
           curl -sf "$OLLAMA_URL_LOCAL" &>/dev/null \
             && { echo -e "  ${GREEN}[OK]${NC} Servidor iniciado"; state="running"; } \
@@ -996,13 +996,32 @@ submenu_claude() {
 
 # ════════════════════════════════════════════
 #  SUBMENÚ CODE TOOLS (Claude + OpenCode)
+#  $1 = CC_STATE precalculado desde el loop principal (opcional)
+#  $2 = OC_STATE precalculado desde el loop principal (opcional)
 # ════════════════════════════════════════════
 submenu_code_tools() {
+  local _CC_INIT="${1:-}"
+  local _OC_INIT="${2:-}"
+  local _FIRST_RENDER=1
+
   while true; do
     clear; echo ""
     local CC_S CC_V CC_E OC_S OC_V OC_E
-    IFS='|' read -r CC_S CC_V CC_E <<< "$(check_claude)"
-    IFS='|' read -r OC_S OC_V OC_E <<< "$(check_opencode_cached)"
+
+    if [ "$_FIRST_RENDER" = "1" ] && [ -n "$_CC_INIT" ] && [ -n "$_OC_INIT" ]; then
+      # Primer render: usar estados ya calculados — sin check adicional
+      CC_S="$_CC_INIT"
+      CC_V=$(get_reg claude_code version); [ -z "$CC_V" ] && CC_V="?"
+      CC_E=""
+      OC_S="$_OC_INIT"
+      OC_V=$(echo "$_OC_CACHE" | cut -d'|' -f2); [ -z "$OC_V" ] && OC_V="?"
+      OC_E=""
+      _FIRST_RENDER=0
+    else
+      # Renders siguientes: chequeo real
+      IFS='|' read -r CC_S CC_V CC_E <<< "$(check_claude)"
+      IFS='|' read -r OC_S OC_V OC_E <<< "$(check_opencode_cached)"
+    fi
 
     local CC_PILL OC_PILL
     case "$CC_S" in
@@ -1752,7 +1771,7 @@ submenu_remote() {
         if pgrep -x sshd &>/dev/null; then
           echo -e "  ${YELLOW}[AVISO]${NC} SSH ya está corriendo."
         else
-          bash "$HOME/ssh_start.sh" 2>/dev/null || sshd 2>/dev/null; sleep 1
+          bash "$REMOTE_SCRIPTS/ssh_start.sh" 2>/dev/null || sshd 2>/dev/null; sleep 1
         fi
         if pgrep -x sshd &>/dev/null; then
           IP=$(_get_ip)
@@ -1764,7 +1783,7 @@ submenu_remote() {
         echo ""; read -r _ < /dev/tty ;;
       2)
         clear; echo ""
-        bash "$HOME/ssh_stop.sh" 2>/dev/null || pkill sshd 2>/dev/null
+        bash "$REMOTE_SCRIPTS/ssh_stop.sh" 2>/dev/null || pkill sshd 2>/dev/null
         sleep 1; pgrep -x sshd &>/dev/null || echo -e "  ${GREEN}[OK]${NC} SSH detenido"
         echo ""; read -r _ < /dev/tty ;;
       3)
@@ -1817,11 +1836,11 @@ submenu_remote() {
           echo -e "  URL: ${GREEN}http://${IP}:8080${NC}"
         else
           # Auto-crear dashboard_start.sh si no existe
-          if [ ! -f "$HOME/dashboard_start.sh" ] || \
-             ! grep -q "dashboard_server.py" "$HOME/dashboard_start.sh" 2>/dev/null; then
-            cat > "$HOME/dashboard_start.sh" << 'DBSTART'
+          if [ ! -f "$REMOTE_SCRIPTS/dashboard_start.sh" ] || \
+             ! grep -q "dashboard_server.py" "$REMOTE_SCRIPTS/dashboard_start.sh" 2>/dev/null; then
+            cat > "$REMOTE_SCRIPTS/dashboard_start.sh" << 'DBSTART'
 #!/data/data/com.termux/files/usr/bin/bash
-DB_SCRIPT="$HOME/dashboard_server.py"
+DB_SCRIPT="$HOME/scripts/remote/dashboard_server.py"
 _get_ip() {
   local ip
   ip=$(ifconfig 2>/dev/null | grep -A1 "netmask 255\.255\." | grep "inet " | grep -v "127\." | awk '{print $2}' | head -1)
@@ -1836,14 +1855,14 @@ pgrep -f "dashboard_server.py" &>/dev/null \
   && echo "[OK] Dashboard → http://$(_get_ip):8080" \
   || { echo "[ERROR] No se pudo iniciar. Log: cat ~/.dashboard.log"; exit 1; }
 DBSTART
-            chmod +x "$HOME/dashboard_start.sh"
+            chmod +x "$REMOTE_SCRIPTS/dashboard_start.sh"
           fi
-          if [ ! -f "$HOME/dashboard_server.py" ]; then
+          if [ ! -f "$REMOTE_SCRIPTS/dashboard_server.py" ]; then
             echo -e "  ${RED}[ERROR]${NC} dashboard_server.py no encontrado"
             echo "  Instala Remote: menú → [6] → Instalar"
             echo ""; read -r _ < /dev/tty; continue
           fi
-          bash "$HOME/dashboard_start.sh" < /dev/null
+          bash "$REMOTE_SCRIPTS/dashboard_start.sh" < /dev/null
           sleep 2
           if pgrep -f "dashboard_server.py" &>/dev/null; then
             IP=$(_get_ip)
@@ -1887,7 +1906,7 @@ DBSTART
         fi
         if ! pgrep -x sshd &>/dev/null; then
           echo -e "  ${YELLOW}[AVISO]${NC} SSH no está corriendo. Iniciando..."
-          bash "$HOME/ssh_start.sh" 2>/dev/null || sshd 2>/dev/null; sleep 1
+          bash "$REMOTE_SCRIPTS/ssh_start.sh" 2>/dev/null || sshd 2>/dev/null; sleep 1
           pgrep -x sshd &>/dev/null || {
             echo -e "  ${RED}[ERROR]${NC} No se pudo iniciar SSH."
             read -r _ < /dev/tty; continue
@@ -2061,7 +2080,7 @@ uninstall_module() {
     ollama)
       tmux kill-session -t "ollama-server" 2>/dev/null || true
       pkg uninstall ollama -y 2>/dev/null || true
-      rm -f "$HOME/ollama_start.sh" "$HOME/ollama_stop.sh" 2>/dev/null
+      rm -f "$OLLAMA_SCRIPTS/ollama_start.sh" "$OLLAMA_SCRIPTS/ollama_stop.sh" 2>/dev/null
       grep -v "^ollama\." "$REGISTRY" > "$REGISTRY.tmp" 2>/dev/null && mv "$REGISTRY.tmp" "$REGISTRY"
       echo -e "  ${GREEN}[OK]${NC} Ollama desinstalado"
       echo -e "  ${YELLOW}⚠${NC}  ~/.ollama no eliminado — bórralo para liberar espacio" ;;
@@ -2075,9 +2094,9 @@ uninstall_module() {
           echo "[OK] Archivos n8n eliminados"
         ' 2>/dev/null
       fi
-      rm -f "$HOME/start_servidor.sh" "$HOME/stop_servidor.sh" "$HOME/ver_url.sh" 2>/dev/null
-      rm -f "$HOME/n8n_status.sh" "$HOME/n8n_log.sh" "$HOME/n8n_update.sh" "$HOME/n8n_backup.sh" 2>/dev/null
-      rm -f "$HOME/cf_token.sh" "$HOME/.cf_token" "$HOME/.last_cf_url" 2>/dev/null
+      rm -f "$N8N_SCRIPTS/start_servidor.sh" "$N8N_SCRIPTS/stop_servidor.sh" "$N8N_SCRIPTS/ver_url.sh" 2>/dev/null
+      rm -f "$N8N_SCRIPTS/n8n_status.sh" "$N8N_SCRIPTS/n8n_log.sh" "$N8N_SCRIPTS/n8n_update.sh" "$N8N_SCRIPTS/n8n_backup.sh" 2>/dev/null
+      rm -f "$N8N_SCRIPTS/cf_token.sh" "$HOME/.cf_token" "$HOME/.last_cf_url" 2>/dev/null
       grep -v "^n8n\." "$REGISTRY" > "$REGISTRY.tmp" 2>/dev/null && mv "$REGISTRY.tmp" "$REGISTRY"
       echo -e "  ${GREEN}[OK]${NC} n8n desinstalado (proot Debian conservado)" ;;
     expo)
@@ -2095,8 +2114,8 @@ uninstall_module() {
       tmux kill-session -t "cf-ssh-tunnel" 2>/dev/null || true
       pkill -f "dashboard_server.py" 2>/dev/null || true
       pkg uninstall openssh -y 2>/dev/null || true
-      rm -f "$HOME/ssh_start.sh" "$HOME/ssh_stop.sh" 2>/dev/null
-      rm -f "$HOME/dashboard_start.sh" "$HOME/dashboard_stop.sh" "$HOME/dashboard_server.py" 2>/dev/null
+      rm -f "$REMOTE_SCRIPTS/ssh_start.sh" "$REMOTE_SCRIPTS/ssh_stop.sh" 2>/dev/null
+      rm -f "$REMOTE_SCRIPTS/dashboard_start.sh" "$REMOTE_SCRIPTS/dashboard_stop.sh" "$REMOTE_SCRIPTS/dashboard_server.py" 2>/dev/null
       rm -f "$HOME/.cf_ssh_token" "$HOME/.install_ssh_checkpoint" 2>/dev/null
       grep -v "^ssh\.\|^dashboard\." "$REGISTRY" > "$REGISTRY.tmp" 2>/dev/null && mv "$REGISTRY.tmp" "$REGISTRY"
       echo -e "  ${GREEN}[OK]${NC} Remote desinstalado"
@@ -2127,7 +2146,7 @@ uninstall_module() {
           echo "[OK] Archivos OpenClaw eliminados"
         ' 2>/dev/null
       fi
-      rm -f "$HOME/openclaw_start.sh" "$HOME/openclaw_stop.sh" "$HOME/openclaw_token.sh" 2>/dev/null
+      rm -f "$OPENCLAW_SCRIPTS/openclaw_start.sh" "$OPENCLAW_SCRIPTS/openclaw_stop.sh" "$OPENCLAW_SCRIPTS/openclaw_token.sh" 2>/dev/null
       rm -f "$HOME/.openclaw_gateway.log" 2>/dev/null
       grep -v "^openclaw\." "$REGISTRY" > "$REGISTRY.tmp" 2>/dev/null && mv "$REGISTRY.tmp" "$REGISTRY"
       echo -e "  ${GREEN}[OK]${NC} OpenClaw desinstalado" ;;
