@@ -208,7 +208,8 @@ mkdir -p "$P0_TMP/home" "$P0_TMP/termux_config"
 
 # Scripts principales
 for f in \
-  menu.sh backup.sh restore.sh instalar.sh \
+  menu.sh menu_nativo.sh menu_proot.sh \
+  backup.sh restore.sh instalar.sh \
   install_n8n.sh install_claude.sh install_ollama.sh \
   install_expo.sh install_python.sh install_ssh.sh \
   install_remote.sh \

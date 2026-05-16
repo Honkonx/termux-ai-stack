@@ -81,7 +81,7 @@ cat << 'HEADER'
   ║         ╚═╝   ╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝╚═╝   ║
   ║                                                  ║
   ║        termux-ai-stack · Setup Inicial           ║
-  ║        v2.4.0 · Android ARM64 · sin root         ║
+  ║        v3.0.0 · Android ARM64 · sin root         ║
   ╚══════════════════════════════════════════════════╝
 HEADER
 echo -e "${NC}"
@@ -343,7 +343,8 @@ else
       SCRIPTS_FAIL=0
 
       for script in \
-        menu.sh backup.sh restore.sh \
+        menu.sh menu_nativo.sh menu_proot.sh \
+        backup.sh restore.sh \
         install_n8n.sh install_claude.sh install_ollama.sh \
         install_expo.sh install_python.sh install_ssh.sh \
         install_remote.sh install_opencode.sh install_openclaw.sh
@@ -424,7 +425,8 @@ else
           rm -f "$BASE_TMP"
           # Fallback automático a scripts individuales
           for script in \
-            menu.sh backup.sh restore.sh \
+            menu.sh menu_nativo.sh menu_proot.sh \
+            backup.sh restore.sh \
             install_n8n.sh install_claude.sh install_ollama.sh \
             install_expo.sh install_python.sh install_ssh.sh \
             install_remote.sh install_opencode.sh install_openclaw.sh
@@ -436,7 +438,8 @@ else
       else
         warn "No se encontró part0-termux-base en el release — usando Modo B..."
         for script in \
-          menu.sh backup.sh restore.sh \
+          menu.sh menu_nativo.sh menu_proot.sh \
+          backup.sh restore.sh \
           install_n8n.sh install_claude.sh install_ollama.sh \
           install_expo.sh install_python.sh install_ssh.sh \
           install_remote.sh install_opencode.sh install_openclaw.sh
@@ -453,7 +456,8 @@ fi
 echo ""
 info "Scripts disponibles en ~/:"
 for script in \
-  menu.sh backup.sh restore.sh \
+  menu.sh menu_nativo.sh menu_proot.sh \
+  backup.sh restore.sh \
   install_n8n.sh install_claude.sh install_ollama.sh \
   install_expo.sh install_python.sh install_ssh.sh \
   install_remote.sh install_opencode.sh install_openclaw.sh
@@ -630,13 +634,14 @@ titulo "SETUP COMPLETADO"
 echo -e "${GREEN}${BOLD}"
 cat << 'RESUMEN'
   ╔══════════════════════════════════════════════════╗
-  ║     termux-ai-stack v2.4.0 configurado ✓        ║
+  ║     termux-ai-stack v3.0.0 configurado ✓        ║
   ╚══════════════════════════════════════════════════╝
 RESUMEN
 echo -e "${NC}"
 
 echo "  SCRIPTS EN ~/:"
-for f in menu.sh install_n8n.sh install_claude.sh install_ollama.sh \
+for f in menu.sh menu_nativo.sh menu_proot.sh \
+          install_n8n.sh install_claude.sh install_ollama.sh \
           install_expo.sh install_python.sh install_ssh.sh install_remote.sh \
           install_opencode.sh install_openclaw.sh \
           backup.sh restore.sh; do

@@ -1,0 +1,133 @@
+{
+  "name": "Bot Chat ID + Ollama + SQLite Memory v2",
+  "nodes": [
+    {
+      "parameters": {
+        "updates": ["message"],
+        "additionalFields": {}
+      },
+      "id": "0d493318-86aa-44cd-87b2-8049ed398e4f",
+      "name": "Telegram Trigger",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1.1,
+      "position": [200, 300],
+      "webhookId": "f2688a48-59f1-43ac-8d36-0779d44c464b",
+      "credentials": {
+        "telegramApi": {
+          "id": "AwnrZZfFs1hE1AYn",
+          "name": "Telegram account 3"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Leer historial SQLite + construir prompt con contexto\nconst { execSync } = require('child_process');\n\nconst chatId  = String($input.first().json.message.chat.id);\nconst mensaje = String($input.first().json.message.text || '');\n\n// Escapar para heredoc Python\nconst msgEsc = mensaje\n  .replace(/\\\\/g, '\\\\\\\\')\n  .replace(/'/g, \"'\\\\''\")\n  .replace(/\"/g, '\\\\\"');\n\nconst pyCode = `\nimport sqlite3, json, os\nfrom datetime import datetime\n\nDB      = '/data/data/com.termux/files/home/bot_history.db'\nchat_id = '${chatId}'\nmensaje = '${msgEsc}'\n\nconn = sqlite3.connect(DB)\nconn.execute('''CREATE TABLE IF NOT EXISTS historial (\n    id      INTEGER PRIMARY KEY AUTOINCREMENT,\n    chat_id TEXT NOT NULL,\n    rol     TEXT NOT NULL,\n    content TEXT NOT NULL,\n    modelo  TEXT,\n    fecha   TEXT\n)''')\nconn.execute('CREATE INDEX IF NOT EXISTS idx_chat ON historial(chat_id)')\nconn.commit()\n\nrows = conn.execute(\n    'SELECT rol, content FROM historial WHERE chat_id=? ORDER BY id DESC LIMIT 8',\n    (chat_id,)\n).fetchall()\nconn.close()\n\nhistorial = list(reversed(rows))\nlineas = []\nfor rol, content in historial:\n    prefijo = 'Usuario' if rol == 'user' else 'Bot'\n    lineas.append(f'{prefijo}: {content}')\n\ncontexto = '\\\\n'.join(lineas)\nprompt = f'{contexto}\\\\nUsuario: {mensaje}\\\\nBot:' if contexto else mensaje\n\nprint(json.dumps({\n    'chat_id': chat_id,\n    'mensaje': mensaje,\n    'prompt': prompt\n}, ensure_ascii=False))\n`;\n\nlet stdout = '';\nlet stderr = '';\ntry {\n  stdout = execSync(\n    '/data/data/com.termux/files/usr/bin/python3 -c \"' + pyCode.replace(/\"/g, '\\\\\"') + '\"',\n    { timeout: 15000, encoding: 'utf8' }\n  );\n} catch (e) {\n  stderr = e.message || String(e);\n}\n\nreturn [{ json: { stdout: stdout.trim(), stderr: stderr.trim(), chatId, mensaje } }];"
+      },
+      "id": "a1b2c3d4-0001-4001-8001-000000000001",
+      "name": "Leer historial SQLite",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [440, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = $input.first().json;\nconst stdout = raw.stdout || '{}';\nconst stderr = raw.stderr || '';\n\nif (!stdout && stderr) {\n  return [{ json: {\n    chat_id: raw.chatId || '',\n    mensaje: raw.mensaje || '',\n    prompt: raw.mensaje || '',\n    _error: 'execSync_failed: ' + stderr\n  }}];\n}\n\nlet data;\ntry {\n  data = JSON.parse(stdout);\n} catch(e) {\n  data = {\n    chat_id: raw.chatId || '',\n    mensaje: raw.mensaje || '',\n    prompt: raw.mensaje || '',\n    _error: 'parse_failed: ' + stdout\n  };\n}\n\n// Sanitizar prompt — quitar saltos de línea reales, escapar comillas dobles\ndata.prompt = (data.prompt || '')\n  .replace(/[\\r\\n]+/g, ' ')\n  .replace(/\"/g, \"'\");\n\nreturn [{ json: data }];"
+      },
+      "id": "a1b2c3d4-0002-4002-8002-000000000002",
+      "name": "Parsear contexto",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://127.0.0.1:11434/api/generate",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"qwen2.5:3b\",\n  \"system\": \"Eres un asistente de IA directo, técnico y conciso. Responde siempre en español. No repitas el historial, solo responde al último mensaje.\",\n  \"prompt\": \"{{ $json.prompt }}\",\n  \"stream\": false,\n  \"options\": {\n    \"num_predict\": 300,\n    \"temperature\": 0.7,\n    \"top_p\": 0.9\n  }\n}",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "cd2604cd-ef1a-4faf-890f-752cb32ebae3",
+      "name": "Ollama Local (Webhook HTTP)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [920, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extraer respuesta limpia de Ollama\nconst input = $input.first().json;\nlet respuesta = '';\n\nif (input.response) {\n  respuesta = String(input.response).trim();\n} else if (input.body && input.body.response) {\n  respuesta = String(input.body.response).trim();\n} else {\n  respuesta = JSON.stringify(input);\n}\n\nrespuesta = respuesta\n  .replace(/^Bot:\\s*/i, '')\n  .replace(/^Assistant:\\s*/i, '')\n  .trim();\n\nif (!respuesta) respuesta = 'No pude generar respuesta. Intenta de nuevo.';\n\nconst prev = $('Parsear contexto').first().json;\nreturn [{ json: {\n  chat_id: prev.chat_id,\n  mensaje: prev.mensaje,\n  respuesta\n}}];"
+      },
+      "id": "a1b2c3d4-0003-4003-8003-000000000003",
+      "name": "Extraer respuesta",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1160, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Guardar turno usuario + bot en SQLite\nconst { execSync } = require('child_process');\n\nconst input     = $input.first().json;\nconst chatId    = String(input.chat_id || '');\nconst mensaje   = String(input.mensaje   || '').replace(/\\\\/g, '\\\\\\\\').replace(/'/g, \"'\\\\''\")\n const respuesta = String(input.respuesta || '').replace(/\\\\/g, '\\\\\\\\').replace(/'/g, \"'\\\\''\")\n\nconst pyCode = `\nimport sqlite3\nfrom datetime import datetime\n\nDB   = '/data/data/com.termux/files/home/bot_history.db'\nchat = '${chatId}'\nuser = '${mensaje}'\nbot  = '${respuesta}'\nnow  = datetime.now().strftime('%Y-%m-%d %H:%M:%S')\n\nconn = sqlite3.connect(DB)\nconn.execute(\n    'INSERT INTO historial (chat_id, rol, content, modelo, fecha) VALUES (?,?,?,?,?)',\n    (chat, 'user', user, None, now)\n)\nconn.execute(\n    'INSERT INTO historial (chat_id, rol, content, modelo, fecha) VALUES (?,?,?,?,?)',\n    (chat, 'assistant', bot, 'qwen2.5:3b', now)\n)\nconn.commit()\nconn.close()\nprint('guardado')\n`;\n\nlet stdout = '';\nlet stderr = '';\ntry {\n  stdout = execSync(\n    '/data/data/com.termux/files/usr/bin/python3 -c \"' + pyCode.replace(/\"/g, '\\\\\"') + '\"',\n    { timeout: 10000, encoding: 'utf8' }\n  );\n} catch (e) {\n  stderr = e.message || String(e);\n}\n\nreturn [{ json: {\n  chat_id: input.chat_id,\n  respuesta: input.respuesta,\n  sqlite_ok: stdout.trim() === 'guardado',\n  sqlite_err: stderr.trim()\n}}];"
+      },
+      "id": "a1b2c3d4-0004-4004-8004-000000000004",
+      "name": "Guardar turno SQLite",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1400, 300]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('Extraer respuesta').first().json.chat_id }}",
+        "text": "={{ $('Extraer respuesta').first().json.respuesta }}",
+        "additionalFields": {}
+      },
+      "id": "cb538057-be70-4bdc-806c-7a82d09ca4d0",
+      "name": "Enviar a Telegram",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.1,
+      "position": [1640, 300],
+      "webhookId": "d89e99f9-fb16-4b78-90ed-8dbb6101689a",
+      "credentials": {
+        "telegramApi": {
+          "id": "AwnrZZfFs1hE1AYn",
+          "name": "Telegram account 3"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Telegram Trigger": {
+      "main": [[{ "node": "Leer historial SQLite", "type": "main", "index": 0 }]]
+    },
+    "Leer historial SQLite": {
+      "main": [[{ "node": "Parsear contexto", "type": "main", "index": 0 }]]
+    },
+    "Parsear contexto": {
+      "main": [[{ "node": "Ollama Local (Webhook HTTP)", "type": "main", "index": 0 }]]
+    },
+    "Ollama Local (Webhook HTTP)": {
+      "main": [[{ "node": "Extraer respuesta", "type": "main", "index": 0 }]]
+    },
+    "Extraer respuesta": {
+      "main": [[{ "node": "Guardar turno SQLite", "type": "main", "index": 0 }]]
+    },
+    "Guardar turno SQLite": {
+      "main": [[{ "node": "Enviar a Telegram", "type": "main", "index": 0 }]]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "eee7159c-6a49-4a1c-9001-96e314380b99",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "98269ae94bffbe16c1efc9942c5d527af41efae3a658bf7236c3b67a19c2f2c9"
+  },
+  "id": "IhSXFb2HdhkPrVMT",
+  "tags": []
+}
