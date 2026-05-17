@@ -10,6 +10,7 @@ Operaciones:
   verificar_acceso   {"user_id": "123"}
   verificar_cache    {"match_id": "abc", "fecha": "20260515"}
   crear_job          {"match_id": "abc", "fecha": "20260515", "chat_id": "123"}
+  leer_job_pendiente {}
   leer_stats         {}
   guardar_prediccion {"partido_id":"abc", "fuente":"claude", "pick":"Local",
                       "confianza":"ALTA", "score":78, "razonamiento":"...",
@@ -151,6 +152,27 @@ def crear_job(args):
     ok({'job_id': job_id, 'match_id': match_id, 'chat_id': chat_id})
 
 
+def leer_job_pendiente(args):
+    """Lee el job más antiguo con status=pendiente. Usado por WF-B Worker."""
+    conn = conectar()
+    init_db(conn)
+    row = conn.execute(
+        """SELECT job_id, match_id, fecha_partido, chat_id
+           FROM jobs WHERE status = 'pendiente'
+           ORDER BY creado_en ASC LIMIT 1"""
+    ).fetchone()
+    conn.close()
+    if row:
+        ok({
+            'job_id':        row['job_id'],
+            'match_id':      row['match_id'],
+            'fecha_partido': row['fecha_partido'],
+            'chat_id':       row['chat_id']
+        })
+    else:
+        ok({'job_id': None})
+
+
 def leer_stats(args):
     conn = conectar()
     init_db(conn)
@@ -252,6 +274,7 @@ OPERACIONES = {
     'verificar_acceso':   verificar_acceso,
     'verificar_cache':    verificar_cache,
     'crear_job':          crear_job,
+    'leer_job_pendiente': leer_job_pendiente,
     'leer_stats':         leer_stats,
     'guardar_prediccion': guardar_prediccion,
     'guardar_cache':      guardar_cache,

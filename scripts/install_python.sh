@@ -10,7 +10,10 @@
 #    ✅ Verifica si Python ya está instalado
 #    ✅ Instala Python vía pkg (incluye pip y sqlite3)
 #    ✅ Instala sqlite CLI separado (pkg install sqlite)
-#    ✅ PASO 6 — Pillow + deps visión (opcional, para vision_bot.py)
+#    ✅ PASO 5 — Pillow + deps visión (opcional, para vision_bot.py)
+#    ✅ PASO 5b — numpy + scipy via pkg ARM64 (opcional, bot deportivo)
+#    ✅ PASO 6 — Scripts trading (opcional)
+#    ✅ PASO 7b — Scripts bot deportivo (opcional)
 #    ✅ Escribe estado al registry ~/.android_server_registry
 #    ✅ Agrega aliases a .bashrc
 #    ✅ Info sobre dependencias del stack IA completo
@@ -19,7 +22,7 @@
 #    sqlite3 viene incluido en Python — no requiere instalación
 #    extra. pkg install sqlite agrega el CLI interactivo.
 #
-#  VERSIÓN: 1.1.0 | Abril 2026
+#  VERSIÓN: 1.2.0 | Mayo 2026
 # ============================================================
 
 TERMUX_PREFIX="/data/data/com.termux/files/usr"
@@ -270,6 +273,55 @@ else
 fi
 
 # ============================================================
+# PASO 5b — Paquetes científicos (numpy + scipy) — OPCIONAL
+#           Requerido por bot deportivo (pronostico.py)
+#           Sin ellos el menú [8] Bot Deportivo no funciona.
+# ============================================================
+titulo "PASO 5b — Paquetes científicos (bot deportivo)"
+
+if check_done "scipy_install"; then
+  log "numpy + scipy ya instalados [checkpoint]"
+else
+  echo "  numpy y scipy son necesarios para:"
+  echo "  ▸ pronostico.py → modelo Poisson bivariante (motor scipy)"
+  echo "  ▸ Submenú [8] Bot Deportivo en el menú principal"
+  echo ""
+  echo -e "  ${YELLOW}⚠  ADVERTENCIA: si omites esto, el menú [8] Bot Deportivo"
+  echo -e "     no estará disponible hasta que los instales.${NC}"
+  echo ""
+  echo "  Alternativa: sin scipy el motor usa math puro (builtin),"
+  echo "  pero el submenú detectará si están instalados o no."
+  echo ""
+  echo -n "  ¿Instalar numpy + scipy via pkg? (s/n): "
+  read -r INST_SCIPY < /dev/tty
+  if [ "$INST_SCIPY" = "s" ] || [ "$INST_SCIPY" = "S" ]; then
+    info "Instalando via pkg (binarios ARM64 precompilados — NO pip)..."
+    pkg install python-numpy python-scipy -y \
+      -o Dpkg::Options::="--force-confdef" \
+      -o Dpkg::Options::="--force-confold" || \
+      warn "Error en la instalación — el bot deportivo usará math puro como fallback"
+
+    if python3 -c "import numpy, scipy; print('OK')" 2>/dev/null; then
+      log "numpy + scipy instalados y verificados"
+      sed -i '/^python\.numpy=/d; /^python\.scipy=/d' "$REGISTRY" 2>/dev/null
+      echo "python.numpy=true"  >> "$REGISTRY"
+      echo "python.scipy=true"  >> "$REGISTRY"
+    else
+      warn "No se pudieron verificar — el submenú usará motor math puro"
+      echo "python.numpy=false" >> "$REGISTRY"
+      echo "python.scipy=false" >> "$REGISTRY"
+    fi
+    mark_done "scipy_install"
+  else
+    info "Omitido — instala después con: pkg install python-numpy python-scipy"
+    warn "El submenú [8] Bot Deportivo mostrará advertencia al acceder."
+    echo "python.numpy=false" >> "$REGISTRY"
+    echo "python.scipy=false" >> "$REGISTRY"
+    mark_done "scipy_install"
+  fi
+fi
+
+# ============================================================
 # PASO 6 — Descargar scripts de trading
 # ============================================================
 titulo "PASO 6 — Módulo Trading"
@@ -345,6 +397,81 @@ else
   else
     info "Trading omitido — descarga después desde el menú: [5] Python → [7] Trading → [6] Inicializar BD"
     mark_done "trading_scripts"
+  fi
+fi
+
+# ============================================================
+# PASO 7b — Descargar scripts del bot deportivo — OPCIONAL
+# ============================================================
+titulo "PASO 7b — Módulo Bot Deportivo"
+
+REPO_RAW_SPORTS="https://raw.githubusercontent.com/Honkonx/termux-ai-stack/main/python/sports"
+SPORTS_SCRIPTS_DIR="$HOME/sports/scripts"
+
+if check_done "sports_scripts"; then
+  log "Scripts bot deportivo ya descargados [checkpoint]"
+else
+  echo "  Descarga los scripts del módulo bot deportivo:"
+  echo "  ▸ db_query.py    → motor SQL (jobs, predicciones, caché, usuarios)"
+  echo "  ▸ pronostico.py  → análisis Poisson bivariante + value bet"
+  echo ""
+  echo "  Estos scripts son el backend Python del bot deportivo."
+  echo "  n8n (WF-A y WF-B) los llama via execSync."
+  echo ""
+  echo -n "  ¿Descargar scripts del bot deportivo? (s/n): "
+  read -r INST_SPORTS < /dev/tty
+
+  if [ "$INST_SPORTS" = "s" ] || [ "$INST_SPORTS" = "S" ]; then
+    mkdir -p "$HOME/sports/db" "$HOME/sports/scripts" \
+             "$HOME/sports/logs" "$HOME/sports/models"
+
+    SCRIPTS_OK=0
+    SCRIPTS_FAIL=0
+
+    for script in db_query.py pronostico.py; do
+      echo -n "  Descargando $script... "
+      TMP="$SPORTS_SCRIPTS_DIR/${script}.tmp"
+      curl -fsSL "$REPO_RAW_SPORTS/$script" -o "$TMP" 2>/dev/null || \
+        wget -q "$REPO_RAW_SPORTS/$script" -O "$TMP" 2>/dev/null
+      if [ -f "$TMP" ] && [ -s "$TMP" ]; then
+        mv "$TMP" "$SPORTS_SCRIPTS_DIR/$script"
+        chmod +x "$SPORTS_SCRIPTS_DIR/$script"
+        echo -e "${GREEN}✓${NC}"
+        SCRIPTS_OK=$((SCRIPTS_OK + 1))
+      else
+        rm -f "$TMP"
+        echo -e "${RED}✗ (descarga manual: github.com/Honkonx/termux-ai-stack)${NC}"
+        SCRIPTS_FAIL=$((SCRIPTS_FAIL + 1))
+      fi
+    done
+
+    echo ""
+    [ $SCRIPTS_OK -gt 0 ] && log "$SCRIPTS_OK scripts descargados en $SPORTS_SCRIPTS_DIR"
+    [ $SCRIPTS_FAIL -gt 0 ] && warn "$SCRIPTS_FAIL scripts no pudieron descargarse — descarga manual necesaria"
+
+    # Inicializar BD (crea tablas automáticamente al primer uso)
+    if [ -f "$SPORTS_SCRIPTS_DIR/db_query.py" ]; then
+      echo -n "  Inicializando BD bot deportivo... "
+      python3 "$SPORTS_SCRIPTS_DIR/db_query.py" verificar_acceso '{"user_id":"init"}' \
+        > /dev/null 2>&1 \
+        && echo -e "${GREEN}✓ BD creada${NC}" \
+        || echo -e "${YELLOW}omitido${NC}"
+    fi
+
+    # Verificar motor scipy disponible
+    if python3 -c "import numpy, scipy" 2>/dev/null; then
+      log "Motor scipy disponible — pronostico.py usará Poisson bivariante"
+    else
+      warn "scipy no instalado — pronostico.py usará motor math puro (instala PASO 5b)"
+    fi
+
+    sed -i '/^python\.sports=/d' "$REGISTRY" 2>/dev/null
+    echo "python.sports=true" >> "$REGISTRY"
+    mark_done "sports_scripts"
+  else
+    info "Bot deportivo omitido — descarga después desde el menú: [5] Python → [8] Bot Deportivo"
+    echo "python.sports=false" >> "$REGISTRY"
+    mark_done "sports_scripts"
   fi
 fi
 
