@@ -54,7 +54,8 @@ _PROOT_LOADED=0
 _CC_CACHE=""   ; _CC_REFRESH=0
 _OC_CACHE=""   ; _OC_CACHE_TS=0
 _CLAW_CACHE="" ; _CLAW_CACHE_TS=0
-_PROOT_CACHE_TTL=30
+_PROOT_CACHE_TTL=30          # TTL caché en memoria (segundos)
+_PROOT_CACHE_TTL_PERSIST=300 # TTL caché en archivo — sobrevive reinicios (5 min)
 
 # ════════════════════════════════════════════
 #  COLORES
@@ -500,6 +501,9 @@ _invalidate_cache() {
   _CC_REFRESH=1; _CC_CACHE=""
   _OC_CACHE="";  _OC_CACHE_TS=0
   _CLAW_CACHE=""; _CLAW_CACHE_TS=0
+  # Borrar caché persistente — fuerza que el próximo render
+  # llame a proot y escriba estado fresco al archivo
+  rm -f "$HOME/.proot_status_cache" 2>/dev/null || true
 }
 
 # ════════════════════════════════════════════
@@ -548,18 +552,27 @@ while true; do
      [ $(( _now - _OC_CACHE_TS )) -gt $_PROOT_CACHE_TTL ] || \
      [ -z "$_CLAW_CACHE" ] || \
      [ $(( _now - _CLAW_CACHE_TS )) -gt $_PROOT_CACHE_TTL ]; then
-    {
-      # _check_proot_combined solo existe si menu_proot.sh está cargado
-      if [ "$_PROOT_LOADED" = "1" ]; then
-        _check_proot_combined
-        echo "$_OC_CACHE"   > "${_TMP}_oc"
-        echo "$_CLAW_CACHE" > "${_TMP}_cl"
-      else
-        echo "not_installed||" > "${_TMP}_oc"
-        echo "not_installed||" > "${_TMP}_cl"
-      fi
-    } &
-    _PROOT_FROM_FILE=1
+    # Intentar caché de archivo antes de lanzar proot (evita 3-5s de login)
+    if [ "$_PROOT_LOADED" = "1" ] && _load_proot_cache 2>/dev/null; then
+      # Caché de archivo válido — variables ya actualizadas por _load_proot_cache
+      # Escribir a archivos tmp para que el loop los lea normalmente
+      echo "$_OC_CACHE"   > "${_TMP}_oc"
+      echo "$_CLAW_CACHE" > "${_TMP}_cl"
+      _PROOT_FROM_FILE=1
+    else
+      {
+        # _check_proot_combined solo existe si menu_proot.sh está cargado
+        if [ "$_PROOT_LOADED" = "1" ]; then
+          _check_proot_combined
+          echo "$_OC_CACHE"   > "${_TMP}_oc"
+          echo "$_CLAW_CACHE" > "${_TMP}_cl"
+        else
+          echo "not_installed||" > "${_TMP}_oc"
+          echo "not_installed||" > "${_TMP}_cl"
+        fi
+      } &
+      _PROOT_FROM_FILE=1
+    fi
   else
     _PROOT_FROM_FILE=0
   fi

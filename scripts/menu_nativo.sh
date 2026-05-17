@@ -2160,7 +2160,7 @@ submenu_desinstalar() {
     echo -e "${RED}${BOLD}  ╔══════════════════════════════════════════╗"
     echo    "  ║  ⚠  Desinstalar módulo                  ║"
     echo    "  ╠══════════════════════════════════════════╣"
-    echo -e "  ║  ${NC}[1] n8n + proot  [2] Claude Code${RED}${BOLD}        ║"
+    echo -e "  ║  ${NC}[1] n8n          [2] Claude Code${RED}${BOLD}        ║"
     echo -e "  ║  ${NC}[3] Ollama       [4] Expo / EAS${RED}${BOLD}         ║"
     echo -e "  ║  ${NC}[5] Python       [6] Remote${RED}${BOLD}             ║"
     echo -e "  ║  ${NC}[7] OpenCode     [8] OpenClaw${RED}${BOLD}           ║"
@@ -2169,7 +2169,7 @@ submenu_desinstalar() {
     echo ""; echo -n "  Módulo: "; read -r OPT < /dev/tty
 
     case "$OPT" in
-      1) uninstall_module "n8n"      "n8n + proot Debian"      ; break ;;
+      1) uninstall_module "n8n"      "n8n"                      ; break ;;
       2) uninstall_module "claude"   "Claude Code"              ; break ;;
       3) uninstall_module "ollama"   "Ollama"                   ; break ;;
       4) uninstall_module "expo"     "Expo / EAS CLI"           ; break ;;

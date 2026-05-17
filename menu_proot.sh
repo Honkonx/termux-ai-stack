@@ -15,7 +15,8 @@
 #    - proot-distro login debian tarda 3-5s: minimizar llamadas
 #    - _check_proot_combined: 1 sola invocación para OC + CL
 #    - pkill desde Termux NO mata procesos dentro del proot
-#    - Caché TTL: _PROOT_CACHE_TTL=10s (definida en menu.sh)
+#    - Caché memoria: _PROOT_CACHE_TTL=30s (definida en menu.sh)
+#    - Caché archivo: _PROOT_CACHE_TTL_PERSIST=300s (~/.proot_status_cache)
 #
 #  REPO: https://github.com/Honkonx/termux-ai-stack
 #  VERSIÓN: 5.0.0 | Mayo 2026
@@ -30,6 +31,75 @@ check_n8n() {
   tmux has-session -t "n8n-server" 2>/dev/null \
     && echo "running|${ver}|" || echo "stopped|${ver}|"
 }
+
+# ════════════════════════════════════════════
+#  CACHÉ PERSISTENTE PROOT
+#  Archivo: ~/.proot_status_cache
+#  Formato: timestamp|oc_cache|claw_cache
+#
+#  Estrategia de lectura (en orden):
+#    1. Caché en memoria → 0ms
+#    2. Caché en archivo → ~2ms (lectura disco)
+#    3. proot-distro login → 3-5s (solo si ambos expirados)
+#
+#  TTL del archivo controlado por _PROOT_CACHE_TTL_PERSIST
+#  (definido en menu.sh — por defecto 300s = 5 min)
+#  TTL de memoria controlado por _PROOT_CACHE_TTL (30s)
+#
+#  El archivo sobrevive entre reinicios de Termux.
+#  _invalidate_cache() en menu.sh borra el archivo.
+# ════════════════════════════════════════════
+PROOT_CACHE_FILE="$HOME/.proot_status_cache"
+
+_write_proot_cache() {
+  # Serializar estado actual a disco
+  # Formato: timestamp|oc_cache_encoded|claw_cache_encoded
+  # Los | dentro de los valores se escapan con \x7C para no romper el split
+  local ts=$SECONDS
+  local oc_enc  claw_enc
+  oc_enc=$(echo "$_OC_CACHE"   | sed 's/|/\x7C/g')
+  claw_enc=$(echo "$_CLAW_CACHE" | sed 's/|/\x7C/g')
+  echo "${ts}|${oc_enc}|${claw_enc}" > "$PROOT_CACHE_FILE" 2>/dev/null || true
+}
+
+_load_proot_cache() {
+  # Retorna 0 si el caché del archivo es válido y cargó variables
+  # Retorna 1 si no hay archivo, está corrupto o expiró
+  [ -f "$PROOT_CACHE_FILE" ] || return 1
+  local line ts oc_enc claw_enc
+  line=$(cat "$PROOT_CACHE_FILE" 2>/dev/null) || return 1
+  [ -z "$line" ] && return 1
+
+  # Parsear: primer campo = timestamp, segundo = oc, tercero = claw
+  ts="${line%%|*}"
+  local rest="${line#*|}"
+  oc_enc="${rest%%|*}"
+  claw_enc="${rest#*|}"
+
+  # Validar timestamp — debe ser número
+  [[ "$ts" =~ ^[0-9]+$ ]] || return 1
+
+  # Verificar TTL persistente
+  local age=$(( SECONDS - ts ))
+  # Si SECONDS < ts (reinicio de Termux resetea $SECONDS a 0), aceptar igual
+  # En ese caso age sería negativo — también inválido, relanzar proot
+  [ "$age" -gt "${_PROOT_CACHE_TTL_PERSIST:-300}" ] && return 1
+  [ "$age" -lt 0 ] && return 1
+
+  # Decodificar valores escapados
+  _OC_CACHE=$(printf '%b' "$oc_enc"   | sed 's/\x7C/|/g')
+  _CLAW_CACHE=$(printf '%b' "$claw_enc" | sed 's/\x7C/|/g')
+
+  # Validar que no estén vacíos
+  [ -z "$_OC_CACHE" ]   && return 1
+  [ -z "$_CLAW_CACHE" ] && return 1
+
+  # Actualizar timestamps en memoria con el valor del archivo
+  _OC_CACHE_TS=$ts
+  _CLAW_CACHE_TS=$ts
+  return 0
+}
+
 
 # ════════════════════════════════════════════
 #  CHECK COMBINADO PROOT
@@ -93,6 +163,9 @@ _check_proot_combined() {
   local now=$SECONDS
   _OC_CACHE_TS=$now
   _CLAW_CACHE_TS=$now
+
+  # Persistir a disco — sobrevive entre reinicios del módulo y sesiones
+  _write_proot_cache
 }
 
 # ── Checks directos (sin caché) — para submenús internos ─────
@@ -126,22 +199,46 @@ check_openclaw() {
   fi
 }
 
-# ── Wrappers con caché TTL ────────────────────────────────────
+# ── Wrappers con caché TTL + caché persistente en archivo ────
 check_opencode_cached() {
   local now=$SECONDS
-  if [ -z "$_OC_CACHE" ] || \
-     [ $(( now - _OC_CACHE_TS )) -gt $_PROOT_CACHE_TTL ]; then
-    _check_proot_combined
+
+  # 1. Caché en memoria vigente → devolver directo (0ms)
+  if [ -n "$_OC_CACHE" ] && \
+     [ $(( now - _OC_CACHE_TS )) -le $_PROOT_CACHE_TTL ]; then
+    echo "$_OC_CACHE"
+    return
   fi
+
+  # 2. Caché en archivo válido → cargar a memoria y devolver (~2ms)
+  if _load_proot_cache; then
+    echo "$_OC_CACHE"
+    return
+  fi
+
+  # 3. Sin caché válido → llamar proot (3-5s) y escribir caché
+  _check_proot_combined
   echo "$_OC_CACHE"
 }
 
 check_openclaw_cached() {
   local now=$SECONDS
-  if [ -z "$_CLAW_CACHE" ] || \
-     [ $(( now - _CLAW_CACHE_TS )) -gt $_PROOT_CACHE_TTL ]; then
-    _check_proot_combined
+
+  # 1. Caché en memoria vigente → devolver directo (0ms)
+  if [ -n "$_CLAW_CACHE" ] && \
+     [ $(( now - _CLAW_CACHE_TS )) -le $_PROOT_CACHE_TTL ]; then
+    echo "$_CLAW_CACHE"
+    return
   fi
+
+  # 2. Caché en archivo válido → cargar a memoria y devolver (~2ms)
+  if _load_proot_cache; then
+    echo "$_CLAW_CACHE"
+    return
+  fi
+
+  # 3. Sin caché válido → llamar proot (3-5s) y escribir caché
+  _check_proot_combined
   echo "$_CLAW_CACHE"
 }
 
