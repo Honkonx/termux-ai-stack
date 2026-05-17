@@ -54,7 +54,7 @@ _PROOT_LOADED=0
 _CC_CACHE=""   ; _CC_REFRESH=0
 _OC_CACHE=""   ; _OC_CACHE_TS=0
 _CLAW_CACHE="" ; _CLAW_CACHE_TS=0
-_PROOT_CACHE_TTL=10
+_PROOT_CACHE_TTL=30
 
 # ════════════════════════════════════════════
 #  COLORES

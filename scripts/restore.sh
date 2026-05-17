@@ -65,7 +65,22 @@ detect_distro() {
 }
 detect_distro
 
-cleanup() {
+# ════════════════════════════════════════════════════════════
+# DEPENDENCIAS BASE — proot-distro + paquetes necesarios
+# Se llama antes de cualquier parte que use proot.
+# Idempotente — si ya está instalado no hace nada.
+# ════════════════════════════════════════════════════════════
+_ensure_proot_pkg() {
+  command -v proot-distro &>/dev/null && return 0
+  warn "proot-distro no instalado — instalando dependencias base..."
+  echo -e "  ${CYAN}[INFO]${NC} Esto requiere conexión a internet..."
+  pkg install -y \
+    -o Dpkg::Options::="--force-confdef" \
+    -o Dpkg::Options::="--force-confold" \
+    proot-distro proot tmux curl wget tar xz-utils git busybox 2>/dev/null \
+    && log "proot-distro instalado correctamente" \
+    || error "No se pudo instalar proot-distro — verifica tu conexión y ejecuta: pkg install proot-distro"
+}
   [ -d "$TMP_DIR" ] && rm -rf "$TMP_DIR"
   echo -e "\n  ${YELLOW}[AVISO]${NC} Restore interrumpido — archivos temporales eliminados"
 }
@@ -667,6 +682,7 @@ restore_part4() {
 # ════════════════════════════════════════════════════════════
 restore_part5() {
   titulo "PARTE 5 — n8n + cloudflared"
+  _ensure_proot_pkg
 
   if [ -z "$DISTRO_NAME" ]; then
     echo -e "  ${YELLOW}${BOLD}⚠  Proot Debian no encontrado${NC}"
@@ -737,6 +753,7 @@ PROOT_INNER
 restore_part6() {
   local PROOT_VARIANT="${1:-proot-n8n}"  # default histórico: n8n
   titulo "PARTE 6 — Proot Debian (${PROOT_VARIANT})"
+  _ensure_proot_pkg
 
   if [ -n "$DISTRO_NAME" ]; then
     echo -e "  ${YELLOW}${BOLD}⚠  Se sobreescribirá el rootfs: $DISTRO_NAME${NC}"
@@ -860,6 +877,7 @@ restore_part7() {
 # ════════════════════════════════════════════════════════════
 restore_part8() {
   titulo "PARTE 8 — OpenCode (en proot)"
+  _ensure_proot_pkg
 
   if [ -z "$DISTRO_NAME" ]; then
     warn "Proot Debian no encontrado — OpenCode requiere proot"
@@ -906,7 +924,8 @@ restore_part8() {
 # ════════════════════════════════════════════════════════════
 restore_part9() {
   titulo "PARTE 9 — OpenClaw (NVM + Node22 + OpenClaw en proot)"
-  
+  _ensure_proot_pkg
+
   if [ -z "$DISTRO_NAME" ]; then
     warn "Proot Debian no encontrado — OpenClaw requiere proot"
     echo -e "  Restaura primero el rootfs: restaurar módulo 'proot-base'"
