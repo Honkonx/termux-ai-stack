@@ -120,6 +120,69 @@ check_remote() {
 OLLAMA_CFG="$HOME/.ollama_chat_config"
 OLLAMA_DB="$HOME/ollama_chat.db"
 OLLAMA_URL_LOCAL="http://localhost:11434"
+OLLAMA_USER_CFG="$HOME/.ollama_user_config"
+
+# ── Carga parámetros de inferencia y system prompt ───────────
+_ollama_load_params() {
+  OLLAMA_TEMP=0.7
+  OLLAMA_TOP_P=0.9
+  OLLAMA_TOP_K=40
+  OLLAMA_REP_PENALTY=1.1
+  OLLAMA_NUM_CTX=2048
+  OLLAMA_NUM_PREDICT=2048
+  OLLAMA_SYSTEM_PROMPT=""
+  OLLAMA_ROLE="Asistente técnico especializado"
+  OLLAMA_GOAL="Ayudar al usuario con sus tareas"
+  OLLAMA_TONE="profesional, amigable"
+  OLLAMA_DELIVERABLE="Respuesta clara y útil"
+  [ -f "$OLLAMA_USER_CFG" ] && source "$OLLAMA_USER_CFG" 2>/dev/null
+}
+
+# ── Guarda parámetros en ~/.ollama_user_config ───────────────
+_ollama_save_params() {
+  local _SP="${OLLAMA_SYSTEM_PROMPT//\"/\\\"}"
+  local _RO="${OLLAMA_ROLE//\"/\\\"}"
+  local _GO="${OLLAMA_GOAL//\"/\\\"}"
+  local _TO="${OLLAMA_TONE//\"/\\\"}"
+  local _DE="${OLLAMA_DELIVERABLE//\"/\\\"}"
+  cat > "$OLLAMA_USER_CFG" << EOF
+# termux-ai-stack · ~/.ollama_user_config
+# Generado automáticamente por el menú — editar con cuidado
+
+OLLAMA_TEMP=$OLLAMA_TEMP
+OLLAMA_TOP_P=$OLLAMA_TOP_P
+OLLAMA_TOP_K=$OLLAMA_TOP_K
+OLLAMA_REP_PENALTY=$OLLAMA_REP_PENALTY
+OLLAMA_NUM_CTX=$OLLAMA_NUM_CTX
+OLLAMA_NUM_PREDICT=$OLLAMA_NUM_PREDICT
+OLLAMA_SYSTEM_PROMPT="$_SP"
+OLLAMA_ROLE="$_RO"
+OLLAMA_GOAL="$_GO"
+OLLAMA_TONE="$_TO"
+OLLAMA_DELIVERABLE="$_DE"
+EOF
+}
+
+# ── Retorna el system prompt efectivo ────────────────────────
+# Si OLLAMA_SYSTEM_PROMPT tiene contenido lo usa directo.
+# Si está vacío construye desde ROLE + GOAL + TONE + DELIVERABLE.
+_ollama_get_prompt_effective() {
+  if [ -n "$OLLAMA_SYSTEM_PROMPT" ]; then
+    echo "$OLLAMA_SYSTEM_PROMPT"
+  else
+    echo "${OLLAMA_ROLE}. ${OLLAMA_GOAL}. Tono: ${OLLAMA_TONE}. Entrega: ${OLLAMA_DELIVERABLE}."
+  fi
+}
+
+# ── Valida número decimal con bc. Retorna 0 si válido. ───────
+_ollama_validate_float() {
+  local val="$1" min="$2" max="$3"
+  [[ "$val" =~ ^[0-9]*\.?[0-9]+$ ]] || return 1
+  command -v bc &>/dev/null || return 0
+  local ok
+  ok=$(echo "$val >= $min && $val <= $max" | bc -l 2>/dev/null)
+  [ "$ok" = "1" ]
+}
 
 _ollama_get_db() {
   local model_safe
@@ -242,18 +305,27 @@ _ollama_chat_full() {
 
   # Helper Python escrito en HOME (no /tmp — noexec Android 15)
   local _CHATPY="$HOME/.ollama_chat_helper.py"
+  _ollama_load_params
+  local _SYS; _SYS=$(_ollama_get_prompt_effective)
   cat > "$_CHATPY" << 'PYEOF'
 import sys, sqlite3, os, json
 from urllib import request as ureq
 from datetime import datetime
 
-db_path   = os.path.expanduser(sys.argv[1])
-chat_id   = sys.argv[2]
-model     = sys.argv[3]
-ram_msgs  = int(sys.argv[4])
-disk_msgs = int(sys.argv[5])
-url       = sys.argv[6]
-user_msg  = sys.argv[7]
+db_path     = os.path.expanduser(sys.argv[1])
+chat_id     = sys.argv[2]
+model       = sys.argv[3]
+ram_msgs    = int(sys.argv[4])
+disk_msgs   = int(sys.argv[5])
+url         = sys.argv[6]
+user_msg    = sys.argv[7]
+system_p    = sys.argv[8]  if len(sys.argv) > 8  else ""
+temperature = float(sys.argv[9])  if len(sys.argv) > 9  else 0.7
+top_p       = float(sys.argv[10]) if len(sys.argv) > 10 else 0.9
+top_k       = int(sys.argv[11])   if len(sys.argv) > 11 else 40
+rep_penalty = float(sys.argv[12]) if len(sys.argv) > 12 else 1.1
+num_ctx     = int(sys.argv[13])   if len(sys.argv) > 13 else 2048
+num_predict = int(sys.argv[14])   if len(sys.argv) > 14 else 2048
 
 conn = sqlite3.connect(db_path)
 conn.execute("""CREATE TABLE IF NOT EXISTS historial (
@@ -273,8 +345,18 @@ lines.append("Asistente:")
 prompt = "\n".join(lines)
 
 payload = json.dumps({
-    "model": model, "prompt": prompt, "stream": False,
-    "options": {"num_predict": 300, "temperature": 0.7}
+    "model": model,
+    "prompt": prompt,
+    "system": system_p,
+    "stream": False,
+    "options": {
+        "temperature": temperature,
+        "top_p": top_p,
+        "top_k": top_k,
+        "repeat_penalty": rep_penalty,
+        "num_ctx": num_ctx,
+        "num_predict": num_predict
+    }
 }).encode("utf-8")
 
 try:
@@ -351,7 +433,10 @@ print(f'  Total en BD : {all_msgs} mensajes en {all_c} chats')
     RESPONSE=$(python3 "$_CHATPY" \
       "$OLLAMA_DB" "$CHAT_ID" "$MODEL" \
       "$OL_RAM_MSGS" "$OL_DISK_MSGS" \
-      "$OLLAMA_URL_LOCAL" "$USER_INPUT")
+      "$OLLAMA_URL_LOCAL" "$USER_INPUT" \
+      "$_SYS" "$OLLAMA_TEMP" "$OLLAMA_TOP_P" \
+      "$OLLAMA_TOP_K" "$OLLAMA_REP_PENALTY" \
+      "$OLLAMA_NUM_CTX" "$OLLAMA_NUM_PREDICT")
 
     kill $_SP 2>/dev/null; wait $_SP 2>/dev/null
     printf "\r\033[2K"
@@ -684,6 +769,257 @@ if modelos:
 }
 
 # ════════════════════════════════════════════
+#  SUBMENÚ PERSONALIZACIÓN OLLAMA
+# ════════════════════════════════════════════
+submenu_ollama_personalizacion() {
+  _ollama_load_params
+  while true; do
+    clear; echo ""
+    local _PE; _PE=$(_ollama_get_prompt_effective)
+    local _PE_SHORT="${_PE:0:35}"
+    [ ${#_PE} -gt 35 ] && _PE_SHORT="${_PE_SHORT}..."
+
+    echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
+    echo    "  ║  ⚙  PERSONALIZACIÓN OLLAMA               ║"
+    echo    "  ╠══════════════════════════════════════════╣"
+    printf  "  ║  ${NC}[1] Temperatura      actual: %-12s${CYAN}${BOLD}║\n" "$OLLAMA_TEMP"
+    printf  "  ║  ${NC}[2] Contexto tokens  actual: %-12s${CYAN}${BOLD}║\n" "$OLLAMA_NUM_CTX"
+    printf  "  ║  ${NC}[3] Top P            actual: %-12s${CYAN}${BOLD}║\n" "$OLLAMA_TOP_P"
+    printf  "  ║  ${NC}[4] Top K            actual: %-12s${CYAN}${BOLD}║\n" "$OLLAMA_TOP_K"
+    printf  "  ║  ${NC}[5] Repeat penalty   actual: %-12s${CYAN}${BOLD}║\n" "$OLLAMA_REP_PENALTY"
+    printf  "  ║  ${NC}[6] Max tokens resp  actual: %-12s${CYAN}${BOLD}║\n" "$OLLAMA_NUM_PREDICT"
+    echo    "  ╠══════════════════════════════════════════╣"
+    echo -e "  ║  ${NC}[7] System prompt / personalidad        ${CYAN}${BOLD}║"
+    printf  "  ║      ${DIM}%-38s${CYAN}${BOLD}║\n" "$_PE_SHORT"
+    echo    "  ╠══════════════════════════════════════════╣"
+    echo -e "  ║  ${NC}[8] Ver configuración actual            ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[9] Guardar como Modelfile              ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[0] Crear modelo personalizado          ${CYAN}${BOLD}║"
+    echo    "  ╠══════════════════════════════════════════╣"
+    echo -e "  ║  ${NC}[r] Restaurar defaults                  ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[b] Volver al menú Ollama               ${CYAN}${BOLD}║"
+    echo -e "  ╚══════════════════════════════════════════╝${NC}"
+    echo ""; echo -n "  Opción: "
+    read -r POPT < /dev/tty
+
+    case "$POPT" in
+
+      1)
+        echo -n "  Temperatura (0.0-2.0, actual ${OLLAMA_TEMP}): "
+        read -r VAL < /dev/tty
+        if _ollama_validate_float "$VAL" 0 2; then
+          OLLAMA_TEMP="$VAL"; _ollama_save_params
+          echo -e "  ${GREEN}[OK]${NC} Temperatura → $OLLAMA_TEMP"
+        else
+          echo -e "  ${RED}[ERROR]${NC} Valor inválido. Rango: 0.0 – 2.0"
+        fi; sleep 1 ;;
+
+      2)
+        echo -n "  Tokens de contexto (512-8192, actual ${OLLAMA_NUM_CTX}): "
+        read -r VAL < /dev/tty
+        if [[ "$VAL" =~ ^[0-9]+$ ]] && [ "$VAL" -ge 512 ] && [ "$VAL" -le 8192 ]; then
+          OLLAMA_NUM_CTX="$VAL"; _ollama_save_params
+          echo -e "  ${GREEN}[OK]${NC} Contexto → $OLLAMA_NUM_CTX tokens"
+        else
+          echo -e "  ${RED}[ERROR]${NC} Valor inválido. Rango: 512 – 8192"
+        fi; sleep 1 ;;
+
+      3)
+        echo -n "  Top P (0.0-1.0, actual ${OLLAMA_TOP_P}): "
+        read -r VAL < /dev/tty
+        if _ollama_validate_float "$VAL" 0 1; then
+          OLLAMA_TOP_P="$VAL"; _ollama_save_params
+          echo -e "  ${GREEN}[OK]${NC} Top P → $OLLAMA_TOP_P"
+        else
+          echo -e "  ${RED}[ERROR]${NC} Valor inválido. Rango: 0.0 – 1.0"
+        fi; sleep 1 ;;
+
+      4)
+        echo -n "  Top K (1-100, actual ${OLLAMA_TOP_K}): "
+        read -r VAL < /dev/tty
+        if [[ "$VAL" =~ ^[0-9]+$ ]] && [ "$VAL" -ge 1 ] && [ "$VAL" -le 100 ]; then
+          OLLAMA_TOP_K="$VAL"; _ollama_save_params
+          echo -e "  ${GREEN}[OK]${NC} Top K → $OLLAMA_TOP_K"
+        else
+          echo -e "  ${RED}[ERROR]${NC} Valor inválido. Rango: 1 – 100"
+        fi; sleep 1 ;;
+
+      5)
+        echo -n "  Repeat penalty (1.0-2.0, actual ${OLLAMA_REP_PENALTY}): "
+        read -r VAL < /dev/tty
+        if _ollama_validate_float "$VAL" 1 2; then
+          OLLAMA_REP_PENALTY="$VAL"; _ollama_save_params
+          echo -e "  ${GREEN}[OK]${NC} Repeat penalty → $OLLAMA_REP_PENALTY"
+        else
+          echo -e "  ${RED}[ERROR]${NC} Valor inválido. Rango: 1.0 – 2.0"
+        fi; sleep 1 ;;
+
+      6)
+        echo -n "  Max tokens por respuesta (128-4096, actual ${OLLAMA_NUM_PREDICT}): "
+        read -r VAL < /dev/tty
+        if [[ "$VAL" =~ ^[0-9]+$ ]] && [ "$VAL" -ge 128 ] && [ "$VAL" -le 4096 ]; then
+          OLLAMA_NUM_PREDICT="$VAL"; _ollama_save_params
+          echo -e "  ${GREEN}[OK]${NC} Max tokens → $OLLAMA_NUM_PREDICT"
+        else
+          echo -e "  ${RED}[ERROR]${NC} Valor inválido. Rango: 128 – 4096"
+        fi; sleep 1 ;;
+
+      7)
+        # ── Editor de system prompt ───────────────────────────
+        while true; do
+          clear; echo ""
+          echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
+          echo    "  ║  ✏  SYSTEM PROMPT / PERSONALIDAD        ║"
+          echo    "  ╠══════════════════════════════════════════╣"
+          printf  "  ║  ${NC}ROLE:   %-34s${CYAN}${BOLD}║\n" "${OLLAMA_ROLE:0:34}"
+          printf  "  ║  ${NC}GOAL:   %-34s${CYAN}${BOLD}║\n" "${OLLAMA_GOAL:0:34}"
+          printf  "  ║  ${NC}TONE:   %-34s${CYAN}${BOLD}║\n" "${OLLAMA_TONE:0:34}"
+          printf  "  ║  ${NC}ENTREGA:%-34s${CYAN}${BOLD}║\n" "${OLLAMA_DELIVERABLE:0:34}"
+          echo    "  ╠══════════════════════════════════════════╣"
+          echo -e "  ║  ${NC}[1] Editar ROLE (quién es)              ${CYAN}${BOLD}║"
+          echo -e "  ║  ${NC}[2] Editar GOAL (objetivo)              ${CYAN}${BOLD}║"
+          echo -e "  ║  ${NC}[3] Editar TONE (tono/estilo)           ${CYAN}${BOLD}║"
+          echo -e "  ║  ${NC}[4] Editar DELIVERABLE (entregable)     ${CYAN}${BOLD}║"
+          echo    "  ╠══════════════════════════════════════════╣"
+          echo -e "  ║  ${NC}[5] Prompt completo (modo avanzado)     ${CYAN}${BOLD}║"
+          echo -e "  ║  ${NC}[6] Ver prompt efectivo                 ${CYAN}${BOLD}║"
+          echo -e "  ║  ${NC}[c] Limpiar prompt completo (usar meta) ${CYAN}${BOLD}║"
+          echo -e "  ║  ${NC}[b] Volver                              ${CYAN}${BOLD}║"
+          echo -e "  ╚══════════════════════════════════════════╝${NC}"
+          echo ""; echo -n "  Opción: "
+          read -r SPOPT < /dev/tty
+          case "$SPOPT" in
+            1) echo -n "  ROLE: "; read -r VAL < /dev/tty
+               [ -n "$VAL" ] && OLLAMA_ROLE="$VAL"
+               _ollama_save_params; echo -e "  ${GREEN}[OK]${NC} ROLE guardado"; sleep 1 ;;
+            2) echo -n "  GOAL: "; read -r VAL < /dev/tty
+               [ -n "$VAL" ] && OLLAMA_GOAL="$VAL"
+               _ollama_save_params; echo -e "  ${GREEN}[OK]${NC} GOAL guardado"; sleep 1 ;;
+            3) echo -n "  TONE: "; read -r VAL < /dev/tty
+               [ -n "$VAL" ] && OLLAMA_TONE="$VAL"
+               _ollama_save_params; echo -e "  ${GREEN}[OK]${NC} TONE guardado"; sleep 1 ;;
+            4) echo -n "  DELIVERABLE: "; read -r VAL < /dev/tty
+               [ -n "$VAL" ] && OLLAMA_DELIVERABLE="$VAL"
+               _ollama_save_params; echo -e "  ${GREEN}[OK]${NC} DELIVERABLE guardado"; sleep 1 ;;
+            5)
+               if command -v nano &>/dev/null; then
+                 local _TMP_P="$HOME/.ollama_prompt_edit_tmp"
+                 echo "$OLLAMA_SYSTEM_PROMPT" > "$_TMP_P"
+                 nano "$_TMP_P" < /dev/tty
+                 OLLAMA_SYSTEM_PROMPT=$(cat "$_TMP_P")
+                 rm -f "$_TMP_P"
+               else
+                 echo -e "  ${DIM}nano no disponible — escribe el prompt en una línea${NC}"
+                 echo -n "  Prompt completo: "; read -r VAL < /dev/tty
+                 [ -n "$VAL" ] && OLLAMA_SYSTEM_PROMPT="$VAL"
+               fi
+               _ollama_save_params
+               echo -e "  ${GREEN}[OK]${NC} Prompt completo guardado"; sleep 1 ;;
+            6) clear; echo ""
+               echo -e "  ${CYAN}${BOLD}PROMPT EFECTIVO:${NC}"; echo ""
+               echo -e "  ${DIM}$(_ollama_get_prompt_effective)${NC}"
+               echo ""; read -r _ < /dev/tty ;;
+            c|C)
+               OLLAMA_SYSTEM_PROMPT=""
+               _ollama_save_params
+               echo -e "  ${GREEN}[OK]${NC} Prompt completo limpiado — se usarán los campos meta"
+               sleep 1 ;;
+            b|B|"") break ;;
+          esac
+        done ;;
+
+      8)
+        clear; echo ""
+        echo -e "  ${CYAN}${BOLD}CONFIGURACIÓN ACTUAL OLLAMA${NC}"; echo ""
+        echo -e "  Temperatura       : ${GREEN}$OLLAMA_TEMP${NC}"
+        echo -e "  Top P             : ${GREEN}$OLLAMA_TOP_P${NC}"
+        echo -e "  Top K             : ${GREEN}$OLLAMA_TOP_K${NC}"
+        echo -e "  Repeat penalty    : ${GREEN}$OLLAMA_REP_PENALTY${NC}"
+        echo -e "  Contexto (tokens) : ${GREEN}$OLLAMA_NUM_CTX${NC}"
+        echo -e "  Max tokens resp   : ${GREEN}$OLLAMA_NUM_PREDICT${NC}"
+        echo ""
+        echo -e "  ${CYAN}SYSTEM PROMPT EFECTIVO:${NC}"
+        echo -e "  ${DIM}$(_ollama_get_prompt_effective)${NC}"
+        echo ""
+        echo -e "  ${DIM}Archivo: $OLLAMA_USER_CFG${NC}"
+        echo ""; read -r _ < /dev/tty ;;
+
+      9)
+        clear; echo ""
+        echo -e "  ${CYAN}Modelo base para el Modelfile:${NC}"; echo ""
+        mapfile -t _MF_MODELS < <(_ollama_list_models)
+        if [ ${#_MF_MODELS[@]} -eq 0 ]; then
+          echo -e "  ${YELLOW}[AVISO]${NC} No hay modelos instalados. Descarga uno primero."
+          echo ""; read -r _ < /dev/tty; continue
+        fi
+        for i in "${!_MF_MODELS[@]}"; do
+          printf "    ${BOLD}[%d]${NC} %s\n" "$((i+1))" "${_MF_MODELS[$i]}"
+        done
+        echo ""; echo -n "  Elige (número): "
+        read -r _MFC < /dev/tty
+        local _BASE_MODEL=""
+        if [[ "$_MFC" =~ ^[0-9]+$ ]] && [ "$_MFC" -ge 1 ] && \
+           [ "$_MFC" -le "${#_MF_MODELS[@]}" ]; then
+          _BASE_MODEL="${_MF_MODELS[$((_MFC-1))]}"
+        else
+          echo -e "  ${RED}[ERROR]${NC} Selección inválida"; sleep 1; continue
+        fi
+        local _EPROMPT; _EPROMPT=$(_ollama_get_prompt_effective)
+        local _EPROMPT_ESC="${_EPROMPT//\"/\\\"}"
+        cat > "$HOME/Modelfile" << MFEOF
+FROM ${_BASE_MODEL}
+SYSTEM """${_EPROMPT_ESC}"""
+PARAMETER temperature ${OLLAMA_TEMP}
+PARAMETER top_p ${OLLAMA_TOP_P}
+PARAMETER top_k ${OLLAMA_TOP_K}
+PARAMETER repeat_penalty ${OLLAMA_REP_PENALTY}
+PARAMETER num_ctx ${OLLAMA_NUM_CTX}
+PARAMETER num_predict ${OLLAMA_NUM_PREDICT}
+MFEOF
+        echo -e "  ${GREEN}[OK]${NC} Modelfile creado: ~/Modelfile"
+        echo -e "  ${DIM}Modelo base: $_BASE_MODEL${NC}"
+        echo ""; read -r _ < /dev/tty ;;
+
+      0)
+        clear; echo ""
+        if [ ! -f "$HOME/Modelfile" ]; then
+          echo -e "  ${YELLOW}[AVISO]${NC} Primero usa [9] para generar el Modelfile."
+          echo ""; read -r _ < /dev/tty; continue
+        fi
+        local _MODEL_NAME
+        _MODEL_NAME="mi-asistente-$(date +%Y%m%d-%H%M)"
+        echo -e "  ${CYAN}Creando modelo: ${BOLD}$_MODEL_NAME${NC}"; echo ""
+        ollama create "$_MODEL_NAME" -f "$HOME/Modelfile"
+        if [ $? -eq 0 ]; then
+          echo ""
+          echo -e "  ${GREEN}[OK]${NC} Modelo creado exitosamente"
+          echo -e "  ${DIM}Usar con: ollama run $_MODEL_NAME${NC}"
+        else
+          echo -e "  ${RED}[ERROR]${NC} Falló la creación del modelo"
+        fi
+        echo ""; read -r _ < /dev/tty ;;
+
+      r|R)
+        echo -n "  ¿Restaurar valores por defecto? (s/n): "
+        read -r _CONF < /dev/tty
+        if [ "$_CONF" = "s" ] || [ "$_CONF" = "S" ]; then
+          OLLAMA_TEMP=0.7; OLLAMA_TOP_P=0.9; OLLAMA_TOP_K=40
+          OLLAMA_REP_PENALTY=1.1; OLLAMA_NUM_CTX=2048; OLLAMA_NUM_PREDICT=2048
+          OLLAMA_SYSTEM_PROMPT="Eres un asistente técnico especializado en programación y trading. Responde siempre en español. Sé directo y conciso. Si no sabes algo, dilo sin inventar."
+          OLLAMA_ROLE="Asistente técnico especializado"
+          OLLAMA_GOAL="Ayudar al usuario con programación, trading y automatización"
+          OLLAMA_TONE="profesional, directo, amigable"
+          OLLAMA_DELIVERABLE="Código funcional o respuesta clara y útil"
+          _ollama_save_params
+          echo -e "  ${GREEN}[OK]${NC} Valores restaurados"
+        fi; sleep 1 ;;
+
+      b|B|"") break ;;
+    esac
+  done
+}
+
+# ════════════════════════════════════════════
 #  SUBMENÚ OLLAMA
 # ════════════════════════════════════════════
 submenu_ollama() {
@@ -710,6 +1046,7 @@ submenu_ollama() {
     echo    "  ╠══════════════════════════════════════════╣"
     echo -e "  ║  ${NC}[5] Modelos (ver / descargar / eliminar)${CYAN}${BOLD}║"
     echo -e "  ║  ${NC}[6] Configurar historial SQLite         ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[7] Personalización (temp/prompt/rol)   ${CYAN}${BOLD}║"
     echo -e "  ║  ${NC}[b] Volver al menú principal            ${CYAN}${BOLD}║"
     echo -e "  ╚══════════════════════════════════════════╝${NC}"
     echo ""; echo -n "  Opción: "
@@ -828,6 +1165,7 @@ submenu_ollama() {
           esac
         done ;;
       6) _ollama_config_sql ;;
+      7) submenu_ollama_personalizacion ;;
       b|B|"") break ;;
     esac
     _ollama_load_cfg

@@ -1057,6 +1057,40 @@ UTILS_PYEOF
   mkdir -p "$HOME/vision_imgs"
   log "Directorios creados: ~/vision_archive/ ~/vision_imgs/"
 
+  # ── ~/.ollama_user_config — parámetros de inferencia y system prompt ──
+  if [ ! -f "$HOME/.ollama_user_config" ]; then
+    cat > "$HOME/.ollama_user_config" << 'UCFG'
+# ============================================================
+#  termux-ai-stack · ~/.ollama_user_config
+#  Parámetros de inferencia y personalidad del asistente.
+#  Editar desde el menú: [3] Ollama → [7] Personalización
+#  O editar manualmente con: nano ~/.ollama_user_config
+# ============================================================
+
+# ── Parámetros de inferencia ─────────────────────────────────
+OLLAMA_TEMP=0.7
+OLLAMA_TOP_P=0.9
+OLLAMA_TOP_K=40
+OLLAMA_REP_PENALTY=1.1
+OLLAMA_NUM_CTX=2048
+OLLAMA_NUM_PREDICT=2048
+
+# ── System prompt completo ───────────────────────────────────
+# Si tiene contenido, tiene prioridad sobre los campos meta.
+# Si está vacío, se construye desde ROLE+GOAL+TONE+DELIVERABLE.
+OLLAMA_SYSTEM_PROMPT="Eres un asistente técnico especializado en programación y trading. Responde siempre en español. Sé directo y conciso. Si no sabes algo, dilo sin inventar."
+
+# ── Campos meta (usados si OLLAMA_SYSTEM_PROMPT está vacío) ──
+OLLAMA_ROLE="Asistente técnico especializado"
+OLLAMA_GOAL="Ayudar al usuario con programación, trading y automatización"
+OLLAMA_TONE="profesional, directo, amigable"
+OLLAMA_DELIVERABLE="Código funcional o respuesta clara y útil"
+UCFG
+    log "~/.ollama_user_config creado (parámetros de inferencia)"
+  else
+    log "~/.ollama_user_config ya existe — conservado sin cambios"
+  fi
+
   mark_done "ollama_vision_scripts"
 fi
 
