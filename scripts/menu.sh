@@ -311,6 +311,45 @@ check_opencode_cached() { _run_check_proot  check_opencode_cached "$@"; }
 check_openclaw_cached() { _run_check_proot  check_openclaw_cached "$@"; }
 
 # ════════════════════════════════════════════
+#  POST-INSTALL CLEANUP
+#  Llamado después de ejecutar cualquier script
+#  de instalación — limpia el estado del shell
+#  para evitar que el menú quede en estado
+#  inconsistente sin necesitar reiniciar Termux.
+#
+#  Problemas que resuelve:
+#  1. stdin residual: proot/npm/wget dejan datos
+#     en /dev/tty que el siguiente read() consume
+#     como opción del menú
+#  2. Módulos cargados en memoria obsoletos: las
+#     funciones de menu_proot.sh / menu_nativo.sh
+#     en memoria pueden no reflejar el nuevo estado
+#     → forzar reload en la próxima iteración
+#  3. Caché de estado stale: los checks de proot
+#     devolverían not_installed aunque ya instaló
+# ════════════════════════════════════════════
+_post_install_cleanup() {
+  # 1. Forzar reload de módulos en la próxima iteración
+  #    Las funciones en memoria quedan del source anterior —
+  #    tras instalar n8n/openclaw/opencode el proot cambió
+  _PROOT_LOADED=0
+  _NATIVO_LOADED=0
+
+  # 2. Limpiar caché de estado — el módulo acaba de instalarse
+  _invalidate_cache
+
+  # 3. Drenar stdin residual — proot/npm/wget pueden dejar
+  #    bytes en el buffer de /dev/tty que el siguiente
+  #    read -r OPT < /dev/tty consumiría como opción
+  #    Timeout 0 = no bloquea si no hay nada que leer
+  local _drain
+  while IFS= read -r -t 0 _drain < /dev/tty 2>/dev/null; do :; done
+
+  # 4. Mensaje orientativo — el usuario sabe que el estado se refresca
+  echo -e "\n  ${CYAN}[INFO]${NC} Recargando stack..."
+}
+
+# ════════════════════════════════════════════
 #  INSTALL_MODULE — lógica de instalación
 #  Disponible sin módulos cargados.
 # ════════════════════════════════════════════
@@ -341,7 +380,8 @@ install_module() {
         export N8N_INSTALL_MODE="$INST_OPT"
         bash "$dest" < /dev/tty
         unset N8N_INSTALL_MODE
-        echo ""; read -r _ < /dev/tty ;;
+        echo ""; read -r _ < /dev/tty
+        _post_install_cleanup ;;
       b|B|"") return 0 ;;
     esac
     return 0
@@ -363,7 +403,8 @@ install_module() {
         echo -e "\n${CYAN}${BOLD}  Instalando ${name}...${NC}\n"
         _ensure_install_script "$script" || return 1
         bash "$dest" < /dev/tty
-        echo ""; read -r _ < /dev/tty ;;
+        echo ""; read -r _ < /dev/tty
+        _post_install_cleanup ;;
     esac
     return 0
   fi
@@ -373,6 +414,7 @@ install_module() {
     _ensure_install_script "$script" || return 1
     bash "$dest" < /dev/tty
     echo ""; read -r _ < /dev/tty
+    _post_install_cleanup
     return 0
   fi
 
@@ -397,13 +439,15 @@ install_module() {
     2)
       _ensure_restore_for_install || return 1
       bash "$HOME/restore.sh" --module "$module_key" < /dev/tty
-      echo ""; read -r _ < /dev/tty ;;
+      echo ""; read -r _ < /dev/tty
+      _post_install_cleanup ;;
     b|B|"") return 0 ;;
     1|*)
       echo -e "\n${CYAN}${BOLD}  Instalando ${name}...${NC}\n"
       _ensure_install_script "$script" || return 1
       bash "$dest" < /dev/tty
-      echo ""; read -r _ < /dev/tty ;;
+      echo ""; read -r _ < /dev/tty
+      _post_install_cleanup ;;
   esac
 }
 
