@@ -81,6 +81,8 @@ _ensure_proot_pkg() {
     && log "proot-distro instalado correctamente" \
     || error "No se pudo instalar proot-distro — verifica tu conexión y ejecuta: pkg install proot-distro"
 }
+
+cleanup() {
   [ -d "$TMP_DIR" ] && rm -rf "$TMP_DIR"
   echo -e "\n  ${YELLOW}[AVISO]${NC} Restore interrumpido — archivos temporales eliminados"
 }
@@ -880,9 +882,20 @@ restore_part8() {
   _ensure_proot_pkg
 
   if [ -z "$DISTRO_NAME" ]; then
-    warn "Proot Debian no encontrado — OpenCode requiere proot"
-    echo -e "  Restaura primero el rootfs: restaurar módulo 'proot-base'"
-    return 1
+    echo -e "  ${YELLOW}${BOLD}⚠  Proot Debian no encontrado${NC}"
+    echo -e "  OpenCode requiere el contenedor Debian (part6)."
+    echo ""
+    echo -n "  ¿Instalar rootfs Debian ahora? (s/n): "
+    read -r DO_PROOT < /dev/tty
+    if [ "$DO_PROOT" = "s" ] || [ "$DO_PROOT" = "S" ]; then
+      restore_part6 "part6-proot-base"
+      detect_distro
+      [ -z "$DISTRO_NAME" ] && error "El proot no quedó disponible — abortando"
+      log "Proot listo — continuando con OpenCode..."
+    else
+      warn "Restauración de OpenCode cancelada"
+      return 0
+    fi
   fi
 
   download_and_verify "part8-opencode"
@@ -927,9 +940,20 @@ restore_part9() {
   _ensure_proot_pkg
 
   if [ -z "$DISTRO_NAME" ]; then
-    warn "Proot Debian no encontrado — OpenClaw requiere proot"
-    echo -e "  Restaura primero el rootfs: restaurar módulo 'proot-base'"
-    return 1
+    echo -e "  ${YELLOW}${BOLD}⚠  Proot Debian no encontrado${NC}"
+    echo -e "  OpenClaw requiere el contenedor Debian (part6)."
+    echo ""
+    echo -n "  ¿Instalar rootfs Debian ahora? (s/n): "
+    read -r DO_PROOT < /dev/tty
+    if [ "$DO_PROOT" = "s" ] || [ "$DO_PROOT" = "S" ]; then
+      restore_part6 "part6-proot-base"
+      detect_distro
+      [ -z "$DISTRO_NAME" ] && error "El proot no quedó disponible — abortando"
+      log "Proot listo — continuando con OpenClaw..."
+    else
+      warn "Restauración de OpenClaw cancelada"
+      return 0
+    fi
   fi
 
   download_and_verify "part9-openclaw"
