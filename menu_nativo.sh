@@ -120,6 +120,69 @@ check_remote() {
 OLLAMA_CFG="$HOME/.ollama_chat_config"
 OLLAMA_DB="$HOME/ollama_chat.db"
 OLLAMA_URL_LOCAL="http://localhost:11434"
+OLLAMA_USER_CFG="$HOME/.ollama_user_config"
+
+# ── Carga parámetros de inferencia y system prompt ───────────
+_ollama_load_params() {
+  OLLAMA_TEMP=0.7
+  OLLAMA_TOP_P=0.9
+  OLLAMA_TOP_K=40
+  OLLAMA_REP_PENALTY=1.1
+  OLLAMA_NUM_CTX=2048
+  OLLAMA_NUM_PREDICT=2048
+  OLLAMA_SYSTEM_PROMPT=""
+  OLLAMA_ROLE="Asistente técnico especializado"
+  OLLAMA_GOAL="Ayudar al usuario con sus tareas"
+  OLLAMA_TONE="profesional, amigable"
+  OLLAMA_DELIVERABLE="Respuesta clara y útil"
+  [ -f "$OLLAMA_USER_CFG" ] && source "$OLLAMA_USER_CFG" 2>/dev/null
+}
+
+# ── Guarda parámetros en ~/.ollama_user_config ───────────────
+_ollama_save_params() {
+  local _SP="${OLLAMA_SYSTEM_PROMPT//\"/\\\"}"
+  local _RO="${OLLAMA_ROLE//\"/\\\"}"
+  local _GO="${OLLAMA_GOAL//\"/\\\"}"
+  local _TO="${OLLAMA_TONE//\"/\\\"}"
+  local _DE="${OLLAMA_DELIVERABLE//\"/\\\"}"
+  cat > "$OLLAMA_USER_CFG" << EOF
+# termux-ai-stack · ~/.ollama_user_config
+# Generado automáticamente por el menú — editar con cuidado
+
+OLLAMA_TEMP=$OLLAMA_TEMP
+OLLAMA_TOP_P=$OLLAMA_TOP_P
+OLLAMA_TOP_K=$OLLAMA_TOP_K
+OLLAMA_REP_PENALTY=$OLLAMA_REP_PENALTY
+OLLAMA_NUM_CTX=$OLLAMA_NUM_CTX
+OLLAMA_NUM_PREDICT=$OLLAMA_NUM_PREDICT
+OLLAMA_SYSTEM_PROMPT="$_SP"
+OLLAMA_ROLE="$_RO"
+OLLAMA_GOAL="$_GO"
+OLLAMA_TONE="$_TO"
+OLLAMA_DELIVERABLE="$_DE"
+EOF
+}
+
+# ── Retorna el system prompt efectivo ────────────────────────
+# Si OLLAMA_SYSTEM_PROMPT tiene contenido lo usa directo.
+# Si está vacío construye desde ROLE + GOAL + TONE + DELIVERABLE.
+_ollama_get_prompt_effective() {
+  if [ -n "$OLLAMA_SYSTEM_PROMPT" ]; then
+    echo "$OLLAMA_SYSTEM_PROMPT"
+  else
+    echo "${OLLAMA_ROLE}. ${OLLAMA_GOAL}. Tono: ${OLLAMA_TONE}. Entrega: ${OLLAMA_DELIVERABLE}."
+  fi
+}
+
+# ── Valida número decimal con bc. Retorna 0 si válido. ───────
+_ollama_validate_float() {
+  local val="$1" min="$2" max="$3"
+  [[ "$val" =~ ^[0-9]*\.?[0-9]+$ ]] || return 1
+  command -v bc &>/dev/null || return 0
+  local ok
+  ok=$(echo "$val >= $min && $val <= $max" | bc -l 2>/dev/null)
+  [ "$ok" = "1" ]
+}
 
 _ollama_get_db() {
   local model_safe
@@ -242,18 +305,27 @@ _ollama_chat_full() {
 
   # Helper Python escrito en HOME (no /tmp — noexec Android 15)
   local _CHATPY="$HOME/.ollama_chat_helper.py"
+  _ollama_load_params
+  local _SYS; _SYS=$(_ollama_get_prompt_effective)
   cat > "$_CHATPY" << 'PYEOF'
 import sys, sqlite3, os, json
 from urllib import request as ureq
 from datetime import datetime
 
-db_path   = os.path.expanduser(sys.argv[1])
-chat_id   = sys.argv[2]
-model     = sys.argv[3]
-ram_msgs  = int(sys.argv[4])
-disk_msgs = int(sys.argv[5])
-url       = sys.argv[6]
-user_msg  = sys.argv[7]
+db_path     = os.path.expanduser(sys.argv[1])
+chat_id     = sys.argv[2]
+model       = sys.argv[3]
+ram_msgs    = int(sys.argv[4])
+disk_msgs   = int(sys.argv[5])
+url         = sys.argv[6]
+user_msg    = sys.argv[7]
+system_p    = sys.argv[8]  if len(sys.argv) > 8  else ""
+temperature = float(sys.argv[9])  if len(sys.argv) > 9  else 0.7
+top_p       = float(sys.argv[10]) if len(sys.argv) > 10 else 0.9
+top_k       = int(sys.argv[11])   if len(sys.argv) > 11 else 40
+rep_penalty = float(sys.argv[12]) if len(sys.argv) > 12 else 1.1
+num_ctx     = int(sys.argv[13])   if len(sys.argv) > 13 else 2048
+num_predict = int(sys.argv[14])   if len(sys.argv) > 14 else 2048
 
 conn = sqlite3.connect(db_path)
 conn.execute("""CREATE TABLE IF NOT EXISTS historial (
@@ -273,8 +345,18 @@ lines.append("Asistente:")
 prompt = "\n".join(lines)
 
 payload = json.dumps({
-    "model": model, "prompt": prompt, "stream": False,
-    "options": {"num_predict": 300, "temperature": 0.7}
+    "model": model,
+    "prompt": prompt,
+    "system": system_p,
+    "stream": False,
+    "options": {
+        "temperature": temperature,
+        "top_p": top_p,
+        "top_k": top_k,
+        "repeat_penalty": rep_penalty,
+        "num_ctx": num_ctx,
+        "num_predict": num_predict
+    }
 }).encode("utf-8")
 
 try:
@@ -351,7 +433,10 @@ print(f'  Total en BD : {all_msgs} mensajes en {all_c} chats')
     RESPONSE=$(python3 "$_CHATPY" \
       "$OLLAMA_DB" "$CHAT_ID" "$MODEL" \
       "$OL_RAM_MSGS" "$OL_DISK_MSGS" \
-      "$OLLAMA_URL_LOCAL" "$USER_INPUT")
+      "$OLLAMA_URL_LOCAL" "$USER_INPUT" \
+      "$_SYS" "$OLLAMA_TEMP" "$OLLAMA_TOP_P" \
+      "$OLLAMA_TOP_K" "$OLLAMA_REP_PENALTY" \
+      "$OLLAMA_NUM_CTX" "$OLLAMA_NUM_PREDICT")
 
     kill $_SP 2>/dev/null; wait $_SP 2>/dev/null
     printf "\r\033[2K"
@@ -684,6 +769,257 @@ if modelos:
 }
 
 # ════════════════════════════════════════════
+#  SUBMENÚ PERSONALIZACIÓN OLLAMA
+# ════════════════════════════════════════════
+submenu_ollama_personalizacion() {
+  _ollama_load_params
+  while true; do
+    clear; echo ""
+    local _PE; _PE=$(_ollama_get_prompt_effective)
+    local _PE_SHORT="${_PE:0:35}"
+    [ ${#_PE} -gt 35 ] && _PE_SHORT="${_PE_SHORT}..."
+
+    echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
+    echo    "  ║  ⚙  PERSONALIZACIÓN OLLAMA               ║"
+    echo    "  ╠══════════════════════════════════════════╣"
+    printf  "  ║  ${NC}[1] Temperatura      actual: %-12s${CYAN}${BOLD}║\n" "$OLLAMA_TEMP"
+    printf  "  ║  ${NC}[2] Contexto tokens  actual: %-12s${CYAN}${BOLD}║\n" "$OLLAMA_NUM_CTX"
+    printf  "  ║  ${NC}[3] Top P            actual: %-12s${CYAN}${BOLD}║\n" "$OLLAMA_TOP_P"
+    printf  "  ║  ${NC}[4] Top K            actual: %-12s${CYAN}${BOLD}║\n" "$OLLAMA_TOP_K"
+    printf  "  ║  ${NC}[5] Repeat penalty   actual: %-12s${CYAN}${BOLD}║\n" "$OLLAMA_REP_PENALTY"
+    printf  "  ║  ${NC}[6] Max tokens resp  actual: %-12s${CYAN}${BOLD}║\n" "$OLLAMA_NUM_PREDICT"
+    echo    "  ╠══════════════════════════════════════════╣"
+    echo -e "  ║  ${NC}[7] System prompt / personalidad        ${CYAN}${BOLD}║"
+    printf  "  ║      ${DIM}%-38s${CYAN}${BOLD}║\n" "$_PE_SHORT"
+    echo    "  ╠══════════════════════════════════════════╣"
+    echo -e "  ║  ${NC}[8] Ver configuración actual            ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[9] Guardar como Modelfile              ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[0] Crear modelo personalizado          ${CYAN}${BOLD}║"
+    echo    "  ╠══════════════════════════════════════════╣"
+    echo -e "  ║  ${NC}[r] Restaurar defaults                  ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[b] Volver al menú Ollama               ${CYAN}${BOLD}║"
+    echo -e "  ╚══════════════════════════════════════════╝${NC}"
+    echo ""; echo -n "  Opción: "
+    read -r POPT < /dev/tty
+
+    case "$POPT" in
+
+      1)
+        echo -n "  Temperatura (0.0-2.0, actual ${OLLAMA_TEMP}): "
+        read -r VAL < /dev/tty
+        if _ollama_validate_float "$VAL" 0 2; then
+          OLLAMA_TEMP="$VAL"; _ollama_save_params
+          echo -e "  ${GREEN}[OK]${NC} Temperatura → $OLLAMA_TEMP"
+        else
+          echo -e "  ${RED}[ERROR]${NC} Valor inválido. Rango: 0.0 – 2.0"
+        fi; sleep 1 ;;
+
+      2)
+        echo -n "  Tokens de contexto (512-8192, actual ${OLLAMA_NUM_CTX}): "
+        read -r VAL < /dev/tty
+        if [[ "$VAL" =~ ^[0-9]+$ ]] && [ "$VAL" -ge 512 ] && [ "$VAL" -le 8192 ]; then
+          OLLAMA_NUM_CTX="$VAL"; _ollama_save_params
+          echo -e "  ${GREEN}[OK]${NC} Contexto → $OLLAMA_NUM_CTX tokens"
+        else
+          echo -e "  ${RED}[ERROR]${NC} Valor inválido. Rango: 512 – 8192"
+        fi; sleep 1 ;;
+
+      3)
+        echo -n "  Top P (0.0-1.0, actual ${OLLAMA_TOP_P}): "
+        read -r VAL < /dev/tty
+        if _ollama_validate_float "$VAL" 0 1; then
+          OLLAMA_TOP_P="$VAL"; _ollama_save_params
+          echo -e "  ${GREEN}[OK]${NC} Top P → $OLLAMA_TOP_P"
+        else
+          echo -e "  ${RED}[ERROR]${NC} Valor inválido. Rango: 0.0 – 1.0"
+        fi; sleep 1 ;;
+
+      4)
+        echo -n "  Top K (1-100, actual ${OLLAMA_TOP_K}): "
+        read -r VAL < /dev/tty
+        if [[ "$VAL" =~ ^[0-9]+$ ]] && [ "$VAL" -ge 1 ] && [ "$VAL" -le 100 ]; then
+          OLLAMA_TOP_K="$VAL"; _ollama_save_params
+          echo -e "  ${GREEN}[OK]${NC} Top K → $OLLAMA_TOP_K"
+        else
+          echo -e "  ${RED}[ERROR]${NC} Valor inválido. Rango: 1 – 100"
+        fi; sleep 1 ;;
+
+      5)
+        echo -n "  Repeat penalty (1.0-2.0, actual ${OLLAMA_REP_PENALTY}): "
+        read -r VAL < /dev/tty
+        if _ollama_validate_float "$VAL" 1 2; then
+          OLLAMA_REP_PENALTY="$VAL"; _ollama_save_params
+          echo -e "  ${GREEN}[OK]${NC} Repeat penalty → $OLLAMA_REP_PENALTY"
+        else
+          echo -e "  ${RED}[ERROR]${NC} Valor inválido. Rango: 1.0 – 2.0"
+        fi; sleep 1 ;;
+
+      6)
+        echo -n "  Max tokens por respuesta (128-4096, actual ${OLLAMA_NUM_PREDICT}): "
+        read -r VAL < /dev/tty
+        if [[ "$VAL" =~ ^[0-9]+$ ]] && [ "$VAL" -ge 128 ] && [ "$VAL" -le 4096 ]; then
+          OLLAMA_NUM_PREDICT="$VAL"; _ollama_save_params
+          echo -e "  ${GREEN}[OK]${NC} Max tokens → $OLLAMA_NUM_PREDICT"
+        else
+          echo -e "  ${RED}[ERROR]${NC} Valor inválido. Rango: 128 – 4096"
+        fi; sleep 1 ;;
+
+      7)
+        # ── Editor de system prompt ───────────────────────────
+        while true; do
+          clear; echo ""
+          echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
+          echo    "  ║  ✏  SYSTEM PROMPT / PERSONALIDAD        ║"
+          echo    "  ╠══════════════════════════════════════════╣"
+          printf  "  ║  ${NC}ROLE:   %-34s${CYAN}${BOLD}║\n" "${OLLAMA_ROLE:0:34}"
+          printf  "  ║  ${NC}GOAL:   %-34s${CYAN}${BOLD}║\n" "${OLLAMA_GOAL:0:34}"
+          printf  "  ║  ${NC}TONE:   %-34s${CYAN}${BOLD}║\n" "${OLLAMA_TONE:0:34}"
+          printf  "  ║  ${NC}ENTREGA:%-34s${CYAN}${BOLD}║\n" "${OLLAMA_DELIVERABLE:0:34}"
+          echo    "  ╠══════════════════════════════════════════╣"
+          echo -e "  ║  ${NC}[1] Editar ROLE (quién es)              ${CYAN}${BOLD}║"
+          echo -e "  ║  ${NC}[2] Editar GOAL (objetivo)              ${CYAN}${BOLD}║"
+          echo -e "  ║  ${NC}[3] Editar TONE (tono/estilo)           ${CYAN}${BOLD}║"
+          echo -e "  ║  ${NC}[4] Editar DELIVERABLE (entregable)     ${CYAN}${BOLD}║"
+          echo    "  ╠══════════════════════════════════════════╣"
+          echo -e "  ║  ${NC}[5] Prompt completo (modo avanzado)     ${CYAN}${BOLD}║"
+          echo -e "  ║  ${NC}[6] Ver prompt efectivo                 ${CYAN}${BOLD}║"
+          echo -e "  ║  ${NC}[c] Limpiar prompt completo (usar meta) ${CYAN}${BOLD}║"
+          echo -e "  ║  ${NC}[b] Volver                              ${CYAN}${BOLD}║"
+          echo -e "  ╚══════════════════════════════════════════╝${NC}"
+          echo ""; echo -n "  Opción: "
+          read -r SPOPT < /dev/tty
+          case "$SPOPT" in
+            1) echo -n "  ROLE: "; read -r VAL < /dev/tty
+               [ -n "$VAL" ] && OLLAMA_ROLE="$VAL"
+               _ollama_save_params; echo -e "  ${GREEN}[OK]${NC} ROLE guardado"; sleep 1 ;;
+            2) echo -n "  GOAL: "; read -r VAL < /dev/tty
+               [ -n "$VAL" ] && OLLAMA_GOAL="$VAL"
+               _ollama_save_params; echo -e "  ${GREEN}[OK]${NC} GOAL guardado"; sleep 1 ;;
+            3) echo -n "  TONE: "; read -r VAL < /dev/tty
+               [ -n "$VAL" ] && OLLAMA_TONE="$VAL"
+               _ollama_save_params; echo -e "  ${GREEN}[OK]${NC} TONE guardado"; sleep 1 ;;
+            4) echo -n "  DELIVERABLE: "; read -r VAL < /dev/tty
+               [ -n "$VAL" ] && OLLAMA_DELIVERABLE="$VAL"
+               _ollama_save_params; echo -e "  ${GREEN}[OK]${NC} DELIVERABLE guardado"; sleep 1 ;;
+            5)
+               if command -v nano &>/dev/null; then
+                 local _TMP_P="$HOME/.ollama_prompt_edit_tmp"
+                 echo "$OLLAMA_SYSTEM_PROMPT" > "$_TMP_P"
+                 nano "$_TMP_P" < /dev/tty
+                 OLLAMA_SYSTEM_PROMPT=$(cat "$_TMP_P")
+                 rm -f "$_TMP_P"
+               else
+                 echo -e "  ${DIM}nano no disponible — escribe el prompt en una línea${NC}"
+                 echo -n "  Prompt completo: "; read -r VAL < /dev/tty
+                 [ -n "$VAL" ] && OLLAMA_SYSTEM_PROMPT="$VAL"
+               fi
+               _ollama_save_params
+               echo -e "  ${GREEN}[OK]${NC} Prompt completo guardado"; sleep 1 ;;
+            6) clear; echo ""
+               echo -e "  ${CYAN}${BOLD}PROMPT EFECTIVO:${NC}"; echo ""
+               echo -e "  ${DIM}$(_ollama_get_prompt_effective)${NC}"
+               echo ""; read -r _ < /dev/tty ;;
+            c|C)
+               OLLAMA_SYSTEM_PROMPT=""
+               _ollama_save_params
+               echo -e "  ${GREEN}[OK]${NC} Prompt completo limpiado — se usarán los campos meta"
+               sleep 1 ;;
+            b|B|"") break ;;
+          esac
+        done ;;
+
+      8)
+        clear; echo ""
+        echo -e "  ${CYAN}${BOLD}CONFIGURACIÓN ACTUAL OLLAMA${NC}"; echo ""
+        echo -e "  Temperatura       : ${GREEN}$OLLAMA_TEMP${NC}"
+        echo -e "  Top P             : ${GREEN}$OLLAMA_TOP_P${NC}"
+        echo -e "  Top K             : ${GREEN}$OLLAMA_TOP_K${NC}"
+        echo -e "  Repeat penalty    : ${GREEN}$OLLAMA_REP_PENALTY${NC}"
+        echo -e "  Contexto (tokens) : ${GREEN}$OLLAMA_NUM_CTX${NC}"
+        echo -e "  Max tokens resp   : ${GREEN}$OLLAMA_NUM_PREDICT${NC}"
+        echo ""
+        echo -e "  ${CYAN}SYSTEM PROMPT EFECTIVO:${NC}"
+        echo -e "  ${DIM}$(_ollama_get_prompt_effective)${NC}"
+        echo ""
+        echo -e "  ${DIM}Archivo: $OLLAMA_USER_CFG${NC}"
+        echo ""; read -r _ < /dev/tty ;;
+
+      9)
+        clear; echo ""
+        echo -e "  ${CYAN}Modelo base para el Modelfile:${NC}"; echo ""
+        mapfile -t _MF_MODELS < <(_ollama_list_models)
+        if [ ${#_MF_MODELS[@]} -eq 0 ]; then
+          echo -e "  ${YELLOW}[AVISO]${NC} No hay modelos instalados. Descarga uno primero."
+          echo ""; read -r _ < /dev/tty; continue
+        fi
+        for i in "${!_MF_MODELS[@]}"; do
+          printf "    ${BOLD}[%d]${NC} %s\n" "$((i+1))" "${_MF_MODELS[$i]}"
+        done
+        echo ""; echo -n "  Elige (número): "
+        read -r _MFC < /dev/tty
+        local _BASE_MODEL=""
+        if [[ "$_MFC" =~ ^[0-9]+$ ]] && [ "$_MFC" -ge 1 ] && \
+           [ "$_MFC" -le "${#_MF_MODELS[@]}" ]; then
+          _BASE_MODEL="${_MF_MODELS[$((_MFC-1))]}"
+        else
+          echo -e "  ${RED}[ERROR]${NC} Selección inválida"; sleep 1; continue
+        fi
+        local _EPROMPT; _EPROMPT=$(_ollama_get_prompt_effective)
+        local _EPROMPT_ESC="${_EPROMPT//\"/\\\"}"
+        cat > "$HOME/Modelfile" << MFEOF
+FROM ${_BASE_MODEL}
+SYSTEM """${_EPROMPT_ESC}"""
+PARAMETER temperature ${OLLAMA_TEMP}
+PARAMETER top_p ${OLLAMA_TOP_P}
+PARAMETER top_k ${OLLAMA_TOP_K}
+PARAMETER repeat_penalty ${OLLAMA_REP_PENALTY}
+PARAMETER num_ctx ${OLLAMA_NUM_CTX}
+PARAMETER num_predict ${OLLAMA_NUM_PREDICT}
+MFEOF
+        echo -e "  ${GREEN}[OK]${NC} Modelfile creado: ~/Modelfile"
+        echo -e "  ${DIM}Modelo base: $_BASE_MODEL${NC}"
+        echo ""; read -r _ < /dev/tty ;;
+
+      0)
+        clear; echo ""
+        if [ ! -f "$HOME/Modelfile" ]; then
+          echo -e "  ${YELLOW}[AVISO]${NC} Primero usa [9] para generar el Modelfile."
+          echo ""; read -r _ < /dev/tty; continue
+        fi
+        local _MODEL_NAME
+        _MODEL_NAME="mi-asistente-$(date +%Y%m%d-%H%M)"
+        echo -e "  ${CYAN}Creando modelo: ${BOLD}$_MODEL_NAME${NC}"; echo ""
+        ollama create "$_MODEL_NAME" -f "$HOME/Modelfile"
+        if [ $? -eq 0 ]; then
+          echo ""
+          echo -e "  ${GREEN}[OK]${NC} Modelo creado exitosamente"
+          echo -e "  ${DIM}Usar con: ollama run $_MODEL_NAME${NC}"
+        else
+          echo -e "  ${RED}[ERROR]${NC} Falló la creación del modelo"
+        fi
+        echo ""; read -r _ < /dev/tty ;;
+
+      r|R)
+        echo -n "  ¿Restaurar valores por defecto? (s/n): "
+        read -r _CONF < /dev/tty
+        if [ "$_CONF" = "s" ] || [ "$_CONF" = "S" ]; then
+          OLLAMA_TEMP=0.7; OLLAMA_TOP_P=0.9; OLLAMA_TOP_K=40
+          OLLAMA_REP_PENALTY=1.1; OLLAMA_NUM_CTX=2048; OLLAMA_NUM_PREDICT=2048
+          OLLAMA_SYSTEM_PROMPT="Eres un asistente técnico especializado en programación y trading. Responde siempre en español. Sé directo y conciso. Si no sabes algo, dilo sin inventar."
+          OLLAMA_ROLE="Asistente técnico especializado"
+          OLLAMA_GOAL="Ayudar al usuario con programación, trading y automatización"
+          OLLAMA_TONE="profesional, directo, amigable"
+          OLLAMA_DELIVERABLE="Código funcional o respuesta clara y útil"
+          _ollama_save_params
+          echo -e "  ${GREEN}[OK]${NC} Valores restaurados"
+        fi; sleep 1 ;;
+
+      b|B|"") break ;;
+    esac
+  done
+}
+
+# ════════════════════════════════════════════
 #  SUBMENÚ OLLAMA
 # ════════════════════════════════════════════
 submenu_ollama() {
@@ -710,6 +1046,7 @@ submenu_ollama() {
     echo    "  ╠══════════════════════════════════════════╣"
     echo -e "  ║  ${NC}[5] Modelos (ver / descargar / eliminar)${CYAN}${BOLD}║"
     echo -e "  ║  ${NC}[6] Configurar historial SQLite         ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[7] Personalización (temp/prompt/rol)   ${CYAN}${BOLD}║"
     echo -e "  ║  ${NC}[b] Volver al menú principal            ${CYAN}${BOLD}║"
     echo -e "  ╚══════════════════════════════════════════╝${NC}"
     echo ""; echo -n "  Opción: "
@@ -828,6 +1165,7 @@ submenu_ollama() {
           esac
         done ;;
       6) _ollama_config_sql ;;
+      7) submenu_ollama_personalizacion ;;
       b|B|"") break ;;
     esac
     _ollama_load_cfg
@@ -1243,14 +1581,6 @@ SIGNAL_BOT="$TRADING_DIR/signal_bot.py"
 TRADE_TRACKER="$TRADING_DIR/trade_tracker.py"
 TRADING_DB="$HOME/trading/senales.db"
 
-# ════════════════════════════════════════════
-#  RUTAS BOT DEPORTIVO
-# ════════════════════════════════════════════
-SPORTS_DB="$HOME/sports/db/bot_deportivo.db"
-DB_QUERY="$HOME/sports/scripts/db_query.py"
-PRONOSTICO="$HOME/sports/scripts/pronostico.py"
-PROOT_SPORTS_DB="$TERMUX_PREFIX/var/lib/proot-distro/installed-rootfs/debian/root/sports/db/bot_deportivo.db"
-
 _py_ok() {
   command -v python3 &>/dev/null && return 0
   echo -e "  ${RED}[ERROR]${NC} Python3 no encontrado. Instala desde [5]."; return 1
@@ -1261,23 +1591,6 @@ _check_script() {
   if [ ! -f "$path" ]; then
     echo -e "  ${YELLOW}[AVISO]${NC} $name no encontrado en $path"
     echo -e "  ${DIM}Descarga desde: github.com/Honkonx/termux-ai-stack${NC}"
-    echo ""; read -r _ < /dev/tty; return 1
-  fi
-  return 0
-}
-
-_sports_ok() {
-  # Verifica scipy
-  if ! python3 -c "import numpy, scipy" 2>/dev/null; then
-    echo -e "  ${RED}[ERROR]${NC} numpy/scipy no instalados."
-    echo -e "  ${DIM}Instala con: pkg install python-numpy python-scipy${NC}"
-    echo ""; read -r _ < /dev/tty; return 1
-  fi
-  # Verifica scripts
-  if [ ! -f "$DB_QUERY" ] || [ ! -f "$PRONOSTICO" ]; then
-    echo -e "  ${RED}[ERROR]${NC} Scripts del bot deportivo no encontrados."
-    echo -e "  ${DIM}Instala desde: menú principal → [5] Python → reinstalar → PASO 7b${NC}"
-    echo -e "  ${DIM}O descarga manual: github.com/Honkonx/termux-ai-stack → python/sports/${NC}"
     echo ""; read -r _ < /dev/tty; return 1
   fi
   return 0
@@ -1649,228 +1962,6 @@ submenu_sqlite() {
 }
 
 # ════════════════════════════════════════════
-#  SUBMENÚ BOT DEPORTIVO
-# ════════════════════════════════════════════
-submenu_bot_deportivo() {
-  while true; do
-    clear; echo ""
-    # Estado BD y scipy en el header
-    local SPORTS_STATUS SCIPY_STATUS BD_INFO
-    if python3 -c "import numpy, scipy" 2>/dev/null; then
-      SCIPY_STATUS="${GREEN}scipy ✓${NC}"
-    else
-      SCIPY_STATUS="${YELLOW}scipy ✗${NC}"
-    fi
-    if [ -f "$SPORTS_DB" ]; then
-      BD_INFO=$(python3 "$DB_QUERY" leer_stats '{}' 2>/dev/null | \
-        python3 -c "
-import sys,json
-d=json.loads(sys.stdin.read())
-if d.get('ok'):
-    p=d['data']['predicciones']; j=d['data']['jobs']
-    print(f\"P:{p['total']} J-ok:{j['completados']} J-err:{j['errores']}\")
-else:
-    print('BD error')
-" 2>/dev/null || echo "BD ?")
-      SPORTS_STATUS="${GREEN}● BD activa${NC}"
-    else
-      SPORTS_STATUS="${YELLOW}○ sin BD${NC}"
-      BD_INFO="─"
-    fi
-
-    echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
-    echo    "  ║  ◉ BOT DEPORTIVO — SQLite + Poisson     ║"
-    echo    "  ╠══════════════════════════════════════════╣"
-    printf  "  ║  ${NC}BD: %b  Motor: %b${CYAN}${BOLD}              ║\n" \
-      "$SPORTS_STATUS" "$SCIPY_STATUS"
-    printf  "  ║  ${NC}Stats: %-35s${CYAN}${BOLD}║\n" "$BD_INFO"
-    echo    "  ╠══════════════════════════════════════════╣"
-    echo -e "  ║  ${NC}[1] Inicializar BD (crear tablas)       ${CYAN}${BOLD}║"
-    echo -e "  ║  ${NC}[2] Ver stats (predicciones + jobs)     ${CYAN}${BOLD}║"
-    echo -e "  ║  ${NC}[3] Ver jobs recientes                  ${CYAN}${BOLD}║"
-    echo -e "  ║  ${NC}[4] Agregar usuario autorizado          ${CYAN}${BOLD}║"
-    echo -e "  ║  ${NC}[5] Test db_query.py                    ${CYAN}${BOLD}║"
-    echo -e "  ║  ${NC}[6] Test pronostico.py                  ${CYAN}${BOLD}║"
-    echo -e "  ║  ${NC}[7] Sincronizar BD → proot (n8n)        ${CYAN}${BOLD}║"
-    echo -e "  ║  ${NC}[8] Ver jobs pendientes                 ${CYAN}${BOLD}║"
-    echo -e "  ║  ${NC}[9] Resetear jobs con error             ${CYAN}${BOLD}║"
-    echo -e "  ║  ${NC}[b] Volver a Python                     ${CYAN}${BOLD}║"
-    echo -e "  ╚══════════════════════════════════════════╝${NC}"
-    echo ""; echo -n "  Opción: "; read -r OPT < /dev/tty
-
-    case "$OPT" in
-      1)
-        _sports_ok || continue
-        clear; echo ""
-        echo -e "  ${CYAN}Inicializando BD...${NC}"; echo ""
-        python3 "$DB_QUERY" verificar_acceso '{"user_id":"init"}' 2>/dev/null \
-          && echo -e "  ${GREEN}[OK]${NC} BD inicializada: $SPORTS_DB" \
-          || echo -e "  ${RED}[ERROR]${NC} No se pudo inicializar"
-        echo ""; read -r _ < /dev/tty ;;
-
-      2)
-        _sports_ok || continue
-        clear; echo ""
-        echo -e "  ${CYAN}Stats — db_query.py leer_stats${NC}"; echo ""
-        python3 "$DB_QUERY" leer_stats '{}' 2>/dev/null | \
-          python3 -c "
-import sys, json
-d = json.loads(sys.stdin.read())
-if d.get('ok'):
-    p = d['data']['predicciones']
-    j = d['data']['jobs']
-    print(f'  Predicciones: {p[\"total\"]} total  ALTA:{p[\"alta\"]}  MEDIA:{p[\"media\"]}  BAJA:{p[\"baja\"]}')
-    print(f'  Jobs:         completados:{j[\"completados\"]}  errores:{j[\"errores\"]}  pendientes:{j[\"pendientes\"]}')
-else:
-    print('  Error:', d.get('error'))
-" 2>/dev/null || echo -e "  ${RED}[ERROR]${NC} Fallo en db_query.py"
-        echo ""; read -r _ < /dev/tty ;;
-
-      3)
-        _sports_ok || continue
-        clear; echo ""
-        echo -e "  ${CYAN}Jobs recientes (últimos 20):${NC}"; echo ""
-        python3 - << 'PYJOBS'
-import sqlite3, os
-DB = os.path.join(os.environ.get("HOME",""), "sports", "db", "bot_deportivo.db")
-try:
-    conn = sqlite3.connect(DB)
-    conn.row_factory = sqlite3.Row
-    rows = conn.execute(
-        "SELECT job_id, match_id, chat_id, status, creado_en FROM jobs ORDER BY creado_en DESC LIMIT 20"
-    ).fetchall()
-    conn.close()
-    if not rows:
-        print("  Sin jobs registrados.")
-    else:
-        for r in rows:
-            print(f"  {r['status']:<12} {r['match_id']:<15} chat={r['chat_id']} {r['creado_en']}")
-except Exception as e:
-    print(f"  Error: {e}")
-PYJOBS
-        echo ""; read -r _ < /dev/tty ;;
-
-      4)
-        _sports_ok || continue
-        clear; echo ""
-        echo -n "  Telegram ID del usuario: "; read -r NEW_UID < /dev/tty
-        [ -z "$NEW_UID" ] && { warn "Cancelado"; echo ""; read -r _ < /dev/tty; continue; }
-        echo -n "  Plan (admin/pro/free) [admin]: "; read -r NEW_PLAN < /dev/tty
-        NEW_PLAN="${NEW_PLAN:-admin}"
-        python3 - << PYADD
-import sqlite3
-from datetime import datetime
-DB = '$SPORTS_DB'
-conn = sqlite3.connect(DB)
-conn.execute(
-    "INSERT OR REPLACE INTO usuarios (device_id, activo, plan, creado_en) VALUES (?, 1, ?, ?)",
-    ('$NEW_UID', '$NEW_PLAN', datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
-)
-conn.commit()
-conn.close()
-print('  [OK] Usuario $NEW_UID agregado con plan $NEW_PLAN')
-PYADD
-        echo ""; read -r _ < /dev/tty ;;
-
-      5)
-        _sports_ok || continue
-        clear; echo ""
-        echo -e "  ${CYAN}Test db_query.py — leer_stats${NC}"; echo ""
-        python3 "$DB_QUERY" leer_stats '{}'
-        echo ""
-        echo -e "  ${CYAN}Test db_query.py — verificar_acceso${NC}"; echo ""
-        python3 "$DB_QUERY" verificar_acceso '{"user_id":"test_user"}'
-        echo ""; read -r _ < /dev/tty ;;
-
-      6)
-        _sports_ok || continue
-        [ ! -f "$PRONOSTICO" ] && {
-          warn "pronostico.py no encontrado"
-          echo ""; read -r _ < /dev/tty; continue
-        }
-        clear; echo ""
-        echo -e "  ${CYAN}Test pronostico.py — River vs Boca${NC}"; echo ""
-        python3 "$PRONOSTICO" \
-          '{"local":"River","visitante":"Boca","liga":"Argentina","goles_local_avg":1.8,"goles_visit_avg":1.5,"goles_contra_local_avg":0.9,"goles_contra_visit_avg":1.1,"liga_goles_avg":2.5,"pos_local":1,"pos_visit":3,"forma_local_wins":4,"forma_visit_wins":3,"h2h_local_wins":5,"h2h_visit_wins":4,"h2h_empates":3,"h2h_total":12,"h2h_disponible":true,"odds_local":2.1,"odds_empate":3.2,"odds_visit":3.5,"odds_disponibles":true,"partido_id":"test","guardar_en_db":false}' \
-          | python3 -c "
-import sys, json
-d = json.loads(sys.stdin.read())
-if d.get('ok'):
-    print(f'  Motor:      {d[\"motor\"]}')
-    print(f'  Pick:       {d[\"pick\"]}')
-    print(f'  Confianza:  {d[\"confianza\"]} ({d[\"confianza_score\"]}/100)')
-    print(f'  Local:      {round(d[\"prob_local\"]*100,1)}%')
-    print(f'  Empate:     {round(d[\"prob_empate\"]*100,1)}%')
-    print(f'  Visitante:  {round(d[\"prob_visitante\"]*100,1)}%')
-    print(f'  Over2.5:    {round(d[\"over25_prob\"]*100,1)}%')
-    print(f'  BTTS:       {round(d[\"btts_prob\"]*100,1)}%')
-    print(f'  Value bet:  {d[\"value_bet\"]} ({d[\"value_pct\"]}%)')
-    print(f'  Marcador:   {d[\"marcador_probable\"]}')
-else:
-    print('  Error:', d.get('error'))
-"
-        echo ""; read -r _ < /dev/tty ;;
-
-      7)
-        _sports_ok || continue
-        clear; echo ""
-        echo -e "  ${CYAN}Sincronizando BD → proot (n8n)...${NC}"; echo ""
-        proot-distro login debian -- mkdir -p /root/sports/db 2>/dev/null
-        cp "$SPORTS_DB" "$PROOT_SPORTS_DB" 2>/dev/null \
-          && echo -e "  ${GREEN}[OK]${NC} BD sincronizada: $PROOT_SPORTS_DB" \
-          || echo -e "  ${RED}[ERROR]${NC} Falló — verifica que proot Debian esté instalado"
-        echo ""; read -r _ < /dev/tty ;;
-
-      8)
-        _sports_ok || continue
-        clear; echo ""
-        echo -e "  ${CYAN}Jobs pendientes:${NC}"; echo ""
-        python3 - << 'PYJOBS2'
-import sqlite3, os
-DB = os.path.join(os.environ.get("HOME",""), "sports", "db", "bot_deportivo.db")
-try:
-    conn = sqlite3.connect(DB)
-    conn.row_factory = sqlite3.Row
-    rows = conn.execute(
-        "SELECT job_id, match_id, chat_id, status, creado_en FROM jobs WHERE status='pendiente' ORDER BY creado_en ASC"
-    ).fetchall()
-    conn.close()
-    if not rows:
-        print("  Sin jobs pendientes.")
-    else:
-        for r in rows:
-            print(f"  {r['status']:<12} {r['match_id']:<15} chat={r['chat_id']} {r['creado_en']}")
-except Exception as e:
-    print(f"  Error: {e}")
-PYJOBS2
-        echo ""; read -r _ < /dev/tty ;;
-
-      9)
-        _sports_ok || continue
-        clear; echo ""
-        echo -n "  ¿Resetear jobs con error a pendiente? (s/n): "; read -r LIMCONF < /dev/tty
-        [ "$LIMCONF" != "s" ] && [ "$LIMCONF" != "S" ] && continue
-        python3 - << 'PYCLEAN'
-import sqlite3, os
-DB = os.path.join(os.environ.get("HOME",""), "sports", "db", "bot_deportivo.db")
-try:
-    conn = sqlite3.connect(DB)
-    cur = conn.execute("UPDATE jobs SET status='pendiente', intentos=0 WHERE status='error'")
-    conn.commit()
-    conn.close()
-    print(f"  [OK] {cur.rowcount} jobs reseteados a pendiente")
-except Exception as e:
-    print(f"  Error: {e}")
-PYCLEAN
-        echo ""; read -r _ < /dev/tty ;;
-
-      b|B|"") break ;;
-      *) warn "Opción inválida"; sleep 1 ;;
-    esac
-  done
-}
-
-# ════════════════════════════════════════════
 #  SUBMENÚ PYTHON
 # ════════════════════════════════════════════
 submenu_python() {
@@ -1887,7 +1978,7 @@ submenu_python() {
     echo -e "  ║  ${NC}[5] SQLite → submenú                    ${CYAN}${BOLD}║"
     echo -e "  ║  ${NC}[6] Ejecutar script .py                 ${CYAN}${BOLD}║"
     echo -e "  ║  ${NC}[7] ◈ Trading →                         ${CYAN}${BOLD}║"
-    echo -e "  ║  ${NC}[8] ◉ Bot deportivo →                   ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[8] ◉ Bot deportivo → ${DIM}(próximamente)${CYAN}${BOLD}   ║"
     echo -e "  ║  ${NC}[b] Volver al menú principal            ${CYAN}${BOLD}║"
     echo -e "  ╚══════════════════════════════════════════╝${NC}"
     echo ""; echo -n "  Opción: "; read -r OPT < /dev/tty
@@ -1963,7 +2054,9 @@ submenu_python() {
           || echo -e "  ${YELLOW}[AVISO]${NC} Terminó con código $PY_EXIT"
         echo ""; read -r _ < /dev/tty ;;
       7) submenu_trading ;;
-      8) submenu_bot_deportivo ;;
+      8)
+        echo -e "\n  ${DIM}Bot deportivo SQLite — en desarrollo (ver #17)${NC}"
+        echo ""; read -r _ < /dev/tty ;;
       b|B|"") break ;;
     esac
   done
