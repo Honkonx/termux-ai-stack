@@ -1020,7 +1020,6 @@ MFEOF
   done
 }
 
-
 # ════════════════════════════════════════════
 #  SUBMENÚ OLLAMA
 # ════════════════════════════════════════════
@@ -1583,6 +1582,14 @@ SIGNAL_BOT="$TRADING_DIR/signal_bot.py"
 TRADE_TRACKER="$TRADING_DIR/trade_tracker.py"
 TRADING_DB="$HOME/trading/senales.db"
 
+# ════════════════════════════════════════════
+#  RUTAS BOT DEPORTIVO
+# ════════════════════════════════════════════
+SPORTS_DB="$HOME/sports/db/bot_deportivo.db"
+DB_QUERY="$HOME/sports/scripts/db_query.py"
+PRONOSTICO="$HOME/sports/scripts/pronostico.py"
+PROOT_SPORTS_DB="$TERMUX_PREFIX/var/lib/proot-distro/installed-rootfs/debian/root/sports/db/bot_deportivo.db"
+
 _py_ok() {
   command -v python3 &>/dev/null && return 0
   echo -e "  ${RED}[ERROR]${NC} Python3 no encontrado. Instala desde [5]."; return 1
@@ -1593,6 +1600,23 @@ _check_script() {
   if [ ! -f "$path" ]; then
     echo -e "  ${YELLOW}[AVISO]${NC} $name no encontrado en $path"
     echo -e "  ${DIM}Descarga desde: github.com/Honkonx/termux-ai-stack${NC}"
+    echo ""; read -r _ < /dev/tty; return 1
+  fi
+  return 0
+}
+
+_sports_ok() {
+  # Verifica scipy
+  if ! python3 -c "import numpy, scipy" 2>/dev/null; then
+    echo -e "  ${RED}[ERROR]${NC} numpy/scipy no instalados."
+    echo -e "  ${DIM}Instala con: pkg install python-numpy python-scipy${NC}"
+    echo ""; read -r _ < /dev/tty; return 1
+  fi
+  # Verifica scripts
+  if [ ! -f "$DB_QUERY" ] || [ ! -f "$PRONOSTICO" ]; then
+    echo -e "  ${RED}[ERROR]${NC} Scripts del bot deportivo no encontrados."
+    echo -e "  ${DIM}Instala desde: menú principal → [5] Python → reinstalar → PASO 7b${NC}"
+    echo -e "  ${DIM}O descarga manual: github.com/Honkonx/termux-ai-stack → python/sports/${NC}"
     echo ""; read -r _ < /dev/tty; return 1
   fi
   return 0
@@ -1964,6 +1988,228 @@ submenu_sqlite() {
 }
 
 # ════════════════════════════════════════════
+#  SUBMENÚ BOT DEPORTIVO
+# ════════════════════════════════════════════
+submenu_bot_deportivo() {
+  while true; do
+    clear; echo ""
+    # Estado BD y scipy en el header
+    local SPORTS_STATUS SCIPY_STATUS BD_INFO
+    if python3 -c "import numpy, scipy" 2>/dev/null; then
+      SCIPY_STATUS="${GREEN}scipy ✓${NC}"
+    else
+      SCIPY_STATUS="${YELLOW}scipy ✗${NC}"
+    fi
+    if [ -f "$SPORTS_DB" ]; then
+      BD_INFO=$(python3 "$DB_QUERY" leer_stats '{}' 2>/dev/null | \
+        python3 -c "
+import sys,json
+d=json.loads(sys.stdin.read())
+if d.get('ok'):
+    p=d['data']['predicciones']; j=d['data']['jobs']
+    print(f\"P:{p['total']} J-ok:{j['completados']} J-err:{j['errores']}\")
+else:
+    print('BD error')
+" 2>/dev/null || echo "BD ?")
+      SPORTS_STATUS="${GREEN}● BD activa${NC}"
+    else
+      SPORTS_STATUS="${YELLOW}○ sin BD${NC}"
+      BD_INFO="─"
+    fi
+
+    echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
+    echo    "  ║  ◉ BOT DEPORTIVO — SQLite + Poisson     ║"
+    echo    "  ╠══════════════════════════════════════════╣"
+    printf  "  ║  ${NC}BD: %b  Motor: %b${CYAN}${BOLD}              ║\n" \
+      "$SPORTS_STATUS" "$SCIPY_STATUS"
+    printf  "  ║  ${NC}Stats: %-35s${CYAN}${BOLD}║\n" "$BD_INFO"
+    echo    "  ╠══════════════════════════════════════════╣"
+    echo -e "  ║  ${NC}[1] Inicializar BD (crear tablas)       ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[2] Ver stats (predicciones + jobs)     ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[3] Ver jobs recientes                  ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[4] Agregar usuario autorizado          ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[5] Test db_query.py                    ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[6] Test pronostico.py                  ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[7] Sincronizar BD → proot (n8n)        ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[8] Ver jobs pendientes                 ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[9] Resetear jobs con error             ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[b] Volver a Python                     ${CYAN}${BOLD}║"
+    echo -e "  ╚══════════════════════════════════════════╝${NC}"
+    echo ""; echo -n "  Opción: "; read -r OPT < /dev/tty
+
+    case "$OPT" in
+      1)
+        _sports_ok || continue
+        clear; echo ""
+        echo -e "  ${CYAN}Inicializando BD...${NC}"; echo ""
+        python3 "$DB_QUERY" verificar_acceso '{"user_id":"init"}' 2>/dev/null \
+          && echo -e "  ${GREEN}[OK]${NC} BD inicializada: $SPORTS_DB" \
+          || echo -e "  ${RED}[ERROR]${NC} No se pudo inicializar"
+        echo ""; read -r _ < /dev/tty ;;
+
+      2)
+        _sports_ok || continue
+        clear; echo ""
+        echo -e "  ${CYAN}Stats — db_query.py leer_stats${NC}"; echo ""
+        python3 "$DB_QUERY" leer_stats '{}' 2>/dev/null | \
+          python3 -c "
+import sys, json
+d = json.loads(sys.stdin.read())
+if d.get('ok'):
+    p = d['data']['predicciones']
+    j = d['data']['jobs']
+    print(f'  Predicciones: {p[\"total\"]} total  ALTA:{p[\"alta\"]}  MEDIA:{p[\"media\"]}  BAJA:{p[\"baja\"]}')
+    print(f'  Jobs:         completados:{j[\"completados\"]}  errores:{j[\"errores\"]}  pendientes:{j[\"pendientes\"]}')
+else:
+    print('  Error:', d.get('error'))
+" 2>/dev/null || echo -e "  ${RED}[ERROR]${NC} Fallo en db_query.py"
+        echo ""; read -r _ < /dev/tty ;;
+
+      3)
+        _sports_ok || continue
+        clear; echo ""
+        echo -e "  ${CYAN}Jobs recientes (últimos 20):${NC}"; echo ""
+        python3 - << 'PYJOBS'
+import sqlite3, os
+DB = os.path.join(os.environ.get("HOME",""), "sports", "db", "bot_deportivo.db")
+try:
+    conn = sqlite3.connect(DB)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        "SELECT job_id, match_id, chat_id, status, creado_en FROM jobs ORDER BY creado_en DESC LIMIT 20"
+    ).fetchall()
+    conn.close()
+    if not rows:
+        print("  Sin jobs registrados.")
+    else:
+        for r in rows:
+            print(f"  {r['status']:<12} {r['match_id']:<15} chat={r['chat_id']} {r['creado_en']}")
+except Exception as e:
+    print(f"  Error: {e}")
+PYJOBS
+        echo ""; read -r _ < /dev/tty ;;
+
+      4)
+        _sports_ok || continue
+        clear; echo ""
+        echo -n "  Telegram ID del usuario: "; read -r NEW_UID < /dev/tty
+        [ -z "$NEW_UID" ] && { warn "Cancelado"; echo ""; read -r _ < /dev/tty; continue; }
+        echo -n "  Plan (admin/pro/free) [admin]: "; read -r NEW_PLAN < /dev/tty
+        NEW_PLAN="${NEW_PLAN:-admin}"
+        python3 - << PYADD
+import sqlite3
+from datetime import datetime
+DB = '$SPORTS_DB'
+conn = sqlite3.connect(DB)
+conn.execute(
+    "INSERT OR REPLACE INTO usuarios (device_id, activo, plan, creado_en) VALUES (?, 1, ?, ?)",
+    ('$NEW_UID', '$NEW_PLAN', datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+)
+conn.commit()
+conn.close()
+print('  [OK] Usuario $NEW_UID agregado con plan $NEW_PLAN')
+PYADD
+        echo ""; read -r _ < /dev/tty ;;
+
+      5)
+        _sports_ok || continue
+        clear; echo ""
+        echo -e "  ${CYAN}Test db_query.py — leer_stats${NC}"; echo ""
+        python3 "$DB_QUERY" leer_stats '{}'
+        echo ""
+        echo -e "  ${CYAN}Test db_query.py — verificar_acceso${NC}"; echo ""
+        python3 "$DB_QUERY" verificar_acceso '{"user_id":"test_user"}'
+        echo ""; read -r _ < /dev/tty ;;
+
+      6)
+        _sports_ok || continue
+        [ ! -f "$PRONOSTICO" ] && {
+          warn "pronostico.py no encontrado"
+          echo ""; read -r _ < /dev/tty; continue
+        }
+        clear; echo ""
+        echo -e "  ${CYAN}Test pronostico.py — River vs Boca${NC}"; echo ""
+        python3 "$PRONOSTICO" \
+          '{"local":"River","visitante":"Boca","liga":"Argentina","goles_local_avg":1.8,"goles_visit_avg":1.5,"goles_contra_local_avg":0.9,"goles_contra_visit_avg":1.1,"liga_goles_avg":2.5,"pos_local":1,"pos_visit":3,"forma_local_wins":4,"forma_visit_wins":3,"h2h_local_wins":5,"h2h_visit_wins":4,"h2h_empates":3,"h2h_total":12,"h2h_disponible":true,"odds_local":2.1,"odds_empate":3.2,"odds_visit":3.5,"odds_disponibles":true,"partido_id":"test","guardar_en_db":false}' \
+          | python3 -c "
+import sys, json
+d = json.loads(sys.stdin.read())
+if d.get('ok'):
+    print(f'  Motor:      {d[\"motor\"]}')
+    print(f'  Pick:       {d[\"pick\"]}')
+    print(f'  Confianza:  {d[\"confianza\"]} ({d[\"confianza_score\"]}/100)')
+    print(f'  Local:      {round(d[\"prob_local\"]*100,1)}%')
+    print(f'  Empate:     {round(d[\"prob_empate\"]*100,1)}%')
+    print(f'  Visitante:  {round(d[\"prob_visitante\"]*100,1)}%')
+    print(f'  Over2.5:    {round(d[\"over25_prob\"]*100,1)}%')
+    print(f'  BTTS:       {round(d[\"btts_prob\"]*100,1)}%')
+    print(f'  Value bet:  {d[\"value_bet\"]} ({d[\"value_pct\"]}%)')
+    print(f'  Marcador:   {d[\"marcador_probable\"]}')
+else:
+    print('  Error:', d.get('error'))
+"
+        echo ""; read -r _ < /dev/tty ;;
+
+      7)
+        _sports_ok || continue
+        clear; echo ""
+        echo -e "  ${CYAN}Sincronizando BD → proot (n8n)...${NC}"; echo ""
+        proot-distro login debian -- mkdir -p /root/sports/db 2>/dev/null
+        cp "$SPORTS_DB" "$PROOT_SPORTS_DB" 2>/dev/null \
+          && echo -e "  ${GREEN}[OK]${NC} BD sincronizada: $PROOT_SPORTS_DB" \
+          || echo -e "  ${RED}[ERROR]${NC} Falló — verifica que proot Debian esté instalado"
+        echo ""; read -r _ < /dev/tty ;;
+
+      8)
+        _sports_ok || continue
+        clear; echo ""
+        echo -e "  ${CYAN}Jobs pendientes:${NC}"; echo ""
+        python3 - << 'PYJOBS2'
+import sqlite3, os
+DB = os.path.join(os.environ.get("HOME",""), "sports", "db", "bot_deportivo.db")
+try:
+    conn = sqlite3.connect(DB)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        "SELECT job_id, match_id, chat_id, status, creado_en FROM jobs WHERE status='pendiente' ORDER BY creado_en ASC"
+    ).fetchall()
+    conn.close()
+    if not rows:
+        print("  Sin jobs pendientes.")
+    else:
+        for r in rows:
+            print(f"  {r['status']:<12} {r['match_id']:<15} chat={r['chat_id']} {r['creado_en']}")
+except Exception as e:
+    print(f"  Error: {e}")
+PYJOBS2
+        echo ""; read -r _ < /dev/tty ;;
+
+      9)
+        _sports_ok || continue
+        clear; echo ""
+        echo -n "  ¿Resetear jobs con error a pendiente? (s/n): "; read -r LIMCONF < /dev/tty
+        [ "$LIMCONF" != "s" ] && [ "$LIMCONF" != "S" ] && continue
+        python3 - << 'PYCLEAN'
+import sqlite3, os
+DB = os.path.join(os.environ.get("HOME",""), "sports", "db", "bot_deportivo.db")
+try:
+    conn = sqlite3.connect(DB)
+    cur = conn.execute("UPDATE jobs SET status='pendiente', intentos=0 WHERE status='error'")
+    conn.commit()
+    conn.close()
+    print(f"  [OK] {cur.rowcount} jobs reseteados a pendiente")
+except Exception as e:
+    print(f"  Error: {e}")
+PYCLEAN
+        echo ""; read -r _ < /dev/tty ;;
+
+      b|B|"") break ;;
+      *) warn "Opción inválida"; sleep 1 ;;
+    esac
+  done
+}
+
+# ════════════════════════════════════════════
 #  SUBMENÚ PYTHON
 # ════════════════════════════════════════════
 submenu_python() {
@@ -1980,7 +2226,7 @@ submenu_python() {
     echo -e "  ║  ${NC}[5] SQLite → submenú                    ${CYAN}${BOLD}║"
     echo -e "  ║  ${NC}[6] Ejecutar script .py                 ${CYAN}${BOLD}║"
     echo -e "  ║  ${NC}[7] ◈ Trading →                         ${CYAN}${BOLD}║"
-    echo -e "  ║  ${NC}[8] ◉ Bot deportivo → ${DIM}(próximamente)${CYAN}${BOLD}   ║"
+    echo -e "  ║  ${NC}[8] ◉ Bot deportivo →                   ${CYAN}${BOLD}║"
     echo -e "  ║  ${NC}[b] Volver al menú principal            ${CYAN}${BOLD}║"
     echo -e "  ╚══════════════════════════════════════════╝${NC}"
     echo ""; echo -n "  Opción: "; read -r OPT < /dev/tty
@@ -2056,9 +2302,7 @@ submenu_python() {
           || echo -e "  ${YELLOW}[AVISO]${NC} Terminó con código $PY_EXIT"
         echo ""; read -r _ < /dev/tty ;;
       7) submenu_trading ;;
-      8)
-        echo -e "\n  ${DIM}Bot deportivo SQLite — en desarrollo (ver #17)${NC}"
-        echo ""; read -r _ < /dev/tty ;;
+      8) submenu_bot_deportivo ;;
       b|B|"") break ;;
     esac
   done
