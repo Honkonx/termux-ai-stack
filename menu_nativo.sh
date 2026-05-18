@@ -783,17 +783,16 @@ submenu_ollama_personalizacion() {
     echo    "  ║  ⚙  PERSONALIZACIÓN OLLAMA               ║"
     echo    "  ╠══════════════════════════════════════════╣"
     printf  "  ║  ${NC}[1] Temperatura      actual: %-12s${CYAN}${BOLD}║\n" "$OLLAMA_TEMP"
-    printf  "  ║  ${NC}[2] Contexto tokens  actual: %-12s${CYAN}${BOLD}║\n" "$OLLAMA_NUM_CTX"
-    printf  "  ║  ${NC}[3] Top P            actual: %-12s${CYAN}${BOLD}║\n" "$OLLAMA_TOP_P"
-    printf  "  ║  ${NC}[4] Top K            actual: %-12s${CYAN}${BOLD}║\n" "$OLLAMA_TOP_K"
-    printf  "  ║  ${NC}[5] Repeat penalty   actual: %-12s${CYAN}${BOLD}║\n" "$OLLAMA_REP_PENALTY"
-    printf  "  ║  ${NC}[6] Max tokens resp  actual: %-12s${CYAN}${BOLD}║\n" "$OLLAMA_NUM_PREDICT"
+    printf  "  ║  ${NC}[2] Repeat penalty   actual: %-12s${CYAN}${BOLD}║\n" "$OLLAMA_REP_PENALTY"
     echo    "  ╠══════════════════════════════════════════╣"
-    echo -e "  ║  ${NC}[7] System prompt / personalidad        ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[3] System prompt / personalidad        ${CYAN}${BOLD}║"
     printf  "  ║      ${DIM}%-38s${CYAN}${BOLD}║\n" "$_PE_SHORT"
     echo    "  ╠══════════════════════════════════════════╣"
-    echo -e "  ║  ${NC}[8] Ver configuración actual            ${CYAN}${BOLD}║"
-    echo -e "  ║  ${NC}[9] Guardar como Modelfile              ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[4] Ver configuración actual            ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[5] Configuración avanzada              ${CYAN}${BOLD}║"
+    echo -e "  ║  ${DIM}    Top P · Top K · Contexto · Tokens   ${CYAN}${BOLD}║"
+    echo    "  ╠══════════════════════════════════════════╣"
+    echo -e "  ║  ${NC}[6] Guardar como Modelfile              ${CYAN}${BOLD}║"
     echo -e "  ║  ${NC}[0] Crear modelo personalizado          ${CYAN}${BOLD}║"
     echo    "  ╠══════════════════════════════════════════╣"
     echo -e "  ║  ${NC}[r] Restaurar defaults                  ${CYAN}${BOLD}║"
@@ -815,36 +814,6 @@ submenu_ollama_personalizacion() {
         fi; sleep 1 ;;
 
       2)
-        echo -n "  Tokens de contexto (512-8192, actual ${OLLAMA_NUM_CTX}): "
-        read -r VAL < /dev/tty
-        if [[ "$VAL" =~ ^[0-9]+$ ]] && [ "$VAL" -ge 512 ] && [ "$VAL" -le 8192 ]; then
-          OLLAMA_NUM_CTX="$VAL"; _ollama_save_params
-          echo -e "  ${GREEN}[OK]${NC} Contexto → $OLLAMA_NUM_CTX tokens"
-        else
-          echo -e "  ${RED}[ERROR]${NC} Valor inválido. Rango: 512 – 8192"
-        fi; sleep 1 ;;
-
-      3)
-        echo -n "  Top P (0.0-1.0, actual ${OLLAMA_TOP_P}): "
-        read -r VAL < /dev/tty
-        if _ollama_validate_float "$VAL" 0 1; then
-          OLLAMA_TOP_P="$VAL"; _ollama_save_params
-          echo -e "  ${GREEN}[OK]${NC} Top P → $OLLAMA_TOP_P"
-        else
-          echo -e "  ${RED}[ERROR]${NC} Valor inválido. Rango: 0.0 – 1.0"
-        fi; sleep 1 ;;
-
-      4)
-        echo -n "  Top K (1-100, actual ${OLLAMA_TOP_K}): "
-        read -r VAL < /dev/tty
-        if [[ "$VAL" =~ ^[0-9]+$ ]] && [ "$VAL" -ge 1 ] && [ "$VAL" -le 100 ]; then
-          OLLAMA_TOP_K="$VAL"; _ollama_save_params
-          echo -e "  ${GREEN}[OK]${NC} Top K → $OLLAMA_TOP_K"
-        else
-          echo -e "  ${RED}[ERROR]${NC} Valor inválido. Rango: 1 – 100"
-        fi; sleep 1 ;;
-
-      5)
         echo -n "  Repeat penalty (1.0-2.0, actual ${OLLAMA_REP_PENALTY}): "
         read -r VAL < /dev/tty
         if _ollama_validate_float "$VAL" 1 2; then
@@ -854,18 +823,8 @@ submenu_ollama_personalizacion() {
           echo -e "  ${RED}[ERROR]${NC} Valor inválido. Rango: 1.0 – 2.0"
         fi; sleep 1 ;;
 
-      6)
-        echo -n "  Max tokens por respuesta (128-4096, actual ${OLLAMA_NUM_PREDICT}): "
-        read -r VAL < /dev/tty
-        if [[ "$VAL" =~ ^[0-9]+$ ]] && [ "$VAL" -ge 128 ] && [ "$VAL" -le 4096 ]; then
-          OLLAMA_NUM_PREDICT="$VAL"; _ollama_save_params
-          echo -e "  ${GREEN}[OK]${NC} Max tokens → $OLLAMA_NUM_PREDICT"
-        else
-          echo -e "  ${RED}[ERROR]${NC} Valor inválido. Rango: 128 – 4096"
-        fi; sleep 1 ;;
-
-      7)
-        # ── Editor de system prompt ───────────────────────────
+      3)
+        # ── Editor de system prompt / personalidad ────────────
         while true; do
           clear; echo ""
           echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
@@ -881,9 +840,8 @@ submenu_ollama_personalizacion() {
           echo -e "  ║  ${NC}[3] Editar TONE (tono/estilo)           ${CYAN}${BOLD}║"
           echo -e "  ║  ${NC}[4] Editar DELIVERABLE (entregable)     ${CYAN}${BOLD}║"
           echo    "  ╠══════════════════════════════════════════╣"
-          echo -e "  ║  ${NC}[5] Prompt completo (modo avanzado)     ${CYAN}${BOLD}║"
-          echo -e "  ║  ${NC}[6] Ver prompt efectivo                 ${CYAN}${BOLD}║"
-          echo -e "  ║  ${NC}[c] Limpiar prompt completo (usar meta) ${CYAN}${BOLD}║"
+          echo -e "  ║  ${NC}[v] Ver prompt efectivo                 ${CYAN}${BOLD}║"
+          echo -e "  ║  ${NC}[c] Limpiar prompt (usar campos meta)   ${CYAN}${BOLD}║"
           echo -e "  ║  ${NC}[b] Volver                              ${CYAN}${BOLD}║"
           echo -e "  ╚══════════════════════════════════════════╝${NC}"
           echo ""; echo -n "  Opción: "
@@ -901,40 +859,28 @@ submenu_ollama_personalizacion() {
             4) echo -n "  DELIVERABLE: "; read -r VAL < /dev/tty
                [ -n "$VAL" ] && OLLAMA_DELIVERABLE="$VAL"
                _ollama_save_params; echo -e "  ${GREEN}[OK]${NC} DELIVERABLE guardado"; sleep 1 ;;
-            5)
-               if command -v nano &>/dev/null; then
-                 local _TMP_P="$HOME/.ollama_prompt_edit_tmp"
-                 echo "$OLLAMA_SYSTEM_PROMPT" > "$_TMP_P"
-                 nano "$_TMP_P" < /dev/tty
-                 OLLAMA_SYSTEM_PROMPT=$(cat "$_TMP_P")
-                 rm -f "$_TMP_P"
-               else
-                 echo -e "  ${DIM}nano no disponible — escribe el prompt en una línea${NC}"
-                 echo -n "  Prompt completo: "; read -r VAL < /dev/tty
-                 [ -n "$VAL" ] && OLLAMA_SYSTEM_PROMPT="$VAL"
-               fi
-               _ollama_save_params
-               echo -e "  ${GREEN}[OK]${NC} Prompt completo guardado"; sleep 1 ;;
-            6) clear; echo ""
+            v|V)
+               clear; echo ""
                echo -e "  ${CYAN}${BOLD}PROMPT EFECTIVO:${NC}"; echo ""
                echo -e "  ${DIM}$(_ollama_get_prompt_effective)${NC}"
                echo ""; read -r _ < /dev/tty ;;
             c|C)
                OLLAMA_SYSTEM_PROMPT=""
                _ollama_save_params
-               echo -e "  ${GREEN}[OK]${NC} Prompt completo limpiado — se usarán los campos meta"
+               echo -e "  ${GREEN}[OK]${NC} Prompt limpiado — se usarán los campos meta"
                sleep 1 ;;
             b|B|"") break ;;
           esac
         done ;;
 
-      8)
+      4)
+        # ── Ver configuración completa ────────────────────────
         clear; echo ""
         echo -e "  ${CYAN}${BOLD}CONFIGURACIÓN ACTUAL OLLAMA${NC}"; echo ""
         echo -e "  Temperatura       : ${GREEN}$OLLAMA_TEMP${NC}"
+        echo -e "  Repeat penalty    : ${GREEN}$OLLAMA_REP_PENALTY${NC}"
         echo -e "  Top P             : ${GREEN}$OLLAMA_TOP_P${NC}"
         echo -e "  Top K             : ${GREEN}$OLLAMA_TOP_K${NC}"
-        echo -e "  Repeat penalty    : ${GREEN}$OLLAMA_REP_PENALTY${NC}"
         echo -e "  Contexto (tokens) : ${GREEN}$OLLAMA_NUM_CTX${NC}"
         echo -e "  Max tokens resp   : ${GREEN}$OLLAMA_NUM_PREDICT${NC}"
         echo ""
@@ -944,7 +890,61 @@ submenu_ollama_personalizacion() {
         echo -e "  ${DIM}Archivo: $OLLAMA_USER_CFG${NC}"
         echo ""; read -r _ < /dev/tty ;;
 
-      9)
+      5)
+        # ── Configuración avanzada ────────────────────────────
+        while true; do
+          clear; echo ""
+          echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
+          echo    "  ║  ⚙  CONFIGURACIÓN AVANZADA               ║"
+          echo    "  ╠══════════════════════════════════════════╣"
+          printf  "  ║  ${NC}[1] Top P           actual: %-12s${CYAN}${BOLD}║\n" "$OLLAMA_TOP_P"
+          printf  "  ║  ${NC}[2] Top K           actual: %-12s${CYAN}${BOLD}║\n" "$OLLAMA_TOP_K"
+          printf  "  ║  ${NC}[3] Contexto tokens actual: %-12s${CYAN}${BOLD}║\n" "$OLLAMA_NUM_CTX"
+          printf  "  ║  ${NC}[4] Max tokens resp actual: %-12s${CYAN}${BOLD}║\n" "$OLLAMA_NUM_PREDICT"
+          echo    "  ╠══════════════════════════════════════════╣"
+          echo -e "  ║  ${NC}[b] Volver                              ${CYAN}${BOLD}║"
+          echo -e "  ╚══════════════════════════════════════════╝${NC}"
+          echo ""; echo -n "  Opción: "
+          read -r AOPT < /dev/tty
+          case "$AOPT" in
+            1) echo -n "  Top P (0.0-1.0, actual ${OLLAMA_TOP_P}): "
+               read -r VAL < /dev/tty
+               if _ollama_validate_float "$VAL" 0 1; then
+                 OLLAMA_TOP_P="$VAL"; _ollama_save_params
+                 echo -e "  ${GREEN}[OK]${NC} Top P → $OLLAMA_TOP_P"
+               else
+                 echo -e "  ${RED}[ERROR]${NC} Valor inválido. Rango: 0.0 – 1.0"
+               fi; sleep 1 ;;
+            2) echo -n "  Top K (1-100, actual ${OLLAMA_TOP_K}): "
+               read -r VAL < /dev/tty
+               if [[ "$VAL" =~ ^[0-9]+$ ]] && [ "$VAL" -ge 1 ] && [ "$VAL" -le 100 ]; then
+                 OLLAMA_TOP_K="$VAL"; _ollama_save_params
+                 echo -e "  ${GREEN}[OK]${NC} Top K → $OLLAMA_TOP_K"
+               else
+                 echo -e "  ${RED}[ERROR]${NC} Valor inválido. Rango: 1 – 100"
+               fi; sleep 1 ;;
+            3) echo -n "  Contexto tokens (512-8192, actual ${OLLAMA_NUM_CTX}): "
+               read -r VAL < /dev/tty
+               if [[ "$VAL" =~ ^[0-9]+$ ]] && [ "$VAL" -ge 512 ] && [ "$VAL" -le 8192 ]; then
+                 OLLAMA_NUM_CTX="$VAL"; _ollama_save_params
+                 echo -e "  ${GREEN}[OK]${NC} Contexto → $OLLAMA_NUM_CTX tokens"
+               else
+                 echo -e "  ${RED}[ERROR]${NC} Valor inválido. Rango: 512 – 8192"
+               fi; sleep 1 ;;
+            4) echo -n "  Max tokens respuesta (128-4096, actual ${OLLAMA_NUM_PREDICT}): "
+               read -r VAL < /dev/tty
+               if [[ "$VAL" =~ ^[0-9]+$ ]] && [ "$VAL" -ge 128 ] && [ "$VAL" -le 4096 ]; then
+                 OLLAMA_NUM_PREDICT="$VAL"; _ollama_save_params
+                 echo -e "  ${GREEN}[OK]${NC} Max tokens → $OLLAMA_NUM_PREDICT"
+               else
+                 echo -e "  ${RED}[ERROR]${NC} Valor inválido. Rango: 128 – 4096"
+               fi; sleep 1 ;;
+            b|B|"") break ;;
+          esac
+        done ;;
+
+      6)
+        # ── Guardar como Modelfile ────────────────────────────
         clear; echo ""
         echo -e "  ${CYAN}Modelo base para el Modelfile:${NC}"; echo ""
         mapfile -t _MF_MODELS < <(_ollama_list_models)
@@ -981,9 +981,10 @@ MFEOF
         echo ""; read -r _ < /dev/tty ;;
 
       0)
+        # ── Crear modelo personalizado ────────────────────────
         clear; echo ""
         if [ ! -f "$HOME/Modelfile" ]; then
-          echo -e "  ${YELLOW}[AVISO]${NC} Primero usa [9] para generar el Modelfile."
+          echo -e "  ${YELLOW}[AVISO]${NC} Primero usa [6] para generar el Modelfile."
           echo ""; read -r _ < /dev/tty; continue
         fi
         local _MODEL_NAME
@@ -1018,6 +1019,7 @@ MFEOF
     esac
   done
 }
+
 
 # ════════════════════════════════════════════
 #  SUBMENÚ OLLAMA
