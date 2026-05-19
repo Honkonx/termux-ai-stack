@@ -1101,7 +1101,7 @@ submenu_opencode() {
           1)
             echo ""
             proot-distro login debian -- bash -c \
-              "source ~/.bashrc 2>/dev/null; opencode --cwd '$REAL_PATH'" < /dev/tty
+              "source ~/.bashrc 2>/dev/null; cd '$REAL_PATH' && opencode ." < /dev/tty
             echo ""; read -r _ < /dev/tty ;;
           2)
             pkill -f "opencode web" 2>/dev/null; sleep 1
@@ -1109,7 +1109,7 @@ submenu_opencode() {
             echo -e "  ${CYAN}Iniciando servidor en proyecto...${NC}"
             echo -e "  ${DIM}Cuando veas la URL presiona ENTER${NC}"; echo ""
             proot-distro login debian -- bash -c \
-              "source ~/.bashrc 2>/dev/null; BROWSER= opencode web --port 3000 --hostname 127.0.0.1 --cwd '$REAL_PATH'" &
+              "source ~/.bashrc 2>/dev/null; cd '$REAL_PATH' && BROWSER= opencode web --port 3000 --hostname 127.0.0.1" &
             echo $! > "$HOME/.opencode_web.pid"
             echo ""
             echo -n "  Presiona ENTER cuando veas 'Web interface: http://127.0.0.1:3000'..."
@@ -1233,6 +1233,9 @@ submenu_opencode() {
       7)
         clear; echo ""
         echo -e "  ${CYAN}${BOLD}Configurar Ollama en OpenCode${NC}"; echo ""
+        echo -e "  ${YELLOW}[AVISO]${NC} Modelos locales en ARM64 sin GPU son lentos"
+        echo -e "  ${DIM}  (~30-60s/resp). Para uso real: Big Pickle es gratis.${NC}"
+        echo ""
         echo -e "  ${DIM}[r] Quitar Ollama (volver al provider por defecto)${NC}"; echo ""
 
         if ! curl -sf http://127.0.0.1:11434 &>/dev/null; then
@@ -1288,6 +1291,9 @@ except: pass
 
         echo -e "  Configurando: ${CYAN}${OL_MODEL}${NC}"; echo ""
 
+        # Escribir config con formato correcto para OpenCode v1.15.5+
+        # apiKey requerido aunque Ollama no lo valide — sin él el provider
+        # no aparece en el selector de modelos de la UI
         local OC_CFG_OK=false
         python3 - << PYEOF | proot-distro login debian -- bash -c \
           'mkdir -p /root/.config/opencode && cat > /root/.config/opencode/opencode.json' \
@@ -1301,7 +1307,8 @@ print(json.dumps({
       "npm": "@ai-sdk/openai-compatible",
       "name": "Ollama (local)",
       "options": {
-        "baseURL": "http://127.0.0.1:11434/v1"
+        "baseURL": "http://127.0.0.1:11434/v1",
+        "apiKey": "ollama"
       },
       "models": {
         "${OL_MODEL}": {
@@ -1313,10 +1320,15 @@ print(json.dumps({
 }, indent=2))
 PYEOF
 
-        $OC_CFG_OK \
-          && { echo -e "  ${GREEN}[OK]${NC} Ollama configurado: ${OL_MODEL}"
-               echo -e "  ${DIM}Reinicia el servidor: [5] detener → [2] iniciar${NC}"; } \
-          || echo -e "  ${RED}[ERROR]${NC} No se pudo escribir config"
+        if $OC_CFG_OK; then
+          echo -e "  ${GREEN}[OK]${NC} Ollama configurado: ${OL_MODEL}"
+          echo -e "  ${DIM}Reinicia el servidor: [5] detener → [2] iniciar${NC}"
+          echo ""
+          echo -e "  ${DIM}Si el modelo no aparece en el selector UI, ejecuta${NC}"
+          echo -e "  ${DIM}dentro de Debian: opencode auth login → Ollama (local)${NC}"
+        else
+          echo -e "  ${RED}[ERROR]${NC} No se pudo escribir config"
+        fi
         echo ""; read -r _ < /dev/tty ;;
       b|B|"") break ;;
     esac
