@@ -395,12 +395,7 @@ except Exception as e:
     echo -e "  URL con token:"
     echo -e "  \033[0;36mhttp://127.0.0.1:${PORT}/#token=${TOKEN}\033[0m"
     echo ""
-    if command -v termux-open-url &>/dev/null; then
-      termux-open-url "http://127.0.0.1:${PORT}/#token=${TOKEN}" 2>/dev/null &
-      echo -e "  \033[0;32m[OK]\033[0m Browser abierto automáticamente"
-    else
-      echo -e "  Abre la URL en Brave o Chrome manualmente"
-    fi
+    echo -e "  Abre la URL manualmente en Brave o Chrome"
   else
     echo -e "  URL base: \033[0;36mhttp://127.0.0.1:${PORT}\033[0m"
     echo -e "  \033[1;33m[AVISO]\033[0m Token no encontrado — ejecuta openclaw setup --wizard"
@@ -477,12 +472,7 @@ echo -e "  URL con token:"
 echo -e "  \033[0;36mhttp://127.0.0.1:${PORT}/#token=${TOKEN}\033[0m"
 echo ""
 
-if command -v termux-open-url &>/dev/null; then
-  termux-open-url "http://127.0.0.1:${PORT}/#token=${TOKEN}" 2>/dev/null &
-  echo -e "  \033[0;32m[OK]\033[0m Browser abierto"
-else
-  echo "  Copia la URL y ábrela en Brave o Chrome"
-fi
+echo "  Copia la URL y ábrela en Brave o Chrome"
 echo ""
 SCRIPT
   chmod +x "$OPENCLAW_SCRIPTS/openclaw_token.sh"

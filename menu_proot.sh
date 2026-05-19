@@ -688,13 +688,8 @@ _cl_stop() {
 _cl_open_browser() {
   local token="$1"
   local url="http://127.0.0.1:18789/#token=${token}"
-  if command -v termux-open-url &>/dev/null; then
-    termux-open-url "$url" 2>/dev/null &
-    echo -e "  ${GREEN}[OK]${NC} Browser abierto"
-  else
-    echo -e "  ${YELLOW}[AVISO]${NC} termux-open-url no disponible"
-    echo -e "  Abre manualmente: ${CYAN}$url${NC}"
-  fi
+  echo -e "  Abre manualmente en Brave o Chrome:"
+  echo -e "  ${CYAN}$url${NC}"
 }
 
 # ════════════════════════════════════════════
