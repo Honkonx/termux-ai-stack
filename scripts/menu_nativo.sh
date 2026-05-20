@@ -1589,6 +1589,8 @@ SPORTS_DB="$HOME/sports/db/bot_deportivo.db"
 DB_QUERY="$HOME/sports/scripts/db_query.py"
 PRONOSTICO="$HOME/sports/scripts/pronostico.py"
 PROOT_SPORTS_DB="$TERMUX_PREFIX/var/lib/proot-distro/installed-rootfs/debian/root/sports/db/bot_deportivo.db"
+SPORTS_ENV="$HOME/sports/.env"
+ACT_RES="$HOME/sports/scripts/actualizar_resultados.py"
 
 _py_ok() {
   command -v python3 &>/dev/null && return 0
@@ -1990,10 +1992,529 @@ submenu_sqlite() {
 # ════════════════════════════════════════════
 #  SUBMENÚ BOT DEPORTIVO
 # ════════════════════════════════════════════
+# ════════════════════════════════════════════
+#  SUBMENÚ BOT DEPORTIVO — v2
+#  Reemplaza el bloque submenu_bot_deportivo()
+#  en menu_nativo.sh
+# ════════════════════════════════════════════
+
+# ── helpers de configuración ─────────────────────────────────────
+
+
+# Lee una variable del .env del bot deportivo
+_env_get() {
+  local key="$1"
+  [ -f "$SPORTS_ENV" ] || { echo ""; return; }
+  grep "^${key}=" "$SPORTS_ENV" 2>/dev/null | cut -d'=' -f2- | tr -d '\n'
+}
+
+# Escribe o actualiza una variable en el .env
+_env_set() {
+  local key="$1" val="$2"
+  mkdir -p "$(dirname "$SPORTS_ENV")"
+  if [ -f "$SPORTS_ENV" ] && grep -q "^${key}=" "$SPORTS_ENV" 2>/dev/null; then
+    sed -i "s|^${key}=.*|${key}=${val}|" "$SPORTS_ENV"
+  else
+    echo "${key}=${val}" >> "$SPORTS_ENV"
+  fi
+}
+
+# Muestra primeros/últimos 4 chars de una key, el resto con asteriscos
+_mask_key() {
+  local k="$1"
+  local len=${#k}
+  if [ "$len" -le 8 ]; then echo "****"; return; fi
+  echo "${k:0:4}****${k: -4}"
+}
+
+# ── submenú configuración → admin ────────────────────────────────
+
+_submenu_cfg_admin() {
+  while true; do
+    clear; echo ""
+    local ADMIN_ID; ADMIN_ID=$(_env_get "SPORTS_ADMIN_ID")
+    local ADMIN_STATUS
+    if [ -n "$ADMIN_ID" ]; then
+      ADMIN_STATUS="${GREEN}● Configurado${NC}"
+    else
+      ADMIN_STATUS="${YELLOW}○ Sin configurar${NC}"
+    fi
+
+    echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
+    echo    "  ║  ◉ ADMIN — Configuración                ║"
+    echo    "  ╠══════════════════════════════════════════╣"
+    printf  "  ║  ${NC}Admin: %b${CYAN}${BOLD}                        ║\n" "$ADMIN_STATUS"
+    [ -n "$ADMIN_ID" ] && \
+    printf  "  ║  ${NC}ID: %-38s${CYAN}${BOLD}║\n" "$ADMIN_ID"
+    echo    "  ╠══════════════════════════════════════════╣"
+    echo -e "  ║  ${NC}[1] Ver admin actual                    ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[2] Configurar / cambiar admin          ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[3] Ver mi Telegram ID                  ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[b] Volver                              ${CYAN}${BOLD}║"
+    echo -e "  ╚══════════════════════════════════════════╝${NC}"
+    echo ""; echo -n "  Opción: "; read -r OPT < /dev/tty
+
+    case "$OPT" in
+      1)
+        clear; echo ""
+        local A; A=$(_env_get "SPORTS_ADMIN_ID")
+        if [ -n "$A" ]; then
+          echo -e "  ${GREEN}[OK]${NC} Admin configurado"
+          echo -e "  ID: ${BOLD}${A}${NC}"
+          echo -e "  Archivo: ${DIM}$SPORTS_ENV${NC}"
+        else
+          echo -e "  ${YELLOW}[AVISO]${NC} No hay admin configurado"
+          echo -e "  ${DIM}Usa [2] para configurarlo${NC}"
+        fi
+        echo ""; read -r _ < /dev/tty ;;
+
+      2)
+        clear; echo ""
+        local A_ACT; A_ACT=$(_env_get "SPORTS_ADMIN_ID")
+        if [ -n "$A_ACT" ]; then
+          echo -e "  ${YELLOW}[AVISO]${NC} Ya hay un admin configurado: ${BOLD}${A_ACT}${NC}"
+          echo -n "  ¿Reemplazar? (s/n): "; read -r CONF < /dev/tty
+          [ "$CONF" != "s" ] && [ "$CONF" != "S" ] && continue
+        fi
+        echo ""
+        echo -e "  ${DIM}Para obtener tu ID: habla con @userinfobot en Telegram${NC}"
+        echo -n "  Nuevo Telegram ID del admin: "; read -r NEW_ADMIN < /dev/tty
+        [ -z "$NEW_ADMIN" ] && { echo -e "  ${YELLOW}Cancelado.${NC}"; echo ""; read -r _ < /dev/tty; continue; }
+        # Validar que sea numérico
+        if ! [[ "$NEW_ADMIN" =~ ^[0-9]+$ ]]; then
+          echo -e "  ${RED}[ERROR]${NC} El ID debe ser numérico"
+          echo ""; read -r _ < /dev/tty; continue
+        fi
+        # Usar db_query.py setup_inicial
+        local RESULT
+        RESULT=$(python3 "$DB_QUERY" setup_inicial \
+          "{\"user_id\":\"${NEW_ADMIN}\",\"forzar\":true}" 2>/dev/null)
+        local ESTADO
+        ESTADO=$(echo "$RESULT" | python3 -c \
+          "import sys,json; d=json.loads(sys.stdin.read()); print(d.get('data',{}).get('estado','error'))" 2>/dev/null)
+        if [ "$ESTADO" = "creado" ] || [ "$ESTADO" = "actualizado" ]; then
+          echo -e "  ${GREEN}[OK]${NC} Admin configurado: ${BOLD}${NEW_ADMIN}${NC}"
+          echo -e "  ${DIM}Guardado en: $SPORTS_ENV${NC}"
+        else
+          echo -e "  ${RED}[ERROR]${NC} No se pudo configurar: $RESULT"
+        fi
+        echo ""; read -r _ < /dev/tty ;;
+
+      3)
+        clear; echo ""
+        echo -e "  ${CYAN}Para obtener tu Telegram ID:${NC}"; echo ""
+        echo -e "  1. Abre Telegram"
+        echo -e "  2. Busca ${BOLD}@userinfobot${NC}"
+        echo -e "  3. Envía /start"
+        echo -e "  4. Te responde con tu ID numérico"; echo ""
+        echo -e "  ${DIM}También puedes ver tu ID en la respuesta del bot cuando"
+        echo -e "  intentas usarlo sin estar autorizado — aparece en el mensaje.${NC}"
+        echo ""; read -r _ < /dev/tty ;;
+
+      b|B|"") break ;;
+      *) warn "Opción inválida"; sleep 1 ;;
+    esac
+  done
+}
+
+# ── submenú configuración → usuarios ─────────────────────────────
+
+_submenu_cfg_usuarios() {
+  while true; do
+    clear; echo ""
+    echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
+    echo    "  ║  ◉ USUARIOS — Gestión                   ║"
+    echo    "  ╠══════════════════════════════════════════╣"
+    echo -e "  ║  ${NC}[1] Ver tabla de usuarios               ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[2] Agregar usuario                     ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[3] Activar / Desactivar (por #)        ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[4] Cambiar plan (por #)                ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[5] Eliminar usuario (por #)            ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[b] Volver                              ${CYAN}${BOLD}║"
+    echo -e "  ╚══════════════════════════════════════════╝${NC}"
+    echo ""; echo -n "  Opción: "; read -r OPT < /dev/tty
+
+    case "$OPT" in
+      1)
+        clear; echo ""
+        echo -e "  ${CYAN}Usuarios registrados:${NC}"; echo ""
+        python3 - << 'PYUSERS'
+import sqlite3, os
+from datetime import datetime
+DB = os.path.join(os.environ.get("HOME",""), "sports", "db", "bot_deportivo.db")
+try:
+    conn = sqlite3.connect(DB)
+    conn.row_factory = sqlite3.Row
+    usuarios = conn.execute(
+        "SELECT id, device_id, activo, plan FROM usuarios ORDER BY id ASC"
+    ).fetchall()
+    if not usuarios:
+        print("  Sin usuarios registrados.")
+        conn.close()
+        raise SystemExit
+    hoy = datetime.now().strftime('%Y-%m-%d')
+    # Límites por plan
+    LIMITES = {'free': '∞', 'pro': '10', 'max': '30'}
+    print(f"  {'#':<4} {'ID Telegram':<18} {'Plan':<6} {'Hoy':<8} {'Total':<6} {'Estado'}")
+    print(f"  {'─'*4} {'─'*18} {'─'*6} {'─'*8} {'─'*6} {'─'*10}")
+    for u in usuarios:
+        uid   = u['device_id']
+        plan  = u['plan']
+        activo = u['activo']
+        lim   = LIMITES.get(plan, '?')
+        # Análisis de hoy
+        usados_hoy = conn.execute(
+            """SELECT COUNT(*) FROM jobs
+               WHERE user_id=? AND status IN ('listo','procesando')
+               AND DATE(creado_en)=?""",
+            (uid, hoy)
+        ).fetchone()[0]
+        # Total histórico
+        total = conn.execute(
+            "SELECT COUNT(*) FROM jobs WHERE user_id=? AND status='listo'",
+            (uid,)
+        ).fetchone()[0]
+        hoy_str  = f"{usados_hoy}/{lim}"
+        estado   = "✓ activo" if activo else "✗ bloq."
+        num      = u['id']
+        print(f"  {num:<4} {uid:<18} {plan:<6} {hoy_str:<8} {total:<6} {estado}")
+    conn.close()
+except SystemExit:
+    pass
+except Exception as e:
+    print(f"  Error: {e}")
+PYUSERS
+        echo ""; read -r _ < /dev/tty ;;
+
+      2)
+        clear; echo ""
+        echo -e "  ${DIM}Para obtener el ID de alguien: pídele que hable con @userinfobot${NC}"; echo ""
+        echo -n "  Telegram ID del usuario: "; read -r NEW_UID < /dev/tty
+        [ -z "$NEW_UID" ] && { echo -e "  ${YELLOW}Cancelado.${NC}"; echo ""; read -r _ < /dev/tty; continue; }
+        if ! [[ "$NEW_UID" =~ ^[0-9]+$ ]]; then
+          echo -e "  ${RED}[ERROR]${NC} El ID debe ser numérico"
+          echo ""; read -r _ < /dev/tty; continue
+        fi
+        echo -n "  Plan (free/pro/max) [free]: "; read -r NEW_PLAN < /dev/tty
+        NEW_PLAN="${NEW_PLAN:-free}"
+        if [[ ! "$NEW_PLAN" =~ ^(free|pro|max)$ ]]; then
+          echo -e "  ${RED}[ERROR]${NC} Plan inválido. Usa: free, pro o max"
+          echo ""; read -r _ < /dev/tty; continue
+        fi
+        local RES
+        RES=$(python3 "$DB_QUERY" gestionar_usuario \
+          "{\"accion\":\"agregar\",\"user_id\":\"${NEW_UID}\",\"plan\":\"${NEW_PLAN}\"}" 2>/dev/null)
+        local ACCION
+        ACCION=$(echo "$RES" | python3 -c \
+          "import sys,json; d=json.loads(sys.stdin.read()); print(d.get('data',{}).get('accion','error'))" 2>/dev/null)
+        if [ "$ACCION" = "agregado" ] || [ "$ACCION" = "reactivado" ]; then
+          echo -e "  ${GREEN}[OK]${NC} Usuario ${BOLD}${NEW_UID}${NC} — ${ACCION} con plan ${BOLD}${NEW_PLAN}${NC}"
+        else
+          echo -e "  ${RED}[ERROR]${NC} $RES"
+        fi
+        echo ""; read -r _ < /dev/tty ;;
+
+      3)
+        clear; echo ""
+        echo -e "  ${CYAN}Activar / Desactivar usuario:${NC}"; echo ""
+        # Mostrar tabla primero
+        python3 - << 'PYLIST2'
+import sqlite3, os
+DB = os.path.join(os.environ.get("HOME",""), "sports", "db", "bot_deportivo.db")
+try:
+    conn = sqlite3.connect(DB)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute("SELECT id, device_id, plan, activo FROM usuarios ORDER BY id ASC").fetchall()
+    conn.close()
+    if not rows:
+        print("  Sin usuarios registrados.")
+    else:
+        print(f"  {'#':<4} {'ID Telegram':<18} {'Plan':<6} {'Estado'}")
+        print(f"  {'─'*4} {'─'*18} {'─'*6} {'─'*10}")
+        for r in rows:
+            est = "✓ activo" if r['activo'] else "✗ bloqueado"
+            print(f"  {r['id']:<4} {r['device_id']:<18} {r['plan']:<6} {est}")
+except Exception as e:
+    print(f"  Error: {e}")
+PYLIST2
+        echo ""
+        echo -n "  # de usuario: "; read -r NUM < /dev/tty
+        [ -z "$NUM" ] || ! [[ "$NUM" =~ ^[0-9]+$ ]] && \
+          { echo -e "  ${YELLOW}Cancelado.${NC}"; echo ""; read -r _ < /dev/tty; continue; }
+        # Resolver ID y estado actual
+        local UID_TARGET ACTIVO_ACT
+        read -r UID_TARGET ACTIVO_ACT < <(python3 -c "
+import sqlite3, os
+DB = os.path.join(os.environ.get('HOME',''), 'sports', 'db', 'bot_deportivo.db')
+conn = sqlite3.connect(DB); conn.row_factory = sqlite3.Row
+row = conn.execute('SELECT device_id, activo FROM usuarios WHERE id=?',('$NUM',)).fetchone()
+conn.close()
+if row: print(row['device_id'], row['activo'])
+else: print('', '-1')
+" 2>/dev/null)
+        if [ -z "$UID_TARGET" ] || [ "$ACTIVO_ACT" = "-1" ]; then
+          echo -e "  ${RED}[ERROR]${NC} Usuario # ${NUM} no encontrado"
+          echo ""; read -r _ < /dev/tty; continue
+        fi
+        # Acción inversa al estado actual
+        local ACCION_TOGGLE
+        if [ "$ACTIVO_ACT" = "1" ]; then
+          ACCION_TOGGLE="desactivar"
+        else
+          ACCION_TOGGLE="activar"
+        fi
+        local RES
+        RES=$(python3 "$DB_QUERY" gestionar_usuario \
+          "{\"accion\":\"${ACCION_TOGGLE}\",\"user_id\":\"${UID_TARGET}\"}" 2>/dev/null)
+        local OK_FLAG
+        OK_FLAG=$(echo "$RES" | python3 -c \
+          "import sys,json; d=json.loads(sys.stdin.read()); print(d.get('ok',False))" 2>/dev/null)
+        if [ "$OK_FLAG" = "True" ]; then
+          echo -e "  ${GREEN}[OK]${NC} Usuario ${BOLD}${UID_TARGET}${NC} → ${BOLD}${ACCION_TOGGLE}do${NC}"
+        else
+          echo -e "  ${RED}[ERROR]${NC} $RES"
+        fi
+        echo ""; read -r _ < /dev/tty ;;
+
+      4)
+        clear; echo ""
+        echo -e "  ${CYAN}Cambiar plan de usuario:${NC}"; echo ""
+        python3 - << 'PYLIST3'
+import sqlite3, os
+DB = os.path.join(os.environ.get("HOME",""), "sports", "db", "bot_deportivo.db")
+try:
+    conn = sqlite3.connect(DB); conn.row_factory = sqlite3.Row
+    rows = conn.execute("SELECT id, device_id, plan, activo FROM usuarios ORDER BY id ASC").fetchall()
+    conn.close()
+    if not rows:
+        print("  Sin usuarios registrados.")
+    else:
+        print(f"  {'#':<4} {'ID Telegram':<18} {'Plan actual'}")
+        print(f"  {'─'*4} {'─'*18} {'─'*11}")
+        for r in rows:
+            print(f"  {r['id']:<4} {r['device_id']:<18} {r['plan']}")
+except Exception as e:
+    print(f"  Error: {e}")
+PYLIST3
+        echo ""
+        echo -n "  # de usuario: "; read -r NUM < /dev/tty
+        [ -z "$NUM" ] || ! [[ "$NUM" =~ ^[0-9]+$ ]] && \
+          { echo -e "  ${YELLOW}Cancelado.${NC}"; echo ""; read -r _ < /dev/tty; continue; }
+        local UID_TARGET
+        UID_TARGET=$(python3 -c "
+import sqlite3, os
+DB = os.path.join(os.environ.get('HOME',''), 'sports', 'db', 'bot_deportivo.db')
+conn = sqlite3.connect(DB); conn.row_factory = sqlite3.Row
+row = conn.execute('SELECT device_id FROM usuarios WHERE id=?',('$NUM',)).fetchone()
+conn.close()
+print(row['device_id'] if row else '')
+" 2>/dev/null)
+        if [ -z "$UID_TARGET" ]; then
+          echo -e "  ${RED}[ERROR]${NC} Usuario # ${NUM} no encontrado"
+          echo ""; read -r _ < /dev/tty; continue
+        fi
+        echo -n "  Nuevo plan (free/pro/max): "; read -r NEW_PLAN < /dev/tty
+        if [[ ! "$NEW_PLAN" =~ ^(free|pro|max)$ ]]; then
+          echo -e "  ${RED}[ERROR]${NC} Plan inválido. Usa: free, pro o max"
+          echo ""; read -r _ < /dev/tty; continue
+        fi
+        local RES
+        RES=$(python3 "$DB_QUERY" gestionar_usuario \
+          "{\"accion\":\"cambiar_plan\",\"user_id\":\"${UID_TARGET}\",\"plan\":\"${NEW_PLAN}\"}" 2>/dev/null)
+        local OK_FLAG
+        OK_FLAG=$(echo "$RES" | python3 -c \
+          "import sys,json; d=json.loads(sys.stdin.read()); print(d.get('ok',False))" 2>/dev/null)
+        if [ "$OK_FLAG" = "True" ]; then
+          echo -e "  ${GREEN}[OK]${NC} ${BOLD}${UID_TARGET}${NC} → plan ${BOLD}${NEW_PLAN}${NC}"
+        else
+          echo -e "  ${RED}[ERROR]${NC} $RES"
+        fi
+        echo ""; read -r _ < /dev/tty ;;
+
+      5)
+        clear; echo ""
+        echo -e "  ${CYAN}Eliminar usuario:${NC}"; echo ""
+        python3 - << 'PYLIST4'
+import sqlite3, os
+DB = os.path.join(os.environ.get("HOME",""), "sports", "db", "bot_deportivo.db")
+try:
+    conn = sqlite3.connect(DB); conn.row_factory = sqlite3.Row
+    rows = conn.execute("SELECT id, device_id, plan FROM usuarios ORDER BY id ASC").fetchall()
+    conn.close()
+    if not rows:
+        print("  Sin usuarios registrados.")
+    else:
+        print(f"  {'#':<4} {'ID Telegram':<18} {'Plan'}")
+        print(f"  {'─'*4} {'─'*18} {'─'*6}")
+        for r in rows:
+            print(f"  {r['id']:<4} {r['device_id']:<18} {r['plan']}")
+except Exception as e:
+    print(f"  Error: {e}")
+PYLIST4
+        echo ""
+        echo -n "  # de usuario a eliminar: "; read -r NUM < /dev/tty
+        [ -z "$NUM" ] || ! [[ "$NUM" =~ ^[0-9]+$ ]] && \
+          { echo -e "  ${YELLOW}Cancelado.${NC}"; echo ""; read -r _ < /dev/tty; continue; }
+        local UID_TARGET
+        UID_TARGET=$(python3 -c "
+import sqlite3, os
+DB = os.path.join(os.environ.get('HOME',''), 'sports', 'db', 'bot_deportivo.db')
+conn = sqlite3.connect(DB); conn.row_factory = sqlite3.Row
+row = conn.execute('SELECT device_id FROM usuarios WHERE id=?',('$NUM',)).fetchone()
+conn.close()
+print(row['device_id'] if row else '')
+" 2>/dev/null)
+        if [ -z "$UID_TARGET" ]; then
+          echo -e "  ${RED}[ERROR]${NC} Usuario # ${NUM} no encontrado"
+          echo ""; read -r _ < /dev/tty; continue
+        fi
+        echo -e "  ${RED}[AVISO]${NC} Esto eliminará permanentemente al usuario ${BOLD}${UID_TARGET}${NC}"
+        echo -n "  ¿Confirmar? (escribe SI): "; read -r CONF < /dev/tty
+        [ "$CONF" != "SI" ] && { echo -e "  ${YELLOW}Cancelado.${NC}"; echo ""; read -r _ < /dev/tty; continue; }
+        local RES
+        RES=$(python3 "$DB_QUERY" gestionar_usuario \
+          "{\"accion\":\"eliminar\",\"user_id\":\"${UID_TARGET}\"}" 2>/dev/null)
+        local OK_FLAG
+        OK_FLAG=$(echo "$RES" | python3 -c \
+          "import sys,json; d=json.loads(sys.stdin.read()); print(d.get('ok',False))" 2>/dev/null)
+        if [ "$OK_FLAG" = "True" ]; then
+          echo -e "  ${GREEN}[OK]${NC} Usuario ${BOLD}${UID_TARGET}${NC} eliminado"
+          echo -e "  ${DIM}Nota: su historial de predicciones se conserva para análisis${NC}"
+        else
+          echo -e "  ${RED}[ERROR]${NC} $RES"
+        fi
+        echo ""; read -r _ < /dev/tty ;;
+
+      b|B|"") break ;;
+      *) warn "Opción inválida"; sleep 1 ;;
+    esac
+  done
+}
+
+# ── submenú configuración → APIs ─────────────────────────────────
+
+_submenu_cfg_apis() {
+  while true; do
+    clear; echo ""
+    # Leer estado de cada API
+    local API_SPORTS; API_SPORTS=$(_env_get "SPORTS_API_KEY")
+
+    echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
+    echo    "  ║  ◉ APIs — Gestión de claves             ║"
+    echo    "  ╠══════════════════════════════════════════╣"
+    if [ -n "$API_SPORTS" ]; then
+      printf  "  ║  ${NC}api-football: ${GREEN}● $(_mask_key "$API_SPORTS")${NC}${CYAN}${BOLD}          ║\n"
+    else
+      printf  "  ║  ${NC}api-football: ${YELLOW}○ no configurada${NC}${CYAN}${BOLD}         ║\n"
+    fi
+    echo    "  ╠══════════════════════════════════════════╣"
+    echo -e "  ║  ${NC}[1] Ver APIs configuradas               ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[2] Configurar api-football key         ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[3] Ver archivo .env completo           ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[b] Volver                              ${CYAN}${BOLD}║"
+    echo -e "  ╚══════════════════════════════════════════╝${NC}"
+    echo ""; echo -n "  Opción: "; read -r OPT < /dev/tty
+
+    case "$OPT" in
+      1)
+        clear; echo ""
+        echo -e "  ${CYAN}APIs configuradas:${NC}"; echo ""
+        local K
+        K=$(_env_get "SPORTS_API_KEY")
+        if [ -n "$K" ]; then
+          echo -e "  ${GREEN}●${NC} api-football   $(_mask_key "$K")"
+        else
+          echo -e "  ${YELLOW}○${NC} api-football   sin configurar"
+        fi
+        echo ""
+        echo -e "  ${DIM}Próximas APIs (cuando las necesites):"
+        echo -e "    BETEXPLORER_KEY, ODDSAPI_KEY${NC}"
+        echo ""; read -r _ < /dev/tty ;;
+
+      2)
+        clear; echo ""
+        local K_ACT; K_ACT=$(_env_get "SPORTS_API_KEY")
+        if [ -n "$K_ACT" ]; then
+          echo -e "  ${YELLOW}[AVISO]${NC} Ya hay una key configurada: $(_mask_key "$K_ACT")"
+          echo -n "  ¿Reemplazar? (s/n): "; read -r CONF < /dev/tty
+          [ "$CONF" != "s" ] && [ "$CONF" != "S" ] && continue
+        fi
+        echo ""
+        echo -e "  ${DIM}Obtén tu key en: https://api-football.com${NC}"
+        echo -n "  Pega la api-football key: "; read -r NEW_KEY < /dev/tty
+        [ -z "$NEW_KEY" ] && { echo -e "  ${YELLOW}Cancelado.${NC}"; echo ""; read -r _ < /dev/tty; continue; }
+        _env_set "SPORTS_API_KEY" "$NEW_KEY"
+        echo -e "  ${GREEN}[OK]${NC} api-football key guardada: $(_mask_key "$NEW_KEY")"
+        echo -e "  ${DIM}Guardada en: $SPORTS_ENV${NC}"
+        echo ""; read -r _ < /dev/tty ;;
+
+      3)
+        clear; echo ""
+        echo -e "  ${CYAN}Archivo .env:${NC} ${DIM}$SPORTS_ENV${NC}"; echo ""
+        if [ ! -f "$SPORTS_ENV" ]; then
+          echo -e "  ${YELLOW}[AVISO]${NC} Archivo no existe aún"
+        else
+          # Mostrar con keys enmascaradas
+          while IFS= read -r linea; do
+            if echo "$linea" | grep -qE "^(SPORTS_API_KEY|BETEXPLORER|ODDSAPI)="; then
+              local k v
+              k=$(echo "$linea" | cut -d'=' -f1)
+              v=$(echo "$linea" | cut -d'=' -f2-)
+              echo -e "  ${k}=$(_mask_key "$v")"
+            else
+              echo "  $linea"
+            fi
+          done < "$SPORTS_ENV"
+        fi
+        echo ""; read -r _ < /dev/tty ;;
+
+      b|B|"") break ;;
+      *) warn "Opción inválida"; sleep 1 ;;
+    esac
+  done
+}
+
+# ── submenú configuración principal (opción [4]) ─────────────────
+
+_submenu_configuracion() {
+  while true; do
+    clear; echo ""
+    local ADMIN_ID; ADMIN_ID=$(_env_get "SPORTS_ADMIN_ID")
+    local API_KEY;  API_KEY=$(_env_get "SPORTS_API_KEY")
+    local ADM_STATUS API_STATUS
+
+    [ -n "$ADMIN_ID" ] && ADM_STATUS="${GREEN}● conf.${NC}" || ADM_STATUS="${YELLOW}○ vacío${NC}"
+    [ -n "$API_KEY"  ] && API_STATUS="${GREEN}● conf.${NC}" || API_STATUS="${YELLOW}○ vacío${NC}"
+
+    echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
+    echo    "  ║  ◉ CONFIGURACIÓN — usuarios, admin, APIs║"
+    echo    "  ╠══════════════════════════════════════════╣"
+    printf  "  ║  ${NC}Admin: %b  api-football: %b${CYAN}${BOLD}      ║\n" \
+      "$ADM_STATUS" "$API_STATUS"
+    echo    "  ╠══════════════════════════════════════════╣"
+    echo -e "  ║  ${NC}[1] Gestionar admin                     ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[2] Gestionar usuarios                  ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[3] Gestionar APIs                      ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[b] Volver al bot deportivo             ${CYAN}${BOLD}║"
+    echo -e "  ╚══════════════════════════════════════════╝${NC}"
+    echo ""; echo -n "  Opción: "; read -r OPT < /dev/tty
+
+    case "$OPT" in
+      1) _submenu_cfg_admin   ;;
+      2) _submenu_cfg_usuarios ;;
+      3) _submenu_cfg_apis    ;;
+      b|B|"") break ;;
+      *) warn "Opción inválida"; sleep 1 ;;
+    esac
+  done
+}
+
+# ════════════════════════════════════════════
+#  SUBMENÚ BOT DEPORTIVO — v2
+# ════════════════════════════════════════════
 submenu_bot_deportivo() {
   while true; do
     clear; echo ""
-    # Estado BD y scipy en el header
     local SPORTS_STATUS SCIPY_STATUS BD_INFO
     if python3 -c "import numpy, scipy" 2>/dev/null; then
       SCIPY_STATUS="${GREEN}scipy ✓${NC}"
@@ -2027,7 +2548,7 @@ else:
     echo -e "  ║  ${NC}[1] Inicializar BD (crear tablas)       ${CYAN}${BOLD}║"
     echo -e "  ║  ${NC}[2] Ver stats (predicciones + jobs)     ${CYAN}${BOLD}║"
     echo -e "  ║  ${NC}[3] Ver jobs recientes                  ${CYAN}${BOLD}║"
-    echo -e "  ║  ${NC}[4] Agregar usuario autorizado          ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[4] ◉ Configuración →                   ${CYAN}${BOLD}║"
     echo -e "  ║  ${NC}[5] Test db_query.py                    ${CYAN}${BOLD}║"
     echo -e "  ║  ${NC}[6] Test pronostico.py                  ${CYAN}${BOLD}║"
     echo -e "  ║  ${NC}[7] Sincronizar BD → proot (n8n)        ${CYAN}${BOLD}║"
@@ -2089,27 +2610,7 @@ except Exception as e:
 PYJOBS
         echo ""; read -r _ < /dev/tty ;;
 
-      4)
-        _sports_ok || continue
-        clear; echo ""
-        echo -n "  Telegram ID del usuario: "; read -r NEW_UID < /dev/tty
-        [ -z "$NEW_UID" ] && { warn "Cancelado"; echo ""; read -r _ < /dev/tty; continue; }
-        echo -n "  Plan (admin/pro/free) [admin]: "; read -r NEW_PLAN < /dev/tty
-        NEW_PLAN="${NEW_PLAN:-admin}"
-        python3 - << PYADD
-import sqlite3
-from datetime import datetime
-DB = '$SPORTS_DB'
-conn = sqlite3.connect(DB)
-conn.execute(
-    "INSERT OR REPLACE INTO usuarios (device_id, activo, plan, creado_en) VALUES (?, 1, ?, ?)",
-    ('$NEW_UID', '$NEW_PLAN', datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
-)
-conn.commit()
-conn.close()
-print('  [OK] Usuario $NEW_UID agregado con plan $NEW_PLAN')
-PYADD
-        echo ""; read -r _ < /dev/tty ;;
+      4) _submenu_configuracion ;;
 
       5)
         _sports_ok || continue
@@ -2208,6 +2709,7 @@ PYCLEAN
     esac
   done
 }
+
 
 # ════════════════════════════════════════════
 #  SUBMENÚ PYTHON
