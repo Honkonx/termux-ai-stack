@@ -226,6 +226,33 @@ def init_db(conn):
         CREATE INDEX IF NOT EXISTS idx_comparativo_fecha   ON analisis_comparativo(fecha);
         CREATE INDEX IF NOT EXISTS idx_resultados_fixture  ON resultados_partidos(fixture_id);
         CREATE INDEX IF NOT EXISTS idx_recom_fecha         ON recomendaciones_dia(fecha);
+
+        -- v4: análisis individuales para sistema de caché consenso
+        CREATE TABLE IF NOT EXISTS analisis_individuales (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            partido_id     TEXT NOT NULL,
+            pick_final     TEXT NOT NULL,
+            confianza      TEXT,
+            score_final    INTEGER,
+            texto_completo TEXT NOT NULL,
+            creado_en      TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS cache_consenso (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            partido_id     TEXT UNIQUE NOT NULL,
+            pick_consenso  TEXT NOT NULL,
+            texto_consenso TEXT NOT NULL,
+            total_analisis INTEGER NOT NULL DEFAULT 0,
+            usos           INTEGER NOT NULL DEFAULT 0,
+            max_usos       INTEGER NOT NULL DEFAULT 5,
+            expira_en      TEXT NOT NULL,
+            creado_en      TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_analisis_ind_partido ON analisis_individuales(partido_id);
+        CREATE INDEX IF NOT EXISTS idx_cache_consenso_partido ON cache_consenso(partido_id);
+
     """)
 
     # Migración segura: columnas nuevas sin romper BD existente
@@ -237,6 +264,12 @@ def init_db(conn):
         ('analisis_comparativo', 'goles_visitante',  'INTEGER'),
         ('analisis_comparativo', 'status_partido',   'TEXT'),
         ('predicciones',         'pick_correcto',    'INTEGER'),
+        # v4: verificación granular por fuente en analisis_comparativo
+        ('analisis_comparativo', 'pick_form',             'TEXT'),
+        ('analisis_comparativo', 'score_form',            'INTEGER'),
+        ('analisis_comparativo', 'pick_python_correcto',  'INTEGER'),
+        ('analisis_comparativo', 'pick_claude_correcto',  'INTEGER'),
+        ('analisis_comparativo', 'pick_form_correcto',    'INTEGER'),
     ]
     for tabla, col, tipo in migraciones:
         try:
@@ -332,6 +365,248 @@ def verificar_cache(args):
     else:
         conn.close()
         ok({'cache_hit': False, 'respuesta_json': None, 'hash': h})
+
+
+def verificar_job_activo(args):
+    """Devuelve job_activo=True si ya existe un job pendiente o procesando
+    para este match_id. Evita crear jobs duplicados en WF-A."""
+    match_id = str(args.get('match_id', ''))
+    conn     = conectar()
+    init_db(conn)
+    row = conn.execute(
+        """SELECT job_id FROM jobs
+           WHERE match_id = ?
+             AND status IN ('pendiente', 'procesando')
+           ORDER BY creado_en DESC LIMIT 1""",
+        (match_id,)
+    ).fetchone()
+    conn.close()
+    if row:
+        ok({'job_activo': True, 'job_id': row['job_id']})
+    else:
+        ok({'job_activo': False, 'job_id': None})
+
+
+def leer_aciertos_por_fuente(args):
+    """
+    Lee winrate del día (o rango) desglosado por fuente:
+    pick_final (global), pick_python, pick_claude, pick_form.
+    Devuelve el conteo de aciertos/total por cada fuente.
+    """
+    fecha     = str(args.get('fecha', ''))
+    fecha_fin = str(args.get('fecha_fin', fecha))
+    if not fecha:
+        from datetime import datetime as _dt
+        fecha = fecha_fin = _dt.now().strftime('%Y-%m-%d')
+    conn = conectar()
+    init_db(conn)
+    row = conn.execute(
+        """SELECT
+             COUNT(*) AS total,
+             SUM(CASE WHEN pick_correcto         = 1 THEN 1 ELSE 0 END) AS aciertos_final,
+             SUM(CASE WHEN pick_python_correcto  = 1 THEN 1 ELSE 0 END) AS aciertos_python,
+             SUM(CASE WHEN pick_claude_correcto  = 1 THEN 1 ELSE 0 END) AS aciertos_claude,
+             SUM(CASE WHEN pick_form_correcto    = 1 THEN 1 ELSE 0 END) AS aciertos_form,
+             SUM(CASE WHEN pick_python_correcto IS NOT NULL THEN 1 ELSE 0 END) AS total_python,
+             SUM(CASE WHEN pick_claude_correcto IS NOT NULL THEN 1 ELSE 0 END) AS total_claude,
+             SUM(CASE WHEN pick_form_correcto   IS NOT NULL THEN 1 ELSE 0 END) AS total_form
+           FROM analisis_comparativo
+           WHERE fecha BETWEEN ? AND ?
+             AND resultado_real IS NOT NULL
+             AND resultado_real != 'CANC'""",
+        (fecha, fecha_fin)
+    ).fetchone()
+    conn.close()
+
+    def wr(aciertos, total):
+        return round(aciertos / total * 100, 1) if total > 0 else None
+
+    total      = row['total']              or 0
+    ac_final   = row['aciertos_final']     or 0
+    ac_python  = row['aciertos_python']    or 0
+    ac_claude  = row['aciertos_claude']    or 0
+    ac_form    = row['aciertos_form']      or 0
+    tot_python = row['total_python']       or 0
+    tot_claude = row['total_claude']       or 0
+    tot_form   = row['total_form']         or 0
+
+    ok({
+        'fecha':     fecha,
+        'fecha_fin': fecha_fin,
+        'total':     total,
+        'final':     {'aciertos': ac_final,  'total': total,      'winrate': wr(ac_final,  total)},
+        'python':    {'aciertos': ac_python,  'total': tot_python, 'winrate': wr(ac_python, tot_python)},
+        'claude':    {'aciertos': ac_claude,  'total': tot_claude, 'winrate': wr(ac_claude, tot_claude)},
+        'form':      {'aciertos': ac_form,    'total': tot_form,   'winrate': wr(ac_form,   tot_form)},
+    })
+
+
+def guardar_analisis_individual(args):
+    """Guarda el resultado completo de un análisis individual antes de evaluar consenso."""
+    partido_id     = str(args.get('partido_id', ''))
+    pick_final     = str(args.get('pick_final', ''))
+    confianza      = str(args.get('confianza', ''))
+    score_final    = int(args.get('score_final', 0))
+    texto_completo = str(args.get('texto_completo', ''))
+    if not partido_id or not pick_final or not texto_completo:
+        error('partido_id, pick_final y texto_completo son obligatorios')
+        return
+    conn = conectar()
+    init_db(conn)
+    conn.execute(
+        """INSERT INTO analisis_individuales
+           (partido_id, pick_final, confianza, score_final, texto_completo, creado_en)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (partido_id, pick_final, confianza, score_final, texto_completo, now())
+    )
+    conn.commit()
+    total = conn.execute(
+        "SELECT COUNT(*) AS cnt FROM analisis_individuales WHERE partido_id = ?",
+        (partido_id,)
+    ).fetchone()['cnt']
+    conn.close()
+    ok({'guardado': True, 'total_analisis': total, 'partido_id': partido_id})
+
+
+def verificar_consenso_cache(args):
+    """
+    Verifica en orden:
+    1. Caché consenso activo (3+ coincidentes, usos < max_usos, no expirado) → servir
+    2. Job pendiente/procesando → dedup (no crear otro job)
+    3. Sin nada → crear job normalmente
+    """
+    partido_id = str(args.get('partido_id', '') or args.get('match_id', ''))
+    conn = conectar()
+    init_db(conn)
+
+    # 1. Caché consenso activo
+    row_cc = conn.execute(
+        """SELECT pick_consenso, texto_consenso, total_analisis, usos, max_usos
+           FROM cache_consenso
+           WHERE partido_id = ? AND expira_en > ? AND usos < max_usos""",
+        (partido_id, now())
+    ).fetchone()
+
+    if row_cc:
+        conn.execute(
+            "UPDATE cache_consenso SET usos = usos + 1 WHERE partido_id = ?",
+            (partido_id,)
+        )
+        conn.commit()
+        conn.close()
+        ok({
+            'cache_consenso_hit': True,
+            'debe_generar':       False,
+            'job_en_vuelo':       False,
+            'pick_consenso':      row_cc['pick_consenso'],
+            'texto_consenso':     row_cc['texto_consenso'],
+            'total_analisis':     row_cc['total_analisis'],
+            'usos_restantes':     row_cc['max_usos'] - row_cc['usos'] - 1
+        })
+        return
+
+    # 2. Job en vuelo — dedup
+    row_job = conn.execute(
+        """SELECT job_id FROM jobs
+           WHERE match_id = ? AND status IN ('pendiente', 'procesando')
+           ORDER BY creado_en DESC LIMIT 1""",
+        (partido_id,)
+    ).fetchone()
+
+    if row_job:
+        conn.close()
+        ok({
+            'cache_consenso_hit': False,
+            'debe_generar':       False,
+            'job_en_vuelo':       True,
+            'pick_consenso':      None,
+            'texto_consenso':     None,
+            'total_analisis':     0,
+            'usos_restantes':     0
+        })
+        return
+
+    # 3. Contar análisis previos del partido
+    total = conn.execute(
+        "SELECT COUNT(*) AS cnt FROM analisis_individuales WHERE partido_id = ?",
+        (partido_id,)
+    ).fetchone()['cnt']
+
+    conn.close()
+    ok({
+        'cache_consenso_hit': False,
+        'debe_generar':       True,
+        'job_en_vuelo':       False,
+        'pick_consenso':      None,
+        'texto_consenso':     None,
+        'total_analisis':     total,
+        'usos_restantes':     0
+    })
+
+
+def activar_cache_consenso(args):
+    """
+    Evalúa los últimos 3 análisis individuales del partido.
+    Si los 3 coinciden en pick_final → activa caché consenso (TTL 3h, max 5 usos).
+    Si no coinciden → no activa, el siguiente usuario generará un análisis nuevo.
+    """
+    partido_id = str(args.get('partido_id', ''))
+    max_usos   = int(args.get('max_usos', 5))
+    horas_ttl  = int(args.get('horas_ttl', 3))
+    if not partido_id:
+        error('partido_id es obligatorio')
+        return
+    conn = conectar()
+    init_db(conn)
+
+    rows = conn.execute(
+        """SELECT pick_final, texto_completo, score_final
+           FROM analisis_individuales
+           WHERE partido_id = ?
+           ORDER BY creado_en DESC LIMIT 3""",
+        (partido_id,)
+    ).fetchall()
+
+    if len(rows) < 3:
+        conn.close()
+        ok({'activado': False, 'razon': f'Solo {len(rows)}/3 análisis disponibles',
+            'total_analisis': len(rows)})
+        return
+
+    picks = [r['pick_final'] for r in rows]
+    if len(set(picks)) != 1:
+        conn.close()
+        ok({'activado': False, 'razon': f'Picks divergen: {picks}',
+            'total_analisis': len(rows)})
+        return
+
+    # 3 picks coinciden — tomar el texto del análisis con mayor score
+    mejor = max(rows, key=lambda r: r['score_final'] or 0)
+    pick_consenso  = picks[0]
+    texto_consenso = mejor['texto_completo']
+    expira = (datetime.now() + timedelta(hours=horas_ttl)).strftime('%Y-%m-%d %H:%M:%S')
+
+    total = conn.execute(
+        "SELECT COUNT(*) AS cnt FROM analisis_individuales WHERE partido_id = ?",
+        (partido_id,)
+    ).fetchone()['cnt']
+
+    conn.execute(
+        """INSERT OR REPLACE INTO cache_consenso
+           (partido_id, pick_consenso, texto_consenso, total_analisis,
+            usos, max_usos, expira_en, creado_en)
+           VALUES (?, ?, ?, ?, 0, ?, ?, ?)""",
+        (partido_id, pick_consenso, texto_consenso, total, max_usos, expira, now())
+    )
+    conn.commit()
+    conn.close()
+    ok({
+        'activado':       True,
+        'pick_consenso':  pick_consenso,
+        'total_analisis': total,
+        'expira_en':      expira,
+        'max_usos':       max_usos
+    })
 
 
 def crear_job(args):
@@ -909,6 +1184,10 @@ OPERACIONES = {
     # v1/v2
     'verificar_acceso':           verificar_acceso,
     'verificar_cache':            verificar_cache,
+    'guardar_analisis_individual': guardar_analisis_individual,
+    'verificar_consenso_cache':   verificar_consenso_cache,
+    'activar_cache_consenso':     activar_cache_consenso,
+    'verificar_job_activo':        verificar_job_activo,
     'crear_job':                  crear_job,
     'leer_job_pendiente':         leer_job_pendiente,
     'leer_stats':                 leer_stats,
@@ -926,6 +1205,7 @@ OPERACIONES = {
     'leer_pendientes_actualizar': leer_pendientes_actualizar,
     'guardar_resultado':          guardar_resultado,
     'leer_stats_aciertos':        leer_stats_aciertos,
+    'leer_aciertos_por_fuente':   leer_aciertos_por_fuente,
 }
 
 if __name__ == '__main__':

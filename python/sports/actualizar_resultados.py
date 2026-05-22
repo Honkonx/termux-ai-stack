@@ -25,6 +25,16 @@ from datetime import datetime, timedelta
 from urllib.request import urlopen, Request
 from urllib.error import URLError, HTTPError
 
+# ─── cargar .env ──────────────────────────────────────────────────────────────
+_ENV_FILE = '/data/data/com.termux/files/home/sports/.env'
+if os.path.exists(_ENV_FILE):
+    with open(_ENV_FILE) as _f:
+        for _line in _f:
+            _line = _line.strip()
+            if _line and not _line.startswith('#') and '=' in _line:
+                _k, _, _v = _line.partition('=')
+                os.environ.setdefault(_k.strip(), _v.strip())
+
 # ─── configuración ────────────────────────────────────────────────────────────
 
 DB         = '/data/data/com.termux/files/home/sports/db/bot_deportivo.db'
@@ -32,49 +42,19 @@ SCRIPT_DIR = '/data/data/com.termux/files/home/sports/scripts'
 DB_QUERY   = os.path.join(SCRIPT_DIR, 'db_query.py')
 PYTHON     = '/data/data/com.termux/files/usr/bin/python3'
 LOG_FILE   = '/data/data/com.termux/files/home/sports/logs/actualizar_resultados.log'
-ENV_FILE   = '/data/data/com.termux/files/home/sports/.env'
 
+API_KEY    = os.environ.get('SPORTS_API_KEY', '')
+if not API_KEY:
+    raise EnvironmentError(
+        'SPORTS_API_KEY no encontrada. '
+        'Agrégala en ~/sports/.env como: SPORTS_API_KEY=tu_key'
+    )
 API_BASE   = 'https://v3.football.api-sports.io'
 
 # Status de api-football que significan "partido terminado"
 STATUS_TERMINADOS = {'FT', 'AET', 'PEN'}
 # Status que significan "partido suspendido/cancelado — no tendrá resultado"
 STATUS_CANCELADOS = {'CANC', 'PST', 'ABD', 'AWD', 'WO'}
-
-# ─── lectura de .env ──────────────────────────────────────────────────────────
-
-def _leer_env(key):
-    """
-    Lee una variable del archivo ~/sports/.env
-    Formato: KEY=valor  — nunca lanza excepción, devuelve '' si no la encuentra.
-    """
-    try:
-        if not os.path.isfile(ENV_FILE):
-            return ''
-        with open(ENV_FILE, 'r') as f:
-            for linea in f:
-                linea = linea.strip()
-                if linea.startswith(f'{key}='):
-                    return linea.split('=', 1)[1].strip()
-    except Exception:
-        pass
-    return ''
-
-def _get_api_key():
-    """
-    Devuelve la api-football key desde .env.
-    Si no está configurada, termina con error claro.
-    """
-    key = _leer_env('SPORTS_API_KEY')
-    if not key:
-        msg = (
-            'SPORTS_API_KEY no configurada. '
-            f'Agrega en {ENV_FILE}: SPORTS_API_KEY=tu_key_aqui '
-            'O usa el menu: Bot Deportivo > [4] Configuracion > [3] Gestionar APIs'
-        )
-        print(json.dumps({'ok': False, 'error': msg}))
-        sys.exit(1)
-    return key
 
 # ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -96,11 +76,10 @@ def api_get(endpoint):
     """
     GET a api-football v3.
     Usa urllib.request (sin import requests — regla ARM64).
-    La key se lee de ~/sports/.env en cada llamada (no en módulo-load).
     Devuelve el dict parsed o None si falla.
     """
     url = f"{API_BASE}/{endpoint}"
-    req = Request(url, headers={'x-apisports-key': _get_api_key()})
+    req = Request(url, headers={'x-apisports-key': API_KEY})
     try:
         with urlopen(req, timeout=15) as resp:
             raw = resp.read().decode('utf-8')
@@ -171,22 +150,33 @@ def guardar_resultado_db(fixture_id, local, visitante, liga,
          status_api, fecha_partido, hora_kickoff, ts)
     )
 
-    # 2) analisis_comparativo — pick_final
+    # 2) analisis_comparativo — pick_final + picks por fuente (granular)
     rows_comp = conn.execute(
-        """SELECT id, pick_final FROM analisis_comparativo
+        """SELECT id, pick_final, pick_python, pick_claude, pick_form
+           FROM analisis_comparativo
            WHERE partido_id = ? AND resultado_real IS NULL""",
         (fixture_id,)
     ).fetchall()
 
     for row in rows_comp:
-        acierto = _pick_acerto(row['pick_final'], ganador, local, visitante)
+        acierto_final  = _pick_acerto(row['pick_final'],  ganador, local, visitante)
+        acierto_python = _pick_acerto(row['pick_python'],  ganador, local, visitante)                          if row['pick_python']  else None
+        acierto_claude = _pick_acerto(row['pick_claude'],  ganador, local, visitante)                          if row['pick_claude']  else None
+        acierto_form   = _pick_acerto(row['pick_form'],    ganador, local, visitante)                          if row['pick_form']    else None
         conn.execute(
             """UPDATE analisis_comparativo
                SET resultado_real=?, goles_local=?, goles_visitante=?,
-                   status_partido=?, pick_correcto=?
+                   status_partido=?, pick_correcto=?,
+                   pick_python_correcto=?, pick_claude_correcto=?,
+                   pick_form_correcto=?
                WHERE id=?""",
             (resultado_str, goles_local, goles_visitante,
-             status_api, 1 if acierto else 0, row['id'])
+             status_api,
+             1 if acierto_final  else 0,
+             (1 if acierto_python else 0) if acierto_python is not None else None,
+             (1 if acierto_claude else 0) if acierto_claude is not None else None,
+             (1 if acierto_form   else 0) if acierto_form   is not None else None,
+             row['id'])
         )
 
     # 3) predicciones — por fuente individual
@@ -340,25 +330,45 @@ def calcular_resumen(procesados):
     }
 
 def _leer_aciertos_hoy():
-    """Lee winrate del día actual desde analisis_comparativo."""
+    """Lee winrate del día actual desglosado por fuente."""
     try:
         hoy  = datetime.now().strftime('%Y-%m-%d')
         conn = conectar_db()
         row  = conn.execute(
             """SELECT
                  COUNT(*) AS evaluados,
-                 SUM(CASE WHEN pick_correcto=1 THEN 1 ELSE 0 END) AS aciertos
+                 SUM(CASE WHEN pick_correcto        = 1 THEN 1 ELSE 0 END) AS aciertos,
+                 SUM(CASE WHEN pick_python_correcto = 1 THEN 1 ELSE 0 END) AS aciertos_python,
+                 SUM(CASE WHEN pick_claude_correcto = 1 THEN 1 ELSE 0 END) AS aciertos_claude,
+                 SUM(CASE WHEN pick_form_correcto   = 1 THEN 1 ELSE 0 END) AS aciertos_form,
+                 SUM(CASE WHEN pick_python_correcto IS NOT NULL THEN 1 ELSE 0 END) AS total_python,
+                 SUM(CASE WHEN pick_claude_correcto IS NOT NULL THEN 1 ELSE 0 END) AS total_claude,
+                 SUM(CASE WHEN pick_form_correcto   IS NOT NULL THEN 1 ELSE 0 END) AS total_form
                FROM analisis_comparativo
                WHERE fecha=? AND pick_correcto IS NOT NULL""",
             (hoy,)
         ).fetchone()
         conn.close()
-        evaluados = row['evaluados'] or 0
-        aciertos  = row['aciertos']  or 0
-        winrate   = round(aciertos / evaluados * 100, 1) if evaluados > 0 else None
-        return {'evaluados': evaluados, 'aciertos': aciertos, 'winrate': winrate}
+        def wr(a, t): return round(a / t * 100, 1) if t > 0 else None
+        ev = row['evaluados'] or 0
+        ac = row['aciertos']  or 0
+        return {
+            'evaluados':      ev,
+            'aciertos':       ac,
+            'winrate':        wr(ac, ev),
+            'python':  {'aciertos': row['aciertos_python'] or 0,
+                        'total':    row['total_python']     or 0,
+                        'winrate':  wr(row['aciertos_python'] or 0, row['total_python'] or 0)},
+            'claude':  {'aciertos': row['aciertos_claude'] or 0,
+                        'total':    row['total_claude']     or 0,
+                        'winrate':  wr(row['aciertos_claude'] or 0, row['total_claude'] or 0)},
+            'form':    {'aciertos': row['aciertos_form']   or 0,
+                        'total':    row['total_form']       or 0,
+                        'winrate':  wr(row['aciertos_form']   or 0, row['total_form']   or 0)},
+        }
     except Exception:
-        return {'evaluados': 0, 'aciertos': 0, 'winrate': None}
+        return {'evaluados': 0, 'aciertos': 0, 'winrate': None,
+                'python': {}, 'claude': {}, 'form': {}}
 
 def formatear_mensaje_resumen(resumen, fecha):
     """Formatea el mensaje de resumen para Telegram (tu chat personal)."""
@@ -379,10 +389,24 @@ def formatear_mensaje_resumen(resumen, fecha):
     if resumen['sin_datos']:
         lineas.append(f"❓ Sin datos API: {resumen['sin_datos']}")
 
-    lineas += [
-        f"━━━━━━━━━━━━━━━━━━━━━━",
-        f"🎯 Aciertos hoy:  {a['aciertos']}/{a['evaluados']} ({winrate_str})",
-    ]
+    def fmt_fuente(nombre, d):
+        if not d or not d.get('total'):
+            return None
+        wr = f"{d['winrate']}%" if d.get('winrate') is not None else 'N/D'
+        return f"   {nombre}: {d['aciertos']}/{d['total']} ({wr})"
+
+    lineas.append(f"━━━━━━━━━━━━━━━━━━━━━━")
+    lineas.append(f"🎯 Aciertos hoy:  {a['aciertos']}/{a['evaluados']} ({winrate_str})")
+
+    # Desglose por fuente (si hay datos)
+    detalle_python = fmt_fuente('🐍 Poisson',       a.get('python', {}))
+    detalle_claude = fmt_fuente('🤖 Claude',        a.get('claude', {}))
+    detalle_form   = fmt_fuente('📈 Forma reciente', a.get('form',   {}))
+    if any([detalle_python, detalle_claude, detalle_form]):
+        lineas.append(f"   ── Desglose por fuente ──")
+        for d in [detalle_python, detalle_claude, detalle_form]:
+            if d: lineas.append(d)
+
     return '\n'.join(lineas)
 
 # ─── entry point ──────────────────────────────────────────────────────────────

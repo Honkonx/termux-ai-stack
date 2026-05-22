@@ -1,0 +1,37 @@
+# ============================================================
+#  termux-ai-stack · .image_archive_config
+#  Configuración de nube para image_archive.py
+#
+#  UBICACIÓN: ~/.image_archive_config
+#
+#  CÓMO USAR:
+#    1. Copia este archivo a ~/.image_archive_config
+#    2. Activa el proveedor que quieras (enabled=true)
+#    3. Rellena tus credenciales
+#    Solo puede estar activo UN proveedor a la vez.
+#    Si los dos están activos, R2 tiene prioridad.
+#
+#  ESTADO ACTUAL:
+#    R2    → PENDIENTE (requiere boto3)
+#    Drive → PENDIENTE (requiere token OAuth2)
+#    Ambos están diseñados — se implementan en sesión siguiente.
+# ============================================================
+
+# ── Cloudflare R2 ─────────────────────────────────────────────
+# S3-compatible · 10GB gratis · sin egress fees
+# Prerequisito: pip install boto3 --break-system-packages
+[r2]
+enabled=false
+account_id=TU_ACCOUNT_ID
+bucket=TU_BUCKET_NAME
+access_key=TU_R2_ACCESS_KEY
+secret_key=TU_R2_SECRET_KEY
+endpoint=https://TU_ACCOUNT_ID.r2.cloudflarestorage.com
+
+# ── Google Drive ──────────────────────────────────────────────
+# 15GB gratis con cuenta Google
+# Prerequisito: token OAuth2 (ver docs Google Drive API)
+[gdrive]
+enabled=false
+folder_id=TU_FOLDER_ID
+token=TU_OAUTH_TOKEN
