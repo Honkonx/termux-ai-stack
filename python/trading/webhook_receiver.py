@@ -69,8 +69,8 @@ def calcular_duracion(fecha_apertura, fecha_cierre):
         return None
 
 HOME     = os.environ.get("HOME", "/data/data/com.termux/files/home")
-DB_PATH  = os.path.join(HOME, "trading", "senales.db")
-LOG_PATH = os.path.join(HOME, "trading", "webhook.log")
+DB_PATH  = os.path.join(HOME, "trading", "db", "senales.db")
+LOG_PATH = os.path.join(HOME, "trading", "db", "webhook.log")
 PORT     = 9000
 LOG_MAX  = 500  # líneas máximas antes de rotar
 

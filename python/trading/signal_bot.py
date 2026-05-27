@@ -11,7 +11,7 @@ from datetime import datetime
 from urllib import request as ureq
 from urllib.error import URLError
 
-DB_PATH = os.path.join(os.environ.get("HOME", "/data/data/com.termux/files/home"), "trading", "senales.db")
+DB_PATH = os.path.join(os.environ.get("HOME", "/data/data/com.termux/files/home"), "trading", "db", "senales.db")
 CFG_PATH = os.path.join(os.environ.get("HOME", "/data/data/com.termux/files/home"), ".trading_config")
 
 ACTIVOS = ["GainX 500", "GainX 800", "PainX 500", "PainX 800", "Boom 500", "Boom 1000", "Crash 500", "Crash 1000"]

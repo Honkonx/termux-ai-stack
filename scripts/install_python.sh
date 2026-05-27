@@ -7,22 +7,25 @@
 #    bash install_python.sh
 #
 #  QUÉ HACE:
-#    ✅ Verifica si Python ya está instalado
-#    ✅ Instala Python vía pkg (incluye pip y sqlite3)
-#    ✅ Instala sqlite CLI separado (pkg install sqlite)
-#    ✅ PASO 5 — Pillow + deps visión (opcional, para vision_bot.py)
-#    ✅ PASO 5b — numpy + scipy via pkg ARM64 (opcional, bot deportivo)
-#    ✅ PASO 6 — Scripts trading (opcional)
-#    ✅ PASO 7b — Scripts bot deportivo (opcional)
-#    ✅ Escribe estado al registry ~/.android_server_registry
-#    ✅ Agrega aliases a .bashrc
-#    ✅ Info sobre dependencias del stack IA completo
+#    ✅ PASO 1 — Actualiza Termux
+#    ✅ PASO 2 — Instala Python 3 vía pkg
+#    ✅ PASO 3 — Instala SQLite CLI
+#    ✅ PASO 4 — Configura aliases en .bashrc
+#    ✅ PASO 5 — Instala Pillow + libjpeg-turbo (visión)
+#    ✅ PASO 6 — Instala numpy + scipy via pkg ARM64
+#    ✅ PASO 7 — Descarga scripts (sports + trading + bots)
+#    ✅ PASO 8 — Actualiza registry
+#
+#  ESTRUCTURA EN TERMUX:
+#    ~/sports/scripts/   ~/sports/db/
+#    ~/trading/scripts/  ~/trading/db/
+#    ~/bots/scripts/     ~/bots/db/
 #
 #  NOTA:
-#    sqlite3 viene incluido en Python — no requiere instalación
-#    extra. pkg install sqlite agrega el CLI interactivo.
+#    Los .db los crean los scripts Python al primer uso.
+#    No se suben a GitHub — se generan en el dispositivo.
 #
-#  VERSIÓN: 1.2.0 | Mayo 2026
+#  VERSIÓN: 2.0.0 | Mayo 2026
 # ============================================================
 
 TERMUX_PREFIX="/data/data/com.termux/files/usr"
@@ -54,18 +57,20 @@ update_registry() {
   local py_version="$1"
   local date_now
   date_now=$(date +%Y-%m-%d)
-
   [ ! -f "$REGISTRY" ] && touch "$REGISTRY"
-
   local tmp="$REGISTRY.tmp"
   grep -v "^python\." "$REGISTRY" > "$tmp" 2>/dev/null || touch "$tmp"
-
   cat >> "$tmp" << EOF
 python.installed=true
 python.version=$py_version
 python.install_date=$date_now
 python.location=termux_native
 python.sqlite=true
+python.pillow=true
+python.numpy=true
+python.scipy=true
+python.sports=true
+python.bots=true
 EOF
   mv "$tmp" "$REGISTRY"
   log "Registry actualizado → $REGISTRY"
@@ -77,7 +82,7 @@ echo -e "${CYAN}${BOLD}"
 cat << 'HEADER'
   ╔══════════════════════════════════════════════╗
   ║   termux-ai-stack · Python Installer        ║
-  ║   Termux ARM64 · sin root                   ║
+  ║   Termux ARM64 · sin root · v2.0.0          ║
   ╚══════════════════════════════════════════════╝
 HEADER
 echo -e "${NC}"
@@ -88,28 +93,48 @@ if command -v python3 &>/dev/null; then
   echo -e "${GREEN}  ✓ Python ya está instalado${NC}"
   echo -e "  Versión actual: ${CYAN}${CURRENT_VER}${NC}"
   echo ""
-  echo -n "  ¿Reinstalar/actualizar? (s/n): "
+  echo -n "  ¿Reinstalar/actualizar todos los componentes? (s/n): "
   read -r REINSTALL < /dev/tty
-  [ "$REINSTALL" != "s" ] && [ "$REINSTALL" != "S" ] && {
+  if [ "$REINSTALL" != "s" ] && [ "$REINSTALL" != "S" ]; then
     info "Nada que hacer. Saliendo."
     exit 0
-  }
+  fi
   rm -f "$CHECKPOINT"
 fi
 
+# ── Lista completa de lo que se instalará ────────────────────
 echo ""
-echo "  Este script instalará:"
+echo -e "${BOLD}  Este script instalará los siguientes componentes:${NC}"
+echo ""
+echo "  SISTEMA:"
 echo "  ▸ Python 3 vía pkg"
 echo "  ▸ pip (incluido con Python)"
 echo "  ▸ sqlite3 CLI (cliente interactivo)"
 echo "  ▸ módulo sqlite3 (incluido en Python)"
 echo ""
+echo "  LIBRERÍAS:"
+echo "  ▸ libjpeg-turbo + libpng + zlib (dependencias imagen)"
+echo "  ▸ Pillow (procesamiento de imágenes — vision_bot.py)"
+echo "  ▸ numpy (binarios ARM64 precompilados)"
+echo "  ▸ scipy (motor Poisson bivariante — pronostico.py)"
+echo ""
+echo "  SCRIPTS (descarga dinámica desde GitHub):"
+echo "  ▸ python/sports/   → ~/sports/scripts/"
+echo "  ▸ python/trading/  → ~/trading/scripts/"
+echo "  ▸ python/bots/     → ~/bots/scripts/"
+echo ""
+echo "  ESTRUCTURA DE DIRECTORIOS:"
+echo "  ▸ ~/sports/{scripts,db}   ~/trading/{scripts,db}   ~/bots/{scripts,db}"
+echo ""
 echo -n "  ¿Continuar? (s/n): "
 read -r CONFIRM < /dev/tty
-[ "$CONFIRM" != "s" ] && [ "$CONFIRM" != "S" ] && { echo "Cancelado."; exit 0; }
+if [ "$CONFIRM" != "s" ] && [ "$CONFIRM" != "S" ]; then
+  echo "  Cancelado."
+  exit 0
+fi
 
 # ============================================================
-# PASO 1 — Actualizar Termux (condicional)
+# PASO 1 — Actualizar Termux
 # ============================================================
 titulo "PASO 1 — Verificando Termux"
 
@@ -118,7 +143,7 @@ if [ -n "$ANDROID_SERVER_READY" ]; then
 elif check_done "termux_update"; then
   log "Termux ya verificado [checkpoint]"
 else
-  info "Modo standalone — actualizando Termux..."
+  info "Actualizando Termux..."
 
   MIRRORS=(
     "https://packages.termux.dev/apt/termux-main"
@@ -139,10 +164,14 @@ else
         -o Dpkg::Options::="--force-confdef" \
         -o Dpkg::Options::="--force-confold" 2>&1)
       if ! echo "$OUT" | grep -q "unexpected size\|Mirror sync in progress\|Err:2"; then
-        log "Mirror OK: $m"; OK=1; break
+        log "Mirror OK: $m"
+        OK=1
+        break
       fi
     done
-    [ "$OK" = "0" ] && error "Todos los mirrors fallaron. Verifica tu conexión."
+    if [ "$OK" = "0" ]; then
+      error "Todos los mirrors fallaron. Verifica tu conexión."
+    fi
   fi
 
   log "Termux actualizado"
@@ -163,9 +192,8 @@ else
     -o Dpkg::Options::="--force-confold" || \
     error "Error instalando Python. Verifica conexión."
 
-  # Verificar que funcionó
   if ! command -v python3 &>/dev/null; then
-    error "python3 no disponible después de instalar. Intenta manualmente: pkg install python"
+    error "python3 no disponible después de instalar. Intenta: pkg install python"
   fi
 
   PY_VER=$(python3 --version 2>/dev/null | awk '{print $2}')
@@ -187,11 +215,10 @@ else
     -o Dpkg::Options::="--force-confold" || \
     warn "sqlite CLI no instalado — el módulo Python sqlite3 sigue disponible"
 
-  # Verificar módulo Python sqlite3
   if python3 -c "import sqlite3; print(sqlite3.sqlite_version)" 2>/dev/null; then
     log "Módulo Python sqlite3 OK"
   else
-    warn "Módulo sqlite3 no disponible en Python — puede requerir reinstalación"
+    warn "Módulo sqlite3 no disponible — puede requerir reinicio de Termux"
   fi
 
   mark_done "sqlite_install"
@@ -207,7 +234,6 @@ if check_done "python_aliases"; then
 else
   BASHRC="$HOME/.bashrc"
 
-  # Limpiar aliases anteriores
   if [ -f "$BASHRC" ]; then
     grep -v "py3\|pip3-install\|sqlite-n8n\|# Python · aliases" \
       "$BASHRC" > "$BASHRC.tmp" 2>/dev/null && mv "$BASHRC.tmp" "$BASHRC"
@@ -228,257 +254,170 @@ ALIASES
 fi
 
 # ============================================================
-# PASO 5 — Dependencias visión (Pillow) — OPCIONAL
+# PASO 5 — Pillow + dependencias de visión
 # ============================================================
-titulo "PASO 5 — Dependencias visión (opcional)"
+titulo "PASO 5 — Instalando Pillow (visión)"
 
 if check_done "pillow_install"; then
   log "Pillow ya instalado [checkpoint]"
 else
-  echo "  Pillow + libjpeg-turbo son necesarios para:"
-  echo "  ▸ vision_bot.py  → procesar imágenes en bots Telegram"
-  echo "  ▸ moondream:1.8b → análisis visual con Ollama"
-  echo ""
-  echo "  Si no usas visión puedes omitirlo. Se puede instalar"
-  echo "  después desde el menú principal → Python → Submenú."
-  echo ""
-  echo -n "  ¿Instalar dependencias de visión? (s/n): "
-  read -r INST_PILLOW < /dev/tty
-  if [ "$INST_PILLOW" = "s" ] || [ "$INST_PILLOW" = "S" ]; then
-    info "Instalando librerías de imagen..."
-    pkg install libjpeg-turbo libpng zlib -y \
-      -o Dpkg::Options::="--force-confdef" \
-      -o Dpkg::Options::="--force-confold" || \
-      warn "Algunas librerías tuvieron advertencias — Pillow puede funcionar igual"
+  info "Instalando librerías de imagen..."
+  pkg install libjpeg-turbo libpng zlib -y \
+    -o Dpkg::Options::="--force-confdef" \
+    -o Dpkg::Options::="--force-confold" || \
+    warn "Algunas librerías tuvieron advertencias — Pillow puede funcionar igual"
 
-    info "Instalando Pillow..."
-    pip install Pillow --break-system-packages || \
-      warn "Error instalando Pillow — instala manualmente después"
+  info "Instalando Pillow..."
+  pip install Pillow --break-system-packages || \
+    warn "Error instalando Pillow — instala manualmente: pip install Pillow --break-system-packages"
 
-    if python3 -c "from PIL import Image; print('OK')" 2>/dev/null; then
-      log "Pillow instalado y verificado"
-      sed -i '/^python\.pillow=/d' "$REGISTRY" 2>/dev/null
-      echo "python.pillow=true" >> "$REGISTRY"
-    else
-      warn "Pillow no verificado — puede requerir reinicio de Termux"
-      echo "python.pillow=false" >> "$REGISTRY"
-    fi
-    mark_done "pillow_install"
+  if python3 -c "from PIL import Image; print('OK')" 2>/dev/null; then
+    log "Pillow instalado y verificado"
   else
-    info "Visión omitida — instala después con:"
-    info "  pkg install libjpeg-turbo && pip install Pillow --break-system-packages"
-    echo "python.pillow=false" >> "$REGISTRY"
-    mark_done "pillow_install"
+    warn "Pillow no verificado — puede requerir reinicio de Termux"
   fi
+
+  mark_done "pillow_install"
 fi
 
 # ============================================================
-# PASO 5b — Paquetes científicos (numpy + scipy) — OPCIONAL
-#           Requerido por bot deportivo (pronostico.py)
-#           Sin ellos el menú [8] Bot Deportivo no funciona.
+# PASO 6 — numpy + scipy (binarios ARM64 precompilados)
 # ============================================================
-titulo "PASO 5b — Paquetes científicos (bot deportivo)"
+titulo "PASO 6 — Instalando numpy + scipy"
 
 if check_done "scipy_install"; then
   log "numpy + scipy ya instalados [checkpoint]"
 else
-  echo "  numpy y scipy son necesarios para:"
-  echo "  ▸ pronostico.py → modelo Poisson bivariante (motor scipy)"
-  echo "  ▸ Submenú [8] Bot Deportivo en el menú principal"
-  echo ""
-  echo -e "  ${YELLOW}⚠  ADVERTENCIA: si omites esto, el menú [8] Bot Deportivo"
-  echo -e "     no estará disponible hasta que los instales.${NC}"
-  echo ""
-  echo "  Alternativa: sin scipy el motor usa math puro (builtin),"
-  echo "  pero el submenú detectará si están instalados o no."
-  echo ""
-  echo -n "  ¿Instalar numpy + scipy via pkg? (s/n): "
-  read -r INST_SCIPY < /dev/tty
-  if [ "$INST_SCIPY" = "s" ] || [ "$INST_SCIPY" = "S" ]; then
-    info "Instalando via pkg (binarios ARM64 precompilados — NO pip)..."
-    pkg install python-numpy python-scipy -y \
-      -o Dpkg::Options::="--force-confdef" \
-      -o Dpkg::Options::="--force-confold" || \
-      warn "Error en la instalación — el bot deportivo usará math puro como fallback"
+  info "Instalando via pkg (binarios ARM64 precompilados — NO pip)..."
+  pkg install python-numpy python-scipy -y \
+    -o Dpkg::Options::="--force-confdef" \
+    -o Dpkg::Options::="--force-confold" || \
+    warn "Error en la instalación — el bot deportivo usará math puro como fallback"
 
-    if python3 -c "import numpy, scipy; print('OK')" 2>/dev/null; then
-      log "numpy + scipy instalados y verificados"
-      sed -i '/^python\.numpy=/d; /^python\.scipy=/d' "$REGISTRY" 2>/dev/null
-      echo "python.numpy=true"  >> "$REGISTRY"
-      echo "python.scipy=true"  >> "$REGISTRY"
-    else
-      warn "No se pudieron verificar — el submenú usará motor math puro"
-      echo "python.numpy=false" >> "$REGISTRY"
-      echo "python.scipy=false" >> "$REGISTRY"
-    fi
-    mark_done "scipy_install"
+  if python3 -c "import numpy, scipy; print('OK')" 2>/dev/null; then
+    log "numpy + scipy instalados y verificados"
   else
-    info "Omitido — instala después con: pkg install python-numpy python-scipy"
-    warn "El submenú [8] Bot Deportivo mostrará advertencia al acceder."
-    echo "python.numpy=false" >> "$REGISTRY"
-    echo "python.scipy=false" >> "$REGISTRY"
-    mark_done "scipy_install"
+    warn "No se pudieron verificar — el submenú usará motor math puro"
   fi
+
+  mark_done "scipy_install"
 fi
 
 # ============================================================
-# PASO 6 — Descargar scripts de trading
+# PASO 7 — Descargar scripts (sports + trading + bots)
 # ============================================================
-titulo "PASO 6 — Módulo Trading"
+titulo "PASO 7 — Descargando scripts"
 
-REPO_RAW_PY="https://raw.githubusercontent.com/Honkonx/termux-ai-stack/main/python/trading"
-TRADING_DIR="$HOME/python/trading"
-TESTS_DIR="$HOME/tests"
+REPO_API="https://api.github.com/repos/Honkonx/termux-ai-stack/contents/python"
+REPO_RAW="https://raw.githubusercontent.com/Honkonx/termux-ai-stack/main/python"
 
-if check_done "trading_scripts"; then
-  log "Scripts trading ya descargados [checkpoint]"
-else
-  echo "  Descarga los scripts del módulo trading:"
-  echo "  ▸ signal_bot.py        → señales manuales + stats"
-  echo "  ▸ trade_tracker.py     → registrar WIN/LOSS"
-  echo "  ▸ webhook_receiver.py  → receptor señales MT5 (:9000)"
-  echo "  ▸ backtest_runner.py   → backtest CSV MT5 (basico o avanzado si pandas+matplotlib instalados)"
-  echo "  ▸ test_trading.py   → tests unitarios"
-  echo ""
-  echo -n "  ¿Descargar scripts de trading? (s/n): "
-  read -r INST_TRADING < /dev/tty
-
-  if [ "$INST_TRADING" = "s" ] || [ "$INST_TRADING" = "S" ]; then
-    mkdir -p "$TRADING_DIR" "$TESTS_DIR" "$HOME/trading"
-
-    SCRIPTS_OK=0
-    SCRIPTS_FAIL=0
-
-    for script in signal_bot.py trade_tracker.py webhook_receiver.py backtest_runner.py; do
-      echo -n "  Descargando $script... "
-      TMP="$TRADING_DIR/${script}.tmp"
-      curl -fsSL "$REPO_RAW_PY/$script" -o "$TMP" 2>/dev/null || \
-        wget -q "$REPO_RAW_PY/$script" -O "$TMP" 2>/dev/null
-      if [ -f "$TMP" ] && [ -s "$TMP" ]; then
-        mv "$TMP" "$TRADING_DIR/$script"
-        chmod +x "$TRADING_DIR/$script"
-        echo -e "${GREEN}✓${NC}"
-        SCRIPTS_OK=$((SCRIPTS_OK + 1))
-      else
-        rm -f "$TMP"
-        echo -e "${RED}✗ (descarga manual: github.com/Honkonx/termux-ai-stack)${NC}"
-        SCRIPTS_FAIL=$((SCRIPTS_FAIL + 1))
-      fi
-    done
-
-    # test_trading.py va en tests/
-    echo -n "  Descargando test_trading.py... "
-    TMP="$TESTS_DIR/test_trading.py.tmp"
-    curl -fsSL "$REPO_RAW_PY/test_trading.py" -o "$TMP" 2>/dev/null || \
-      wget -q "$REPO_RAW_PY/test_trading.py" -O "$TMP" 2>/dev/null
-    if [ -f "$TMP" ] && [ -s "$TMP" ]; then
-      mv "$TMP" "$TESTS_DIR/test_trading.py"
-      echo -e "${GREEN}✓${NC}"
-      SCRIPTS_OK=$((SCRIPTS_OK + 1))
-    else
-      rm -f "$TMP"
-      echo -e "${RED}✗${NC}"
-      SCRIPTS_FAIL=$((SCRIPTS_FAIL + 1))
-    fi
-
-    echo ""
-    [ $SCRIPTS_OK -gt 0 ] && log "$SCRIPTS_OK scripts descargados en $TRADING_DIR"
-    [ $SCRIPTS_FAIL -gt 0 ] && warn "$SCRIPTS_FAIL scripts no pudieron descargarse — descarga manual necesaria"
-
-    # Init BD trading
-    if [ -f "$TRADING_DIR/signal_bot.py" ]; then
-      echo -n "  Inicializando BD trading... "
-      python3 "$TRADING_DIR/signal_bot.py" init 2>/dev/null \
-        && echo -e "${GREEN}✓${NC}" \
-        || echo -e "${YELLOW}omitido${NC}"
-    fi
-
-    mark_done "trading_scripts"
-  else
-    info "Trading omitido — descarga después desde el menú: [5] Python → [7] Trading → [6] Inicializar BD"
-    mark_done "trading_scripts"
-  fi
-fi
-
-# ============================================================
-# PASO 7b — Descargar scripts del bot deportivo — OPCIONAL
-# ============================================================
-titulo "PASO 7b — Módulo Bot Deportivo"
-
-REPO_RAW_SPORTS="https://raw.githubusercontent.com/Honkonx/termux-ai-stack/main/python/sports"
 SPORTS_SCRIPTS_DIR="$HOME/sports/scripts"
+TRADING_SCRIPTS_DIR="$HOME/trading/scripts"
+BOTS_SCRIPTS_DIR="$HOME/bots/scripts"
 
-if check_done "sports_scripts"; then
-  log "Scripts bot deportivo ya descargados [checkpoint]"
+if check_done "all_scripts"; then
+  log "Scripts ya descargados [checkpoint]"
 else
-  echo "  Descarga los scripts del módulo bot deportivo:"
-  echo "  ▸ db_query.py    → motor SQL (jobs, predicciones, caché, usuarios)"
-  echo "  ▸ pronostico.py  → análisis Poisson bivariante + value bet"
-  echo ""
-  echo "  Estos scripts son el backend Python del bot deportivo."
-  echo "  n8n (WF-A y WF-B) los llama via execSync."
-  echo ""
-  echo -n "  ¿Descargar scripts del bot deportivo? (s/n): "
-  read -r INST_SPORTS < /dev/tty
+  # Crear estructura de directorios
+  mkdir -p "$HOME/sports/scripts"  "$HOME/sports/db" \
+           "$HOME/sports/logs"     "$HOME/sports/models" \
+           "$HOME/trading/scripts" "$HOME/trading/db" \
+           "$HOME/bots/scripts"    "$HOME/bots/db"
+  log "Estructura de directorios creada"
 
-  if [ "$INST_SPORTS" = "s" ] || [ "$INST_SPORTS" = "S" ]; then
-    mkdir -p "$HOME/sports/db" "$HOME/sports/scripts" \
-             "$HOME/sports/logs" "$HOME/sports/models"
+  # ── Función: descargar todos los .py de una carpeta del repo ──
+  descargar_carpeta() {
+    local carpeta="$1"
+    local destino="$2"
+    local ok=0
+    local fail=0
 
-    SCRIPTS_OK=0
-    SCRIPTS_FAIL=0
+    echo ""
+    echo -e "  ${CYAN}▸ python/${carpeta}/ → ${destino}${NC}"
 
-    for script in db_query.py pronostico.py; do
-      echo -n "  Descargando $script... "
-      TMP="$SPORTS_SCRIPTS_DIR/${script}.tmp"
-      curl -fsSL "$REPO_RAW_SPORTS/$script" -o "$TMP" 2>/dev/null || \
-        wget -q "$REPO_RAW_SPORTS/$script" -O "$TMP" 2>/dev/null
+    local lista
+    lista=$(curl -fsSL "$REPO_API/$carpeta" 2>/dev/null || \
+            wget -qO- "$REPO_API/$carpeta" 2>/dev/null)
+
+    if [ -z "$lista" ]; then
+      warn "No se pudo consultar la API para python/$carpeta"
+      return
+    fi
+
+    local archivos
+    archivos=$(echo "$lista" | \
+      grep -o '"name": *"[^"]*\.py"' | \
+      grep -o '"[^"]*\.py"' | \
+      tr -d '"')
+
+    if [ -z "$archivos" ]; then
+      info "Sin archivos .py en python/$carpeta — carpeta vacía o no creada aún"
+      return
+    fi
+
+    for script in $archivos; do
+      echo -n "    $script... "
+      local TMP="$destino/${script}.tmp"
+      curl -fsSL "$REPO_RAW/$carpeta/$script" -o "$TMP" 2>/dev/null || \
+        wget -q "$REPO_RAW/$carpeta/$script" -O "$TMP" 2>/dev/null
       if [ -f "$TMP" ] && [ -s "$TMP" ]; then
-        mv "$TMP" "$SPORTS_SCRIPTS_DIR/$script"
-        chmod +x "$SPORTS_SCRIPTS_DIR/$script"
+        mv "$TMP" "$destino/$script"
+        chmod +x "$destino/$script"
         echo -e "${GREEN}✓${NC}"
-        SCRIPTS_OK=$((SCRIPTS_OK + 1))
+        ok=$((ok + 1))
       else
         rm -f "$TMP"
-        echo -e "${RED}✗ (descarga manual: github.com/Honkonx/termux-ai-stack)${NC}"
-        SCRIPTS_FAIL=$((SCRIPTS_FAIL + 1))
+        echo -e "${RED}✗${NC}"
+        fail=$((fail + 1))
       fi
     done
 
+    [ $ok -gt 0 ]   && log "$ok scripts descargados en $destino"
+    [ $fail -gt 0 ] && warn "$fail scripts fallaron — descarga manual: github.com/Honkonx/termux-ai-stack"
+  }
+
+  descargar_carpeta "sports"  "$SPORTS_SCRIPTS_DIR"
+  descargar_carpeta "trading" "$TRADING_SCRIPTS_DIR"
+  descargar_carpeta "bots"    "$BOTS_SCRIPTS_DIR"
+
+  # ── Init BD sports ────────────────────────────────────────
+  if [ -f "$SPORTS_SCRIPTS_DIR/db_query.py" ]; then
     echo ""
-    [ $SCRIPTS_OK -gt 0 ] && log "$SCRIPTS_OK scripts descargados en $SPORTS_SCRIPTS_DIR"
-    [ $SCRIPTS_FAIL -gt 0 ] && warn "$SCRIPTS_FAIL scripts no pudieron descargarse — descarga manual necesaria"
-
-    # Inicializar BD (crea tablas automáticamente al primer uso)
-    if [ -f "$SPORTS_SCRIPTS_DIR/db_query.py" ]; then
-      echo -n "  Inicializando BD bot deportivo... "
-      python3 "$SPORTS_SCRIPTS_DIR/db_query.py" verificar_acceso '{"user_id":"init"}' \
-        > /dev/null 2>&1 \
-        && echo -e "${GREEN}✓ BD creada${NC}" \
-        || echo -e "${YELLOW}omitido${NC}"
-    fi
-
-    # Verificar motor scipy disponible
-    if python3 -c "import numpy, scipy" 2>/dev/null; then
-      log "Motor scipy disponible — pronostico.py usará Poisson bivariante"
-    else
-      warn "scipy no instalado — pronostico.py usará motor math puro (instala PASO 5b)"
-    fi
-
-    sed -i '/^python\.sports=/d' "$REGISTRY" 2>/dev/null
-    echo "python.sports=true" >> "$REGISTRY"
-    mark_done "sports_scripts"
-  else
-    info "Bot deportivo omitido — descarga después desde el menú: [5] Python → [8] Bot Deportivo"
-    echo "python.sports=false" >> "$REGISTRY"
-    mark_done "sports_scripts"
+    echo -n "  Inicializando BD bot deportivo... "
+    python3 "$SPORTS_SCRIPTS_DIR/db_query.py" verificar_acceso '{"user_id":"init"}' \
+      > /dev/null 2>&1 \
+      && echo -e "${GREEN}✓ BD creada${NC}" \
+      || echo -e "${YELLOW}omitido (se crea al primer uso)${NC}"
   fi
+
+  # ── Init BD trading ───────────────────────────────────────
+  if [ -f "$TRADING_SCRIPTS_DIR/signal_bot.py" ]; then
+    echo -n "  Inicializando BD trading... "
+    python3 "$TRADING_SCRIPTS_DIR/signal_bot.py" init 2>/dev/null \
+      && echo -e "${GREEN}✓${NC}" \
+      || echo -e "${YELLOW}omitido (se crea al primer uso)${NC}"
+  fi
+
+  # ── Verificar scipy ───────────────────────────────────────
+  if python3 -c "import numpy, scipy" 2>/dev/null; then
+    log "Motor scipy disponible — pronostico.py usará Poisson bivariante"
+  else
+    warn "scipy no verificado — pronostico.py usará motor math puro"
+  fi
+
+  # ── Aviso ruta antigua ────────────────────────────────────
+  if [ -d "$HOME/python/trading" ]; then
+    warn "Ruta antigua detectada: ~/python/trading/ — ya no se usa"
+    info "Elimínala con: rm -rf ~/python/trading"
+  fi
+
+  mark_done "all_scripts"
 fi
 
 # ============================================================
-# PASO 7 — Actualizar registry
+# PASO 8 — Actualizar registry
 # ============================================================
-titulo "PASO 7 — Actualizando registry"
+titulo "PASO 8 — Actualizando registry"
 
 PY_VER=$(python3 --version 2>/dev/null | awk '{print $2}')
 [ -z "$PY_VER" ] && PY_VER="unknown"
@@ -501,33 +440,23 @@ echo "  Python:  $(python3 --version 2>/dev/null)"
 echo "  pip:     $(pip --version 2>/dev/null | awk '{print $1, $2}')"
 echo "  sqlite3: $(python3 -c 'import sqlite3; print(sqlite3.sqlite_version)' 2>/dev/null)"
 echo ""
+echo "  DIRECTORIOS CREADOS:"
+echo "  ~/sports/{scripts,db}   ~/trading/{scripts,db}   ~/bots/{scripts,db}"
+echo ""
 echo "  COMANDOS:"
-echo "  python3                    → REPL interactivo"
-echo "  pip install X              → instalar paquete"
-echo "  pip install --break-system-packages X  → si pip rechaza"
-echo "  sqlite3 archivo.db         → CLI interactivo"
-echo "  sqlite-n8n                 → BD interna de n8n"
+echo "  python3                                    → REPL interactivo"
+echo "  pip install --break-system-packages X      → instalar paquete"
+echo "  sqlite3 archivo.db                         → CLI interactivo"
+echo "  sqlite-n8n                                 → BD interna de n8n"
 echo ""
 echo -e "${CYAN}  → Cierra y reabre Termux para activar los aliases${NC}"
 echo ""
-
-# ── Info dependencias del stack IA ───────────────────────────
 echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════════╗${NC}"
 echo -e "${CYAN}${BOLD}  ║  💡 Stack IA completo — dependencias        ║${NC}"
 echo -e "${CYAN}${BOLD}  ╚══════════════════════════════════════════════╝${NC}"
 echo ""
-echo "  Python + SQLite es la base del stack."
-echo "  Para el stack IA completo también necesitas:"
-echo ""
-echo "  ▸ Ollama     → modelos de IA local (:11434)"
-echo "               instala desde el menú: opción [3]"
-echo ""
-echo "  ▸ n8n        → bots Telegram y automatización (:5678)"
-echo "               requiere Python + Ollama para los workflows WF1-WF4"
-echo "               instala desde el menú: opción [1]"
-echo ""
-echo "  Sin Ollama los bots n8n no tienen IA."
-echo "  Sin Python los scripts de visión no funcionan."
+echo "  ▸ Ollama  → modelos IA local (:11434)  — menú opción [3]"
+echo "  ▸ n8n     → bots Telegram (:5678)      — menú opción [1]"
 echo ""
 
 # Limpiar checkpoint

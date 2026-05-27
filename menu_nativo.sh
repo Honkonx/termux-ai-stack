@@ -1577,10 +1577,10 @@ submenu_expo() {
 # ════════════════════════════════════════════
 #  RUTAS TRADING
 # ════════════════════════════════════════════
-TRADING_DIR="$HOME/python/trading"
+TRADING_DIR="$HOME/trading/scripts"
 SIGNAL_BOT="$TRADING_DIR/signal_bot.py"
 TRADE_TRACKER="$TRADING_DIR/trade_tracker.py"
-TRADING_DB="$HOME/trading/senales.db"
+TRADING_DB="$HOME/trading/db/senales.db"
 
 # ════════════════════════════════════════════
 #  RUTAS BOT DEPORTIVO
@@ -1591,6 +1591,12 @@ PRONOSTICO="$HOME/sports/scripts/pronostico.py"
 PROOT_SPORTS_DB="$TERMUX_PREFIX/var/lib/proot-distro/installed-rootfs/debian/root/sports/db/bot_deportivo.db"
 SPORTS_ENV="$HOME/sports/.env"
 ACT_RES="$HOME/sports/scripts/actualizar_resultados.py"
+
+# ════════════════════════════════════════════
+#  RUTAS BOTS (Ollama / IA local)
+# ════════════════════════════════════════════
+BOTS_SCRIPTS_DIR="$HOME/bots/scripts"
+BOTS_DB_DIR="$HOME/bots/db"
 
 _py_ok() {
   command -v python3 &>/dev/null && return 0

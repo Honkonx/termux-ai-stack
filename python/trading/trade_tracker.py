@@ -8,7 +8,7 @@ import os
 import sys
 from datetime import datetime
 
-DB_PATH = os.path.join(os.environ.get("HOME", "/data/data/com.termux/files/home"), "trading", "senales.db")
+DB_PATH = os.path.join(os.environ.get("HOME", "/data/data/com.termux/files/home"), "trading", "db", "senales.db")
 
 # ── Actualizar resultado de señal ────────────────────────────────
 def actualizar_resultado(señal_id, resultado, notas=""):

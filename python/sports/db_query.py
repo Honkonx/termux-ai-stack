@@ -1,6 +1,6 @@
 #!/data/data/com.termux/files/usr/bin/python3
 """
-db_query.py v3 — Motor SQL del bot deportivo
+db_query.py v4 — Motor SQL del bot deportivo + KairosApp
 Ruta: /data/data/com.termux/files/home/sports/scripts/db_query.py
 
 Configuración admin:
@@ -10,7 +10,7 @@ Configuración admin:
 Uso desde n8n (execSync) o Termux:
   python3 db_query.py <operacion> <json_args>
 
-Operaciones v1/v2 (sin cambios):
+Operaciones v1/v2 (sin cambios — Telegram):
   verificar_acceso      {"user_id": "123"}
   verificar_limite      {"user_id": "123", "plan": "pro"}
   verificar_cache       {"match_id": "abc", "fecha": "20260515"}
@@ -34,26 +34,31 @@ Operaciones v1/v2 (sin cambios):
                          "consenso":"COINCIDEN", "peso_python":0.65,
                          "peso_ia":0.35, "hora_kickoff":"20:00"}
 
-Operaciones nuevas v3:
+Operaciones v3 (sin cambios — Telegram/admin):
   verificar_admin           {"user_id": "123"}
   gestionar_usuario         {"accion":"agregar",    "user_id":"123", "plan":"pro"}
                             {"accion":"activar",    "user_id":"123"}
                             {"accion":"desactivar", "user_id":"123"}
                             {"accion":"cambiar_plan","user_id":"123", "plan":"max"}
                             {"accion":"eliminar",   "user_id":"123"}
-  guardar_recomendaciones   {"fecha":"20260520", "partidos":[
-                               {"fixture_id":"999", "local":"Equipo A",
-                                "visitante":"Equipo B", "liga":"Premier",
-                                "hora_chile":"20:45"}
-                             ]}
+  guardar_recomendaciones   {"fecha":"20260520", "partidos":[...]}
   leer_recomendaciones      {"fecha":"20260520"}
   leer_pendientes_actualizar {"fecha":"2026-05-19"}
-  guardar_resultado         {"fixture_id":"31736329", "local":"River",
-                              "visitante":"Boca", "liga":"Argentina",
-                              "goles_local":2, "goles_visitante":1,
-                              "status_api":"FT", "fecha_partido":"2026-05-20",
-                              "hora_kickoff":"20:00"}
+  guardar_resultado         {"fixture_id":"31736329", ...}
   leer_stats_aciertos       {"dias":30}
+
+Operaciones nuevas v4 (KairosApp):
+  registrar_usuario_app   {"device_id":"android_abc123", "nickname":"Honkon"}
+  obtener_usuario_app     {"device_id":"android_abc123"}
+  verificar_limite_app    {"device_id":"android_abc123"}
+  registrar_uso_app       {"device_id":"android_abc123"}
+  crear_job_app           {"match_id":"abc", "fecha":"20260515",
+                            "device_id":"android_abc123"}
+  leer_job_especifico     {"job_id":"job_abc_123", "device_id":"android_abc123"}
+  generar_codigos_lote    {"plan":"pro", "dias":30, "cantidad":10}
+  activar_codigo          {"codigo":"KS-PRO-X7K2M9A", "device_id":"android_abc123"}
+  listar_codigos          {"filtro":"disponibles"}   # disponibles|usados|todos
+  asignar_codigo          {"codigo":"KS-PRO-X7K2M9A", "device_id":"android_abc123"}
 """
 
 import sys
@@ -61,6 +66,8 @@ import os
 import json
 import sqlite3
 import hashlib
+import secrets
+import string
 from datetime import datetime, timedelta
 
 DB = '/data/data/com.termux/files/home/sports/db/bot_deportivo.db'
@@ -253,6 +260,39 @@ def init_db(conn):
         CREATE INDEX IF NOT EXISTS idx_analisis_ind_partido ON analisis_individuales(partido_id);
         CREATE INDEX IF NOT EXISTS idx_cache_consenso_partido ON cache_consenso(partido_id);
 
+        -- ── v4: KairosApp ─────────────────────────────────────────────────────
+
+        -- Códigos de activación (1 código = 1 usuario, no reutilizable)
+        -- device_id_asignado: NULL = genérico (primero en usarlo), o device_id reservado
+        -- device_id_usado: quién lo activó finalmente
+        CREATE TABLE IF NOT EXISTS codigos_acceso (
+            id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+            codigo             TEXT UNIQUE NOT NULL,
+            plan               TEXT NOT NULL,          -- 'pro' | 'max'
+            dias               INTEGER NOT NULL,        -- duración al activar
+            usado              INTEGER NOT NULL DEFAULT 0,  -- 0=disponible, 1=usado
+            device_id_asignado TEXT,                   -- NULL=genérico | device_id=reservado
+            device_id_usado    TEXT,                   -- quién lo activó (NULL hasta activarse)
+            creado_en          TEXT NOT NULL,
+            usado_en           TEXT                    -- NULL hasta activarse
+        );
+
+        -- Uso diario por device_id (contador freemium para la app)
+        -- Separado de jobs (que es para Telegram)
+        CREATE TABLE IF NOT EXISTS uso_diario_app (
+            device_id           TEXT NOT NULL,
+            fecha               TEXT NOT NULL,          -- YYYY-MM-DD
+            predicciones_usadas INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (device_id, fecha)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_codigos_usado
+            ON codigos_acceso(usado);
+        CREATE INDEX IF NOT EXISTS idx_codigos_device_asignado
+            ON codigos_acceso(device_id_asignado);
+        CREATE INDEX IF NOT EXISTS idx_uso_diario_device_fecha
+            ON uso_diario_app(device_id, fecha);
+
     """)
 
     # Migración segura: columnas nuevas sin romper BD existente
@@ -270,11 +310,39 @@ def init_db(conn):
         ('analisis_comparativo', 'pick_python_correcto',  'INTEGER'),
         ('analisis_comparativo', 'pick_claude_correcto',  'INTEGER'),
         ('analisis_comparativo', 'pick_form_correcto',    'INTEGER'),
+        # v4: campos nuevos en usuarios para KairosApp
+        ('usuarios',             'nickname',         'TEXT'),
+        ('usuarios',             'activo_hasta',     'TEXT'),
+        ('usuarios',             'origen',           "TEXT DEFAULT 'telegram'"),
+        # v4: campo origen en jobs (app vs telegram)
+        ('jobs',                 'device_id_app',    'TEXT'),
     ]
     for tabla, col, tipo in migraciones:
         try:
             conn.execute(f'ALTER TABLE {tabla} ADD COLUMN {col} {tipo}')
-            conn.commit()
+            
+    # ── Migraciones seguras (agregar columnas si no existen) ──
+    try:
+        conn.execute("ALTER TABLE jobs ADD COLUMN resultado_app TEXT")
+        conn.commit()
+    except Exception:
+        pass  # Columna ya existe
+    try:
+        conn.execute("ALTER TABLE jobs ADD COLUMN user_id TEXT")
+        conn.commit()
+    except Exception:
+        pass
+    try:
+        conn.execute("ALTER TABLE jobs ADD COLUMN plan TEXT DEFAULT 'free'")
+        conn.commit()
+    except Exception:
+        pass
+    try:
+        conn.execute("ALTER TABLE jobs ADD COLUMN device_id_app TEXT")
+        conn.commit()
+    except Exception:
+        pass
+conn.commit()
         except Exception:
             pass  # columna ya existe
 
@@ -727,6 +795,35 @@ def guardar_cache(args):
     ok({'hash': h, 'expira_en': expira})
 
 
+def actualizar_job_app(args):
+    """
+    Actualiza un job de la app con status y resultado JSON estructurado.
+    Guarda el resultado en resultado_app para que check_job lo devuelva.
+    """
+    job_id      = str(args.get('job_id', '')).strip()
+    status      = str(args.get('status', 'listo'))
+    resultado   = args.get('resultado', None)  # dict o None
+
+    if not job_id:
+        error('job_id requerido')
+        return
+
+    import json as _json
+    resultado_str = _json.dumps(resultado, ensure_ascii=False) if resultado else None
+
+    conn = conectar()
+    init_db(conn)
+    conn.execute(
+        """UPDATE jobs
+           SET status=?, completado_en=?, resultado_app=?
+           WHERE job_id=?""",
+        (status, now(), resultado_str, job_id)
+    )
+    conn.commit()
+    conn.close()
+    ok({'job_id': job_id, 'status': status, 'guardado': True})
+
+
 def actualizar_job(args):
     job_id = str(args.get('job_id', ''))
     status = str(args.get('status', 'listo'))
@@ -799,7 +896,7 @@ def gestionar_usuario(args):
         error('accion y user_id son requeridos')
         return
 
-    PLANES_VALIDOS = ('free', 'pro', 'max')
+    PLANES_VALIDOS = ('free', 'pro', 'max', 'admin')
     if accion == 'agregar' and plan not in PLANES_VALIDOS:
         error(f'plan inválido: {plan}. Válidos: {PLANES_VALIDOS}')
         return
@@ -1178,6 +1275,559 @@ def setup_inicial(args):
         error(f'No se pudo escribir .env: {e}')
 
 
+
+# ─── operaciones v4 — KairosApp ───────────────────────────────────────────────
+# Estas funciones son EXCLUSIVAS de la app.
+# No tocan la lógica del bot de Telegram.
+# Usan device_id (androidId) en vez de user_id (Telegram ID).
+
+def registrar_usuario_app(args):
+    """
+    Registra o actualiza un usuario de la app.
+    Si el device_id ya existe → actualiza nickname si se provee.
+    Si es nuevo → crea con plan='free'.
+    Nickname: opcional, único (case-insensitive).
+    """
+    device_id = str(args.get('device_id', '')).strip()
+    nickname  = str(args.get('nickname', '')).strip()
+
+    if not device_id:
+        error('device_id requerido')
+        return
+
+    conn = conectar()
+    init_db(conn)
+
+    # Verificar nickname único (si se provee)
+    if nickname:
+        clash = conn.execute(
+            "SELECT device_id FROM usuarios WHERE LOWER(nickname) = LOWER(?) AND device_id != ?",
+            (nickname, device_id)
+        ).fetchone()
+        if clash:
+            conn.close()
+            ok({'registrado': False, 'error': 'nickname_ocupado',
+                'mensaje': f'El nombre "{nickname}" ya está en uso. Elige otro.'})
+            return
+
+    existing = conn.execute(
+        'SELECT id, plan, nickname, activo_hasta FROM usuarios WHERE device_id = ?',
+        (device_id,)
+    ).fetchone()
+
+    if existing:
+        # Ya existe — actualizar nickname si se provee
+        if nickname:
+            conn.execute(
+                'UPDATE usuarios SET nickname = ? WHERE device_id = ?',
+                (nickname, device_id)
+            )
+            conn.commit()
+        conn.close()
+        ok({'registrado': True, 'nuevo': False,
+            'device_id':   device_id,
+            'plan':        existing['plan'],
+            'nickname':    nickname or existing['nickname'],
+            'activo_hasta': existing['activo_hasta']})
+    else:
+        # Nuevo usuario
+        conn.execute(
+            """INSERT INTO usuarios (device_id, activo, plan, nickname, origen, creado_en)
+               VALUES (?, 1, 'free', ?, 'app', ?)""",
+            (device_id, nickname or None, now())
+        )
+        conn.commit()
+        conn.close()
+        ok({'registrado': True, 'nuevo': True,
+            'device_id': device_id, 'plan': 'free',
+            'nickname':  nickname or None, 'activo_hasta': None})
+
+
+def obtener_usuario_app(args):
+    """
+    Devuelve perfil completo del usuario para ProfileScreen.
+    Incluye plan, nickname, uso diario, límite, activo_hasta.
+    Si no existe → lo crea automáticamente con plan='free'.
+    """
+    device_id = str(args.get('device_id', '')).strip()
+    if not device_id:
+        error('device_id requerido')
+        return
+
+    conn = conectar()
+    init_db(conn)
+
+    row = conn.execute(
+        'SELECT plan, nickname, activo_hasta, creado_en FROM usuarios WHERE device_id = ?',
+        (device_id,)
+    ).fetchone()
+
+    if not row:
+        # Auto-registro silencioso (primera vez)
+        conn.execute(
+            "INSERT INTO usuarios (device_id, activo, plan, origen, creado_en) VALUES (?,1,'free','app',?)",
+            (device_id, now())
+        )
+        conn.commit()
+        plan        = 'free'
+        nickname    = None
+        activo_hasta = None
+        creado_en   = now()
+    else:
+        plan         = row['plan']
+        nickname     = row['nickname']
+        activo_hasta = row['activo_hasta']
+        creado_en    = row['creado_en']
+
+    # Uso hoy
+    hoy = datetime.now().strftime('%Y-%m-%d')
+    uso_row = conn.execute(
+        'SELECT predicciones_usadas FROM uso_diario_app WHERE device_id = ? AND fecha = ?',
+        (device_id, hoy)
+    ).fetchone()
+    usadas_hoy = uso_row['predicciones_usadas'] if uso_row else 0
+
+    # Verificar si activo_hasta venció → degradar a free
+    if activo_hasta and plan != 'free' and plan != 'admin':
+        if activo_hasta < hoy:
+            conn.execute(
+                "UPDATE usuarios SET plan='free', activo_hasta=NULL WHERE device_id=?",
+                (device_id,)
+            )
+            conn.commit()
+            plan         = 'free'
+            activo_hasta = None
+
+    conn.close()
+
+    LIMITES = {'free': 2, 'pro': 10, 'max': 30, 'admin': 9999}
+    limite  = LIMITES.get(plan, 2)
+
+    ok({
+        'device_id':        device_id,
+        'plan':             plan,
+        'nickname':         nickname,
+        'activo_hasta':     activo_hasta,
+        'creado_en':        creado_en,
+        'predicciones_hoy': usadas_hoy,
+        'limite_diario':    limite,
+        'puede_pedir':      usadas_hoy < limite,
+        'restantes_hoy':    max(0, limite - usadas_hoy),
+    })
+
+
+def verificar_limite_app(args):
+    """
+    Verifica si el device_id puede pedir una predicción hoy.
+    Usa uso_diario_app (no jobs de Telegram).
+    """
+    device_id = str(args.get('device_id', '')).strip()
+    if not device_id:
+        error('device_id requerido')
+        return
+
+    conn = conectar()
+    init_db(conn)
+
+    row = conn.execute(
+        'SELECT plan FROM usuarios WHERE device_id = ?', (device_id,)
+    ).fetchone()
+    plan = row['plan'] if row else 'free'
+
+    # Admin: sin límite
+    if plan == 'admin' or _es_admin(device_id):
+        conn.close()
+        ok({'puede': True, 'plan': 'admin', 'usadas': 0,
+            'limite': 9999, 'restantes': 9999})
+        return
+
+    hoy = datetime.now().strftime('%Y-%m-%d')
+    uso_row = conn.execute(
+        'SELECT predicciones_usadas FROM uso_diario_app WHERE device_id = ? AND fecha = ?',
+        (device_id, hoy)
+    ).fetchone()
+    usadas = uso_row['predicciones_usadas'] if uso_row else 0
+    conn.close()
+
+    LIMITES = {'free': 2, 'pro': 10, 'max': 30}
+    limite  = LIMITES.get(plan, 2)
+    puede   = usadas < limite
+
+    ok({'puede': puede, 'plan': plan, 'usadas': usadas,
+        'limite': limite, 'restantes': max(0, limite - usadas)})
+
+
+def registrar_uso_app(args):
+    """
+    Incrementa el contador diario de predicciones para device_id.
+    Llamar DESPUÉS de crear el job de predicción exitosamente.
+    """
+    device_id = str(args.get('device_id', '')).strip()
+    if not device_id:
+        error('device_id requerido')
+        return
+
+    conn = conectar()
+    init_db(conn)
+    hoy = datetime.now().strftime('%Y-%m-%d')
+
+    conn.execute(
+        """INSERT INTO uso_diario_app (device_id, fecha, predicciones_usadas)
+           VALUES (?, ?, 1)
+           ON CONFLICT(device_id, fecha)
+           DO UPDATE SET predicciones_usadas = predicciones_usadas + 1""",
+        (device_id, hoy)
+    )
+    conn.commit()
+
+    row = conn.execute(
+        'SELECT predicciones_usadas FROM uso_diario_app WHERE device_id = ? AND fecha = ?',
+        (device_id, hoy)
+    ).fetchone()
+    conn.close()
+
+    ok({'registrado': True, 'usadas_hoy': row['predicciones_usadas'] if row else 1})
+
+
+def crear_job_app(args):
+    """
+    Crea un job de predicción desde la app (origen='app').
+    Diferencia con crear_job: usa device_id_app y origen='app'.
+    """
+    match_id  = str(args.get('match_id', '')).strip()
+    fecha     = str(args.get('fecha', '')).strip()
+    device_id = str(args.get('device_id', '')).strip()
+
+    if not match_id or not fecha or not device_id:
+        error('match_id, fecha y device_id son requeridos')
+        return
+
+    # Obtener plan actual del usuario
+    conn = conectar()
+    init_db(conn)
+    row  = conn.execute(
+        'SELECT plan FROM usuarios WHERE device_id = ?', (device_id,)
+    ).fetchone()
+    plan = row['plan'] if row else 'free'
+
+    job_id = f"job_{match_id}_{int(datetime.now().timestamp() * 1000)}"
+
+    conn.execute(
+        """INSERT INTO jobs
+           (job_id, match_id, fecha_partido, chat_id, user_id, device_id_app,
+            plan, origen, status, intentos, creado_en)
+           VALUES (?, ?, ?, '', ?, ?, ?, 'app', 'pendiente', 0, ?)""",
+        (job_id, match_id, fecha, device_id, device_id, plan, now())
+    )
+    conn.commit()
+    conn.close()
+
+    ok({'job_id': job_id, 'match_id': match_id,
+        'device_id': device_id, 'plan': plan})
+
+
+def leer_job_especifico(args):
+    """
+    Lee el estado de un job filtrando por job_id AND device_id.
+    Fix B2: evita que un usuario vea el job de otro.
+    Busca en device_id_app (app) o user_id (telegram).
+    """
+    job_id    = str(args.get('job_id', '')).strip()
+    device_id = str(args.get('device_id', '')).strip()
+
+    if not job_id or not device_id:
+        error('job_id y device_id son requeridos')
+        return
+
+    conn = conectar()
+    init_db(conn)
+
+    row = conn.execute(
+        """SELECT job_id, match_id, status, creado_en, completado_en,
+                  COALESCE(plan, 'free') AS plan,
+                  resultado_app
+           FROM jobs
+           WHERE job_id = ?
+             AND (device_id_app = ? OR user_id = ?)
+           LIMIT 1""",
+        (job_id, device_id, device_id)
+    ).fetchone()
+    conn.close()
+
+    if not row:
+        # Job no encontrado O no pertenece a este device_id
+        ok({'encontrado': False, 'job_id': job_id,
+            'error': 'Job no encontrado o no pertenece a este dispositivo'})
+        return
+
+    import json as _json
+    resultado_app = None
+    if row['resultado_app']:
+        try:
+            resultado_app = _json.loads(row['resultado_app'])
+        except Exception:
+            resultado_app = row['resultado_app']
+
+    ok({
+        'encontrado':    True,
+        'job_id':        row['job_id'],
+        'match_id':      row['match_id'],
+        'status':        row['status'],
+        'plan':          row['plan'],
+        'creado_en':     row['creado_en'],
+        'completado_en': row['completado_en'],
+        'content':       resultado_app,
+    })
+
+
+# ── Generación y gestión de códigos ──────────────────────────────────────────
+
+def _generar_codigo_unico(plan: str) -> str:
+    """
+    Genera un código único con formato KS-PLAN-XXXXXXX.
+    Excluye caracteres confusos: O, 0, I, 1.
+    Ejemplo: KS-PRO-X7K2M9A  |  KS-MAX-B3C8F2D
+    """
+    chars    = (string.ascii_uppercase + string.digits)\
+               .replace('O','').replace('0','').replace('I','').replace('1','')
+    prefijo  = 'PRO' if plan == 'pro' else 'MAX'
+    parte    = ''.join(secrets.choice(chars) for _ in range(7))
+    return f"KS-{prefijo}-{parte}"
+
+
+def generar_codigos_lote(args):
+    """
+    Genera N códigos de activación y los guarda en BD.
+    Uso desde Termux:
+      python3 db_query.py generar_codigos_lote '{"plan":"pro","dias":30,"cantidad":10}'
+    """
+    plan     = str(args.get('plan', 'pro')).lower()
+    dias     = int(args.get('dias', 30))
+    cantidad = int(args.get('cantidad', 5))
+
+    if plan not in ('pro', 'max'):
+        error('plan inválido: usar pro o max')
+        return
+    if cantidad < 1 or cantidad > 100:
+        error('cantidad debe estar entre 1 y 100')
+        return
+    if dias < 1 or dias > 3650:
+        error('dias debe estar entre 1 y 3650')
+        return
+
+    conn     = conectar()
+    init_db(conn)
+    generados = []
+
+    for _ in range(cantidad):
+        # Garantizar unicidad — reintentar si colisiona
+        intentos = 0
+        while intentos < 10:
+            codigo = _generar_codigo_unico(plan)
+            existe = conn.execute(
+                'SELECT 1 FROM codigos_acceso WHERE codigo = ?', (codigo,)
+            ).fetchone()
+            if not existe:
+                conn.execute(
+                    """INSERT INTO codigos_acceso
+                       (codigo, plan, dias, usado, creado_en)
+                       VALUES (?, ?, ?, 0, ?)""",
+                    (codigo, plan, dias, now())
+                )
+                generados.append(codigo)
+                break
+            intentos += 1
+
+    conn.commit()
+    conn.close()
+
+    ok({'generados': len(generados), 'plan': plan,
+        'dias': dias, 'codigos': generados})
+
+
+def activar_codigo(args):
+    """
+    Activa un código de acceso para un device_id.
+    Reglas:
+      - El código debe existir en BD
+      - usado=0 (no usado)
+      - Si tiene device_id_asignado → solo ese device_id puede activarlo
+      - Un device_id NO puede activar si ya tiene plan activo vigente
+      - 1 código = 1 usuario, irreversible
+    """
+    codigo    = str(args.get('codigo', '')).strip().upper()
+    device_id = str(args.get('device_id', '')).strip()
+
+    if not codigo or not device_id:
+        error('codigo y device_id son requeridos')
+        return
+
+    conn = conectar()
+    init_db(conn)
+
+    # Buscar el código
+    row = conn.execute(
+        """SELECT codigo, plan, dias, usado, device_id_asignado, device_id_usado
+           FROM codigos_acceso WHERE codigo = ?""",
+        (codigo,)
+    ).fetchone()
+
+    if not row:
+        conn.close()
+        ok({'activado': False, 'error': 'codigo_invalido',
+            'mensaje': 'Código incorrecto. Verifica que lo ingresaste bien.'})
+        return
+
+    if row['usado'] == 1:
+        conn.close()
+        ok({'activado': False, 'error': 'codigo_usado',
+            'mensaje': 'Este código ya fue utilizado por otro usuario.'})
+        return
+
+    # Si el código fue asignado a un device_id específico → verificar
+    if row['device_id_asignado'] and row['device_id_asignado'] != device_id:
+        conn.close()
+        ok({'activado': False, 'error': 'codigo_no_asignado',
+            'mensaje': 'Este código no está disponible para tu dispositivo.'})
+        return
+
+    # Verificar si este device_id ya tiene plan activo vigente
+    usuario = conn.execute(
+        'SELECT plan, activo_hasta FROM usuarios WHERE device_id = ?', (device_id,)
+    ).fetchone()
+    hoy = datetime.now().strftime('%Y-%m-%d')
+
+    if usuario and usuario['plan'] not in ('free', None):
+        if usuario['activo_hasta'] and usuario['activo_hasta'] >= hoy:
+            conn.close()
+            ok({'activado': False, 'error': 'plan_activo',
+                'mensaje': f'Ya tienes un plan {usuario["plan"]} activo hasta {usuario["activo_hasta"]}.'})
+            return
+
+    # Todo OK — activar
+    plan         = row['plan']
+    dias         = row['dias']
+    activo_hasta = (datetime.now() + timedelta(days=dias)).strftime('%Y-%m-%d')
+    ahora        = now()
+
+    # Marcar código como usado
+    conn.execute(
+        """UPDATE codigos_acceso
+           SET usado=1, device_id_usado=?, usado_en=?
+           WHERE codigo=?""",
+        (device_id, ahora, codigo)
+    )
+
+    # Actualizar o insertar usuario
+    conn.execute(
+        """INSERT INTO usuarios (device_id, activo, plan, activo_hasta, origen, creado_en)
+           VALUES (?, 1, ?, ?, 'app', ?)
+           ON CONFLICT(device_id) DO UPDATE
+           SET plan=excluded.plan, activo_hasta=excluded.activo_hasta, activo=1""",
+        (device_id, plan, activo_hasta, ahora)
+    )
+
+    conn.commit()
+    conn.close()
+
+    ok({'activado':    True,
+        'plan':        plan,
+        'dias':        dias,
+        'activo_hasta': activo_hasta,
+        'mensaje':     f'¡Plan {plan.upper()} activado hasta {activo_hasta}!'})
+
+
+def listar_codigos(args):
+    """
+    Lista códigos para gestión desde Termux.
+    filtro: 'disponibles' | 'usados' | 'todos'
+    """
+    filtro = str(args.get('filtro', 'disponibles')).lower()
+
+    conn = conectar()
+    init_db(conn)
+
+    if filtro == 'disponibles':
+        where = 'WHERE usado = 0'
+    elif filtro == 'usados':
+        where = 'WHERE usado = 1'
+    else:
+        where = ''
+
+    rows = conn.execute(
+        f"""SELECT codigo, plan, dias, usado,
+                   device_id_asignado, device_id_usado, creado_en, usado_en
+            FROM codigos_acceso {where}
+            ORDER BY creado_en DESC"""
+    ).fetchall()
+    conn.close()
+
+    codigos = []
+    for r in rows:
+        codigos.append({
+            'codigo':             r['codigo'],
+            'plan':               r['plan'],
+            'dias':               r['dias'],
+            'usado':              bool(r['usado']),
+            'device_id_asignado': r['device_id_asignado'],
+            'device_id_usado':    r['device_id_usado'],
+            'creado_en':          r['creado_en'],
+            'usado_en':           r['usado_en'],
+        })
+
+    ok({'filtro': filtro, 'total': len(codigos), 'codigos': codigos})
+
+
+def asignar_codigo(args):
+    """
+    Reserva un código para un device_id específico desde Termux.
+    El código solo podrá ser activado por ese device_id.
+    Si device_id='' → libera la asignación (vuelve a ser genérico).
+    """
+    codigo    = str(args.get('codigo', '')).strip().upper()
+    device_id = str(args.get('device_id', '')).strip()
+
+    if not codigo:
+        error('codigo requerido')
+        return
+
+    conn = conectar()
+    init_db(conn)
+
+    row = conn.execute(
+        'SELECT usado, device_id_asignado FROM codigos_acceso WHERE codigo = ?',
+        (codigo,)
+    ).fetchone()
+
+    if not row:
+        conn.close()
+        ok({'asignado': False, 'error': 'Código no encontrado'})
+        return
+
+    if row['usado'] == 1:
+        conn.close()
+        ok({'asignado': False, 'error': 'El código ya fue utilizado, no se puede reasignar'})
+        return
+
+    # device_id vacío = liberar asignación
+    nuevo_asignado = device_id if device_id else None
+    conn.execute(
+        'UPDATE codigos_acceso SET device_id_asignado = ? WHERE codigo = ?',
+        (nuevo_asignado, codigo)
+    )
+    conn.commit()
+    conn.close()
+
+    if nuevo_asignado:
+        ok({'asignado': True, 'codigo': codigo,
+            'device_id': nuevo_asignado,
+            'mensaje': f'Código {codigo} reservado para {nuevo_asignado}'})
+    else:
+        ok({'asignado': True, 'codigo': codigo,
+            'device_id': None,
+            'mensaje': f'Código {codigo} liberado (ahora es genérico)'})
+
+
 # ─── dispatcher ───────────────────────────────────────────────────────────────
 
 OPERACIONES = {
@@ -1206,6 +1856,17 @@ OPERACIONES = {
     'guardar_resultado':          guardar_resultado,
     'leer_stats_aciertos':        leer_stats_aciertos,
     'leer_aciertos_por_fuente':   leer_aciertos_por_fuente,
+    # v4 — KairosApp
+    'registrar_usuario_app':      registrar_usuario_app,
+    'obtener_usuario_app':        obtener_usuario_app,
+    'verificar_limite_app':       verificar_limite_app,
+    'registrar_uso_app':          registrar_uso_app,
+    'crear_job_app':              crear_job_app,
+    'leer_job_especifico':        leer_job_especifico,
+    'generar_codigos_lote':       generar_codigos_lote,
+    'activar_codigo':             activar_codigo,
+    'listar_codigos':             listar_codigos,
+    'asignar_codigo':             asignar_codigo,
 }
 
 if __name__ == '__main__':
