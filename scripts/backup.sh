@@ -73,7 +73,7 @@ parse_args() {
 
   if [ -n "$TARGET_MODULE" ]; then
     case "$TARGET_MODULE" in
-      base|claude|expo|ollama|n8n|proot-base|proot-n8n|remote|opencode|openclaw|full) ;;
+      base|claude|claude-native|expo|ollama|n8n|proot-base|proot-n8n|remote|opencode|openclaw|full) ;;
       *) error "Módulo inválido: '$TARGET_MODULE'\n  Válidos: base | claude | expo | ollama | n8n | proot-base | proot-n8n | remote | opencode | openclaw | full" ;;
     esac
   fi
@@ -82,7 +82,10 @@ parse_args "$@"
 
 should_run() {
   [ -z "$TARGET_MODULE" ] || [ "$TARGET_MODULE" = "$1" ] || [ "$TARGET_MODULE" = "full" ] || \
-  { [ "$1" = "proot" ] && { [ "$TARGET_MODULE" = "proot-base" ] || [ "$TARGET_MODULE" = "proot-n8n" ]; }; }
+  { [ "$1" = "proot" ] && { [ "$TARGET_MODULE" = "proot-base" ] || \
+    [ "$TARGET_MODULE" = "proot-n8n" ] || [ "$TARGET_MODULE" = "proot-completo" ]; }; } || \
+  { [ "$1" = "claude-any" ] && { [ "$TARGET_MODULE" = "claude" ] || \
+    [ "$TARGET_MODULE" = "claude-native" ]; }; }
 }
 
 # ── Detectar proot ────────────────────────────────────────────
@@ -108,7 +111,18 @@ HAS_REMOTE=false
 HAS_OPENCODE=false
 HAS_OPENCLAW=false
 
-[ -d "${NPM_GLOBAL}/@anthropic-ai/claude-code" ] && HAS_CLAUDE=true
+# ── Detectar método Claude instalado ─────────────────────────
+CLAUDE_METHOD="none"  # none | legacy | native
+HAS_CLAUDE=false
+NATIVE_BINARY="$HOME/.local/share/claude-code/claude"
+
+if [ -f "$NATIVE_BINARY" ] && [ -x "$NATIVE_BINARY" ]; then
+  CLAUDE_METHOD="native"
+  HAS_CLAUDE=true
+elif [ -d "${NPM_GLOBAL}/@anthropic-ai/claude-code" ]; then
+  CLAUDE_METHOD="legacy"
+  HAS_CLAUDE=true
+fi
 [ -d "${NPM_GLOBAL}/eas-cli" ]                   && HAS_EAS=true
 command -v ollama &>/dev/null                    && HAS_OLLAMA=true
 [ -n "$DISTRO_NAME" ]                            && HAS_PROOT=true
@@ -155,7 +169,11 @@ echo "  Destino final      : $OUT_DIR"
 echo ""
 echo "  Módulos detectados:"
 echo -e "  ${GREEN}✓${NC} Termux base (siempre)"
-$HAS_CLAUDE  && echo -e "  ${GREEN}✓${NC} Claude Code" || echo -e "  ${YELLOW}○${NC} Claude Code     (se omitirá)"
+case "$CLAUDE_METHOD" in
+  native) echo -e "  ${GREEN}✓${NC} Claude Code  ${DIM}(native · glibc-runner)${NC}" ;;
+  legacy) echo -e "  ${GREEN}✓${NC} Claude Code  ${DIM}(legacy · npm)${NC}" ;;
+  none)   echo -e "  ${YELLOW}○${NC} Claude Code     (se omitirá)" ;;
+esac
 $HAS_EAS     && echo -e "  ${GREEN}✓${NC} Expo / EAS CLI" || echo -e "  ${YELLOW}○${NC} Expo / EAS CLI  (se omitirá)"
 $HAS_OLLAMA  && echo -e "  ${GREEN}✓${NC} Ollama" || echo -e "  ${YELLOW}○${NC} Ollama          (se omitirá)"
 $HAS_N8N     && echo -e "  ${GREEN}✓${NC} n8n + cloudflared" || echo -e "  ${YELLOW}○${NC} n8n             (se omitirá)"
@@ -291,44 +309,96 @@ rm -rf "$P0_TMP"
 fi # end should_run base
 
 # ════════════════════════════════════════════════════════════
-# PARTE 2 — Claude Code
+# PARTE 2 — Claude Code (legacy · npm)
+# PARTE 2b — Claude Code (native · glibc-runner)
 # ════════════════════════════════════════════════════════════
-if should_run "claude"; then
-titulo "PARTE 2 — Claude Code"
+if should_run "claude-any"; then
 
 if ! $HAS_CLAUDE; then
-  skip "Claude Code no encontrado — omitiendo part2"
-else
+  skip "Claude Code no encontrado — omitiendo"
+
+elif [ "$CLAUDE_METHOD" = "native" ]; then
+  titulo "PARTE 2b — Claude Code Native (glibc-runner)"
+
+  # Solo el binario ya parcheado + wrapper
+  # glibc-runner NO se incluye — es pkg, se instala en el restore
+  P2B_TMP="$TMP_DIR/claude_native_pack"
+  mkdir -p "$P2B_TMP/bin" "$P2B_TMP/wrapper"
+
+  cp "$NATIVE_BINARY" "$P2B_TMP/bin/claude"
+  [ -f "$HOME/.local/bin/claude" ] && cp "$HOME/.local/bin/claude" "$P2B_TMP/wrapper/claude"
+  [ -f "$HOME/.claude/settings.json" ] && {
+    mkdir -p "$P2B_TMP/settings"
+    cp "$HOME/.claude/settings.json" "$P2B_TMP/settings/settings.json"
+  }
+
+  NATIVE_VER=$("$NATIVE_BINARY" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+  [ -z "$NATIVE_VER" ] && NATIVE_VER="unknown"
+
+  cat > "$P2B_TMP/RESTORE.txt" << EOF
+# termux-ai-stack · part2b-claude-native
+# Versión backup: $VERSION
+# Versión Claude: $NATIVE_VER
+# Método: native (binario ELF + glibc-runner)
+#
+# RUTAS:
+#   bin/claude     → ~/.local/share/claude-code/claude  (binario ELF parcheado)
+#   wrapper/claude → ~/.local/bin/claude                (wrapper unset LD_PRELOAD)
+#   settings/      → ~/.claude/settings.json
+#
+# RESTORE REQUIERE:
+#   pkg install -y glibc-runner patchelf-glibc  (si no están)
+#   El binario ya viene parcheado — NO re-patchear
+#   Solo verificar que glibc ld.so existe:
+#   /data/data/com.termux/files/usr/glibc/lib/ld-linux-aarch64.so.1
+EOF
+
+  info "Binario: $NATIVE_VER · $(du -h "$NATIVE_BINARY" | cut -f1)"
+  ITEMS=("bin" "wrapper" "RESTORE.txt")
+  [ -d "$P2B_TMP/settings" ] && ITEMS+=("settings")
+  make_part "part2b-claude-native" "$P2B_TMP" "${ITEMS[@]}"
+  rm -rf "$P2B_TMP"
+
+elif [ "$CLAUDE_METHOD" = "legacy" ]; then
+  titulo "PARTE 2 — Claude Code Legacy (npm)"
+
   P2_TMP="$TMP_DIR/claude_pack"
   mkdir -p "$P2_TMP/npm_modules"
   cp -r "${NPM_GLOBAL}/@anthropic-ai" "$P2_TMP/npm_modules/"
 
-  # Incluir wrapper si existe
-  WRAPPER="${TERMUX_PREFIX}/bin/claude"
-  [ -f "$WRAPPER" ] && cp "$WRAPPER" "$P2_TMP/claude_wrapper"
+  WRAPPER_LEGACY="${TERMUX_PREFIX}/bin/claude"
+  [ -f "$WRAPPER_LEGACY" ] && cp "$WRAPPER_LEGACY" "$P2_TMP/claude_wrapper"
+  [ -f "$HOME/.claude/settings.json" ] && {
+    mkdir -p "$P2_TMP/settings"
+    cp "$HOME/.claude/settings.json" "$P2_TMP/settings/settings.json"
+  }
+
+  LEGACY_VER=$(node "${NPM_GLOBAL}/@anthropic-ai/claude-code/cli.js" --version 2>/dev/null \
+    | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+  [ -z "$LEGACY_VER" ] && LEGACY_VER="2.1.111"
 
   cat > "$P2_TMP/RESTORE.txt" << EOF
 # termux-ai-stack · part2-claude-code
-# Versión: $VERSION
+# Versión backup: $VERSION
+# Versión Claude: $LEGACY_VER
+# Método: legacy (npm · Node.js)
 #
-# RESTAURACIÓN:
-#   cp -r npm_modules/@anthropic-ai $(npm root -g 2>/dev/null)/
-#   # Re-crear wrapper:
-#   CLI=\$(npm root -g)/@anthropic-ai/claude-code/cli.js
-#   echo '#!/data/data/com.termux/files/usr/bin/bash' > $TERMUX_PREFIX/bin/claude
-#   echo "exec node \$CLI \"\\\$@\"" >> $TERMUX_PREFIX/bin/claude
-#   chmod +x $TERMUX_PREFIX/bin/claude
+# RUTAS:
+#   npm_modules/@anthropic-ai → \$(npm root -g)/@anthropic-ai
+#   claude_wrapper            → \$PREFIX/bin/claude
+#   settings/settings.json    → ~/.claude/settings.json
 EOF
 
   SIZE=$(du -sh "${NPM_GLOBAL}/@anthropic-ai" 2>/dev/null | cut -f1)
-  info "Tamaño: $SIZE"
-
+  info "Tamaño node_modules: $SIZE · v$LEGACY_VER"
   ITEMS=("npm_modules" "RESTORE.txt")
   [ -f "$P2_TMP/claude_wrapper" ] && ITEMS+=("claude_wrapper")
+  [ -d "$P2_TMP/settings" ]       && ITEMS+=("settings")
   make_part "part2-claude-code" "$P2_TMP" "${ITEMS[@]}"
   rm -rf "$P2_TMP"
 fi
-fi # end should_run claude
+
+fi # end should_run claude-any
 
 # ════════════════════════════════════════════════════════════
 # PARTE 3 — Expo / EAS CLI
@@ -792,7 +862,8 @@ CHECKSUMS_TMP="$TMP_DIR/checksums-${VERSION}.txt"
   echo ""
   echo "# TABLA DE PARTES (permanente):"
   echo "# part0 = termux-base         (scripts + tema + configs)"
-  echo "# part2 = claude-code         (npm @anthropic-ai/claude-code)"
+  echo "# part2 = claude-code         (legacy · npm @anthropic-ai/claude-code)"
+  echo "# part2b= claude-native       (native · binario ELF + glibc-runner)"
   echo "# part3 = eas-expo            (eas-cli + credenciales)"
   echo "# part4-ollama-standard       (binario pkg genérico)"
   echo "# part4-ollama-optimized      (llama.cpp i8mm+dotprod)"

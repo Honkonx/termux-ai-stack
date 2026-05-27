@@ -20,43 +20,43 @@
 # ════════════════════════════════════════════
 
 check_claude() {
-  local cli_path wrapper_path
-  cli_path=$(find_claude_cli)
-  wrapper_path="$TERMUX_PREFIX/bin/claude"
-  local wrapper_ok=false cli_ok=false
-  [ -f "$wrapper_path" ] && [ -s "$wrapper_path" ] && wrapper_ok=true
-  [ -f "$cli_path" ]     && [ -s "$cli_path" ]     && cli_ok=true
+  local method; method=$(detect_claude_method)
 
-  if [ "$wrapper_ok" = "false" ] && [ "$cli_ok" = "false" ]; then
-    echo "not_installed||"; return
-  fi
-
-  # Reparar registry silenciosamente si wrapper existe pero registry no
-  if [ "$(get_reg claude_code installed)" != "true" ] && \
-     { [ "$wrapper_ok" = "true" ] || [ "$cli_ok" = "true" ]; }; then
-    local ver_repair
-    ver_repair=$(node "$cli_path" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
-    [ -z "$ver_repair" ] && ver_repair="2.1.111"
-    grep -v "^claude_code\." "$REGISTRY" > "$REGISTRY.tmp" 2>/dev/null || touch "$REGISTRY.tmp"
-    cat >> "$REGISTRY.tmp" << EOF
-claude_code.installed=true
-claude_code.version=$ver_repair
-claude_code.install_date=$(date +%Y-%m-%d)
-claude_code.location=termux_native
-EOF
-    mv "$REGISTRY.tmp" "$REGISTRY"
-  fi
-
-  [ "$cli_ok" = "false" ] && [ "$wrapper_ok" = "true" ] && {
-    echo "ready|err:reinstalar|"; return
-  }
-
-  local ver; ver=$(get_reg claude_code version)
-  if [ -z "$ver" ] || [ "$ver" = "unknown" ]; then
-    ver=$(node "$cli_path" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
-  fi
-  [ -z "$ver" ] && ver="err:reinstalar"
-  echo "ready|${ver}|"
+  case "$method" in
+    native)
+      local native_wrapper="$HOME/.local/bin/claude"
+      local ver; ver=$(get_reg claude_code version)
+      [ -z "$ver" ] || [ "$ver" = "unknown" ] && \
+        ver=$("$native_wrapper" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+      [ -z "$ver" ] && ver="?"
+      echo "ready|${ver}|native"
+      ;;
+    legacy)
+      local cli_path; cli_path=$(find_claude_cli)
+      local ver; ver=$(get_reg claude_code version)
+      [ -z "$ver" ] || [ "$ver" = "unknown" ] && \
+        ver=$(node "$cli_path" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+      [ -z "$ver" ] && ver="err:reinstalar"
+      # Reparar registry silenciosamente si falta
+      if [ "$(get_reg claude_code installed)" != "true" ]; then
+        local vr="${ver}"; [ "$vr" = "err:reinstalar" ] && vr="2.1.111"
+        grep -v "^claude_code\." "$REGISTRY" > "$REGISTRY.tmp" 2>/dev/null || touch "$REGISTRY.tmp"
+        { echo "claude_code.installed=true"
+          echo "claude_code.version=$vr"
+          echo "claude_code.method=legacy"
+          echo "claude_code.install_date=$(date +%Y-%m-%d)"
+          echo "claude_code.location=termux_native"; } >> "$REGISTRY.tmp"
+        mv "$REGISTRY.tmp" "$REGISTRY"
+      fi
+      echo "ready|${ver}|legacy"
+      ;;
+    broken)
+      echo "ready|err:reinstalar|broken"
+      ;;
+    none)
+      echo "not_installed||none"
+      ;;
+  esac
 }
 
 check_ollama() {
@@ -1179,13 +1179,27 @@ submenu_ollama() {
 submenu_claude() {
   while true; do
     clear; echo ""
+    # Detectar método activo en cada render para mostrar info correcta
+    local _CC_METHOD; _CC_METHOD=$(detect_claude_method)
+    local _CC_VER; _CC_VER=$(get_reg claude_code version)
+    [ -z "$_CC_VER" ] && _CC_VER="?"
+    local _METHOD_LABEL
+    case "$_CC_METHOD" in
+      native) _METHOD_LABEL="native v${_CC_VER}  ${DIM}(glibc-runner)${NC}" ;;
+      legacy) _METHOD_LABEL="legacy v${_CC_VER}  ${DIM}(npm · Node)${NC}" ;;
+      broken) _METHOD_LABEL="${RED}⚠ instalación rota${NC}" ;;
+      *)      _METHOD_LABEL="${YELLOW}no instalado${NC}" ;;
+    esac
+
     echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
-    echo    "  ║  ◆ CLAUDE CODE  ● listo                 ║"
+    echo    "  ║  ◆ CLAUDE CODE                          ║"
+    echo    "  ╠══════════════════════════════════════════╣"
+    printf  "  ║  ${NC}%b${CYAN}${BOLD}%-*s║\n" "$_METHOD_LABEL" "$((41 - ${#_CC_METHOD} - ${#_CC_VER} - 10))" ""
     echo    "  ╠══════════════════════════════════════════╣"
     echo -e "  ║  ${NC}[1] Abrir en directorio actual          ${CYAN}${BOLD}║"
     echo -e "  ║  ${NC}[2] Abrir en proyecto                   ${CYAN}${BOLD}║"
     echo -e "  ║  ${NC}[3] Gestionar proyectos                 ${CYAN}${BOLD}║"
-    echo -e "  ║  ${NC}[4] Actualizar Claude Code              ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[4] Instalar / cambiar método           ${CYAN}${BOLD}║"
     echo -e "  ║  ${NC}[b] Volver                              ${CYAN}${BOLD}║"
     echo -e "  ╚══════════════════════════════════════════╝${NC}"
     echo ""; echo -n "  Opción: "
@@ -1194,21 +1208,41 @@ submenu_claude() {
     case "$OPT" in
       1)
         clear
-        local CLI_PATH; CLI_PATH=$(find_claude_cli)
-        if [ ! -f "$CLI_PATH" ]; then
-          echo -e "\n  ${RED}[ERROR]${NC} cli.js no encontrado."
-          echo "  Reinstala desde [0] → Restore → GitHub → claude"
-          echo ""; read -r _ < /dev/tty; continue
-        fi
-        echo -e "\n  ${CYAN}Abriendo Claude Code en $(pwd)...${NC}\n"
-        DISABLE_AUTOUPDATER=1 DISABLE_UPDATES=1 node "$CLI_PATH" ;;
+        # Lanzar según método activo
+        case "$_CC_METHOD" in
+          native)
+            echo -e "\n  ${CYAN}Abriendo Claude Code (native) en $(pwd)...${NC}\n"
+            unset LD_PRELOAD
+            "$HOME/.local/bin/claude" ;;
+          legacy)
+            local CLI_PATH; CLI_PATH=$(find_claude_cli)
+            if [ ! -f "$CLI_PATH" ]; then
+              echo -e "\n  ${RED}[ERROR]${NC} cli.js no encontrado — reinstala con [4]"
+              echo ""; read -r _ < /dev/tty; continue
+            fi
+            echo -e "\n  ${CYAN}Abriendo Claude Code (legacy) en $(pwd)...${NC}\n"
+            DISABLE_AUTOUPDATER=1 DISABLE_UPDATES=1 node "$CLI_PATH" ;;
+          *)
+            echo -e "\n  ${RED}[ERROR]${NC} Claude Code no instalado o roto — usa [4]"
+            echo ""; read -r _ < /dev/tty; continue ;;
+        esac ;;
       2)
         clear; echo ""
-        local CLI_PATH; CLI_PATH=$(find_claude_cli)
-        [ ! -f "$CLI_PATH" ] && {
-          echo -e "  ${RED}[ERROR]${NC} cli.js no encontrado."
-          read -r _ < /dev/tty; continue
-        }
+        # Resolver CLI según método antes de entrar al selector de proyecto
+        local _CLAUDE_CMD=""
+        case "$_CC_METHOD" in
+          native)  _CLAUDE_CMD="native" ;;
+          legacy)
+            local CLI_PATH; CLI_PATH=$(find_claude_cli)
+            [ ! -f "$CLI_PATH" ] && {
+              echo -e "  ${RED}[ERROR]${NC} cli.js no encontrado — reinstala con [4]"
+              read -r _ < /dev/tty; continue
+            }
+            _CLAUDE_CMD="legacy:${CLI_PATH}" ;;
+          *)
+            echo -e "  ${RED}[ERROR]${NC} Claude Code no instalado — usa [4]"
+            read -r _ < /dev/tty; continue ;;
+        esac
         mkdir -p "$HOME/proyectos"
         mapfile -t PROJS < <(ls -1 "$HOME/proyectos/" 2>/dev/null)
         echo -e "  ${CYAN}Proyectos en ~/proyectos/:${NC}"; echo ""
@@ -1244,8 +1278,15 @@ submenu_claude() {
               TARGET_DIR="$HOME/proyectos/${PROJS[$((PCHOICE-1))]}" ;;
         esac
         if [ -n "$TARGET_DIR" ] && [ -d "$TARGET_DIR" ]; then
-          echo -e "\n  ${CYAN}Abriendo Claude Code en $TARGET_DIR...${NC}\n"
-          cd "$TARGET_DIR" && DISABLE_AUTOUPDATER=1 DISABLE_UPDATES=1 node "$CLI_PATH"
+          echo -e "\n  ${CYAN}Abriendo en $TARGET_DIR...${NC}\n"
+          cd "$TARGET_DIR" || true
+          case "$_CLAUDE_CMD" in
+            native)
+              unset LD_PRELOAD; "$HOME/.local/bin/claude" ;;
+            legacy:*)
+              local _CLI="${_CLAUDE_CMD#legacy:}"
+              DISABLE_AUTOUPDATER=1 DISABLE_UPDATES=1 node "$_CLI" ;;
+          esac
         elif [ -n "$TARGET_DIR" ]; then
           echo -e "  ${RED}[ERROR]${NC} No existe: $TARGET_DIR"
           read -r _ < /dev/tty
@@ -1288,11 +1329,11 @@ submenu_claude() {
                  [ "$DCHOICE" -le "${#DL_DIRS[@]}" ]; then
                 local DNAME="${DL_DIRS[$((DCHOICE-1))]}"
                 local LSRC="/storage/emulated/0/Download/${DNAME}"
-                local LDST="$HOME/proyectos/${DNAME}"
+                local LDST2="$HOME/proyectos/${DNAME}"
                 mkdir -p "$HOME/proyectos"
-                [ -L "$LDST" ] \
+                [ -L "$LDST2" ] \
                   && echo -e "  ${YELLOW}[AVISO]${NC} Ya existe: ~/proyectos/${DNAME}" \
-                  || { ln -s "$LSRC" "$LDST" 2>/dev/null \
+                  || { ln -s "$LSRC" "$LDST2" 2>/dev/null \
                     && echo -e "  ${GREEN}[OK]${NC} Symlink creado" \
                     || echo -e "  ${RED}[ERROR]${NC}"; }
               fi
@@ -1324,7 +1365,6 @@ submenu_claude() {
         done ;;
       4)
         clear; echo ""
-        echo -e "  ${CYAN}Actualizando Claude Code...${NC}"; echo ""
         _ensure_install_script "install_claude.sh" || { read -r _ < /dev/tty; continue; }
         bash "$HOME/install_claude.sh" < /dev/tty
         echo ""; read -r _ < /dev/tty ;;
@@ -1362,11 +1402,23 @@ submenu_code_tools() {
       IFS='|' read -r OC_S OC_V OC_E <<< "$(check_opencode_cached)"
     fi
 
-    local CC_PILL OC_PILL
+    local CC_PILL OC_PILL CC_METHOD_LABEL
     case "$CC_S" in
-      ready)         CC_PILL="${GREEN}● listo   ${NC}" ;;
-      not_installed) CC_PILL="${YELLOW}○ no instal${NC}"; CC_V="──────────" ;;
-      *)             CC_PILL="${YELLOW}● ${CC_S}${NC}" ;;
+      ready)
+        # Mostrar método (native/legacy) como sub-label
+        case "$CC_E" in
+          native) CC_METHOD_LABEL="${DIM}native · glibc${NC}" ;;
+          legacy) CC_METHOD_LABEL="${DIM}legacy · npm${NC}" ;;
+          broken) CC_METHOD_LABEL="${RED}⚠ reinstalar${NC}" ;;
+          *)      CC_METHOD_LABEL="${DIM}${CC_V}${NC}" ;;
+        esac
+        CC_PILL="${GREEN}● listo   ${NC}" ;;
+      not_installed)
+        CC_PILL="${YELLOW}○ no instal${NC}"; CC_V="──────────"
+        CC_METHOD_LABEL="" ;;
+      *)
+        CC_PILL="${YELLOW}● ${CC_S}${NC}"
+        CC_METHOD_LABEL="" ;;
     esac
     case "$OC_S" in
       running)       OC_PILL="${GREEN}● activo  ${NC}" ;;
@@ -1379,7 +1431,11 @@ submenu_code_tools() {
     echo    "  ║  ◆ CODE TOOLS                           ║"
     echo    "  ╠══════════════════════════════════════════╣"
     printf  "  ║  ${NC}[1] Claude Code  %b  %b${CYAN}${BOLD}║\n" "$CC_PILL" "${NC}→ submenú${CYAN}${BOLD}"
-    printf  "  ║      ${NC}${DIM}%s${NC}${CYAN}${BOLD}%-$((28-${#CC_V}))s║\n" "$CC_V" ""
+    if [ "$CC_V" = "err:reinstalar" ]; then
+      echo -e "  ║      ${RED}⚠ instalación rota — reinstalar${NC}${CYAN}${BOLD}  ║"
+    else
+      printf  "  ║      ${NC}v%-6s  %b${CYAN}${BOLD}%-16s║\n" "$CC_V" "$CC_METHOD_LABEL" ""
+    fi
     printf  "  ║  ${NC}[2] OpenCode     %b  %b${CYAN}${BOLD}║\n" "$OC_PILL" "${NC}→ submenú${CYAN}${BOLD}"
     printf  "  ║      ${NC}${DIM}%s${NC}${CYAN}${BOLD}%-$((28-${#OC_V}))s║\n" "$OC_V" ""
     echo    "  ╠══════════════════════════════════════════╣"
@@ -2661,7 +2717,7 @@ else:
         _sports_ok || continue
         clear; echo ""
         echo -e "  ${CYAN}Sincronizando BD → proot (n8n)...${NC}"; echo ""
-        proot-distro login debian -- mkdir -p /root/sports/db 2>/dev/null
+        proot-distro login "$DISTRO_NAME" -- mkdir -p /root/sports/db 2>/dev/null
         cp "$SPORTS_DB" "$PROOT_SPORTS_DB" 2>/dev/null \
           && echo -e "  ${GREEN}[OK]${NC} BD sincronizada: $PROOT_SPORTS_DB" \
           || echo -e "  ${RED}[ERROR]${NC} Falló — verifica que proot Debian esté instalado"
@@ -3161,14 +3217,28 @@ uninstall_module() {
 
   case "$module_key" in
     claude)
-      npm uninstall -g @anthropic-ai/claude-code 2>/dev/null || true
-      npm cache clean --force 2>/dev/null || true
-      local NPM_ROOT_U; NPM_ROOT_U=$(npm root -g 2>/dev/null)
-      rm -rf "${NPM_ROOT_U}/@anthropic-ai" 2>/dev/null || true
-      rm -f "${TERMUX_PREFIX}/bin/claude" "$HOME/.install_claude_checkpoint" 2>/dev/null
-      grep -v "alias claude=" "$HOME/.bashrc" > "$HOME/.bashrc.tmp" 2>/dev/null && mv "$HOME/.bashrc.tmp" "$HOME/.bashrc"
-      grep -v "^claude_code\." "$REGISTRY" > "$REGISTRY.tmp" 2>/dev/null && mv "$REGISTRY.tmp" "$REGISTRY"
-      echo -e "  ${GREEN}[OK]${NC} Claude Code desinstalado" ;;
+      local _cm; _cm=$(detect_claude_method)
+      case "$_cm" in
+        native)
+          rm -rf "$HOME/.local/share/claude-code" 2>/dev/null || true
+          rm -f  "$HOME/.local/bin/claude" 2>/dev/null || true
+          echo -e "  ${GREEN}[OK]${NC} Claude native desinstalado"
+          echo -e "  ${DIM}(glibc-runner conservado — puede usarlo OpenCode)${NC}" ;;
+        legacy|broken)
+          npm uninstall -g @anthropic-ai/claude-code 2>/dev/null || true
+          npm cache clean --force 2>/dev/null || true
+          local NPM_ROOT_U; NPM_ROOT_U=$(npm root -g 2>/dev/null)
+          rm -rf "${NPM_ROOT_U}/@anthropic-ai/claude-code" 2>/dev/null || true
+          rm -f "${TERMUX_PREFIX}/bin/claude" 2>/dev/null || true
+          grep -v "alias claude=\|alias claude-check=" "$HOME/.bashrc" \
+            > "$HOME/.bashrc.tmp" 2>/dev/null && mv "$HOME/.bashrc.tmp" "$HOME/.bashrc"
+          echo -e "  ${GREEN}[OK]${NC} Claude legacy desinstalado" ;;
+        none)
+          echo -e "  ${YELLOW}[AVISO]${NC} Claude Code no estaba instalado" ;;
+      esac
+      rm -f "$HOME/.install_claude_checkpoint" 2>/dev/null || true
+      grep -v "^claude_code\." "$REGISTRY" > "$REGISTRY.tmp" 2>/dev/null \
+        && mv "$REGISTRY.tmp" "$REGISTRY" ;;
     ollama)
       tmux kill-session -t "ollama-server" 2>/dev/null || true
       pkg uninstall ollama -y 2>/dev/null || true
@@ -3178,8 +3248,8 @@ uninstall_module() {
       echo -e "  ${YELLOW}⚠${NC}  ~/.ollama no eliminado — bórralo para liberar espacio" ;;
     n8n)
       tmux kill-session -t "n8n-server" 2>/dev/null || true
-      if proot-distro login debian -- bash -c 'true' &>/dev/null 2>&1; then
-        proot-distro login debian -- bash -c '
+      if [ -n "$DISTRO_NAME" ] && proot-distro login "$DISTRO_NAME" -- bash -c 'true' &>/dev/null 2>&1; then
+        proot-distro login "$DISTRO_NAME" -- bash -c '
           rm -rf /usr/lib/node_modules/n8n /usr/lib/node_modules/corepack 2>/dev/null
           rm -f /usr/bin/n8n /usr/local/bin/cloudflared /usr/bin/node 2>/dev/null
           rm -rf /root/.n8n /root/.cache/node-gyp /root/.cf_token 2>/dev/null
@@ -3218,8 +3288,8 @@ uninstall_module() {
         rm -f "$HOME/.opencode_web.pid"
       }
       pkill -f "opencode web" 2>/dev/null || true
-      if proot-distro login debian -- bash -c 'true' &>/dev/null 2>&1; then
-        proot-distro login debian -- bash -c '
+      if [ -n "$DISTRO_NAME" ] && proot-distro login "$DISTRO_NAME" -- bash -c 'true' &>/dev/null 2>&1; then
+        proot-distro login "$DISTRO_NAME" -- bash -c '
           rm -rf /root/.opencode /root/.config/opencode /root/.local/share/opencode /root/.cache/opencode 2>/dev/null
           echo "[OK] Archivos OpenCode eliminados"
         ' 2>/dev/null
@@ -3232,8 +3302,8 @@ uninstall_module() {
         kill "$(cat "$HOME/.openclaw_gateway.pid")" 2>/dev/null || true
         rm -f "$HOME/.openclaw_gateway.pid"
       }
-      if proot-distro login debian -- bash -c 'true' &>/dev/null 2>&1; then
-        proot-distro login debian -- bash -c '
+      if [ -n "$DISTRO_NAME" ] && proot-distro login "$DISTRO_NAME" -- bash -c 'true' &>/dev/null 2>&1; then
+        proot-distro login "$DISTRO_NAME" -- bash -c '
           rm -rf /root/.nvm /root/.openclaw /root/openclaw-shim.cjs /root/.npm 2>/dev/null
           echo "[OK] Archivos OpenClaw eliminados"
         ' 2>/dev/null
@@ -3242,6 +3312,29 @@ uninstall_module() {
       rm -f "$HOME/.openclaw_gateway.log" 2>/dev/null
       grep -v "^openclaw\." "$REGISTRY" > "$REGISTRY.tmp" 2>/dev/null && mv "$REGISTRY.tmp" "$REGISTRY"
       echo -e "  ${GREEN}[OK]${NC} OpenClaw desinstalado" ;;
+    proot)
+      # Detener todos los servicios proot antes de eliminar
+      tmux kill-session -t "n8n-server"  2>/dev/null || true
+      tmux kill-session -t "opencode"    2>/dev/null || true
+      tmux kill-session -t "openclaw"    2>/dev/null || true
+      if [ -n "$DISTRO_NAME" ] && [ -n "$ROOTFS_PATH" ]; then
+        echo -e "  ${YELLOW}Eliminando rootfs: $DISTRO_NAME${NC}"
+        rm -rf "$ROOTFS_PATH" 2>/dev/null
+        # Eliminar también el entry de proot-distro si existe
+        proot-distro remove "$DISTRO_NAME" 2>/dev/null || true
+        # Limpiar caché de estado
+        rm -f "$HOME/.proot_status_cache" 2>/dev/null
+        # Limpiar registry de módulos que dependen de proot
+        grep -v "^n8n\.\|^opencode\.\|^openclaw\.\|^proot\." "$REGISTRY" > "$REGISTRY.tmp" 2>/dev/null && mv "$REGISTRY.tmp" "$REGISTRY"
+        # Resetear variables globales
+        DISTRO_NAME=""
+        ROOTFS_PATH=""
+        echo -e "  ${GREEN}[OK]${NC} Rootfs Debian eliminado"
+        echo -e "  ${YELLOW}⚠${NC}  n8n, OpenCode y OpenClaw ya no están disponibles"
+        echo -e "  ${DIM}Para reinstalar: menú → módulo → instalar${NC}"
+      else
+        echo -e "  ${YELLOW}[AVISO]${NC} No se detectó ningún rootfs instalado"
+      fi ;;
   esac
   echo ""; read -r _ < /dev/tty
 }
@@ -3256,6 +3349,7 @@ submenu_desinstalar() {
     echo -e "  ║  ${NC}[3] Ollama       [4] Expo / EAS${RED}${BOLD}         ║"
     echo -e "  ║  ${NC}[5] Python       [6] Remote${RED}${BOLD}             ║"
     echo -e "  ║  ${NC}[7] OpenCode     [8] OpenClaw${RED}${BOLD}           ║"
+    echo -e "  ║  ${NC}[9] Distro Debian (rootfs completo)${RED}${BOLD}     ║"
     echo -e "  ║  ${NC}[b] Cancelar${RED}${BOLD}                            ║"
     echo -e "  ╚══════════════════════════════════════════╝${NC}"
     echo ""; echo -n "  Módulo: "; read -r OPT < /dev/tty
@@ -3269,6 +3363,7 @@ submenu_desinstalar() {
       6) uninstall_module "remote"   "Remote (SSH + Dashboard)" ; break ;;
       7) uninstall_module "opencode" "OpenCode"                 ; break ;;
       8) uninstall_module "openclaw" "OpenClaw"                 ; break ;;
+      9) uninstall_module "proot"    "Distro Debian (rootfs)"   ; break ;;
       b|B|"") break ;;
     esac
   done

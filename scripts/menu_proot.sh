@@ -12,7 +12,7 @@
 #  Cargado via 'source' por menu.sh — no ejecutar directamente.
 #
 #  RESTRICCIONES PROOT:
-#    - proot-distro login debian tarda 3-5s: minimizar llamadas
+#    - proot-distro login "$DISTRO_NAME" tarda 3-5s: minimizar llamadas
 #    - _check_proot_combined: 1 sola invocación para OC + CL
 #    - pkill desde Termux NO mata procesos dentro del proot
 #    - Caché memoria: _PROOT_CACHE_TTL=30s (definida en menu.sh)
@@ -64,7 +64,16 @@ _write_proot_cache() {
 
 _load_proot_cache() {
   # Retorna 0 si el caché del archivo es válido y cargó variables
-  # Retorna 1 si no hay archivo, está corrupto o expiró
+  # Retorna 1 si no hay archivo, está corrupto, expiró, o el rootfs no existe
+
+  # ── Guard crítico: si no hay rootfs, el caché nunca es válido ──
+  # Evita falsos positivos cuando proot fue desinstalado pero el
+  # caché en disco aún tiene "stopped|..." del estado anterior
+  if [ -z "$DISTRO_NAME" ] || [ ! -f "${ROOTFS_PATH}bin/bash" ]; then
+    rm -f "$PROOT_CACHE_FILE" 2>/dev/null || true
+    return 1
+  fi
+
   [ -f "$PROOT_CACHE_FILE" ] || return 1
   local line ts oc_enc claw_enc
   line=$(cat "$PROOT_CACHE_FILE" 2>/dev/null) || return 1
@@ -108,8 +117,19 @@ _load_proot_cache() {
 #  Resultado escrito en _OC_CACHE y _CLAW_CACHE (variables globales de menu.sh)
 # ════════════════════════════════════════════
 _check_proot_combined() {
+  # ── Guard: sin rootfs → not_installed inmediato, sin llamar a proot ──
+  if [ -z "$DISTRO_NAME" ] || [ ! -f "${ROOTFS_PATH}bin/bash" ]; then
+    _OC_CACHE="not_installed||"
+    _CLAW_CACHE="not_installed||"
+    local now=$SECONDS
+    _OC_CACHE_TS=$now
+    _CLAW_CACHE_TS=$now
+    rm -f "$PROOT_CACHE_FILE" 2>/dev/null || true
+    return 0
+  fi
+
   local raw
-  raw=$(proot-distro login debian -- bash -c '
+  raw=$(proot-distro login "$DISTRO_NAME" -- bash -c '
     # ── opencode ──
     OC_BIN=$(command -v opencode 2>/dev/null)
     if [ -n "$OC_BIN" ]; then
@@ -170,9 +190,12 @@ _check_proot_combined() {
 
 # ── Checks directos (sin caché) — para submenús internos ─────
 check_opencode() {
-  if proot-distro login debian -- bash -c 'command -v opencode' &>/dev/null 2>&1; then
+  [ -z "$DISTRO_NAME" ] || [ ! -f "${ROOTFS_PATH}bin/bash" ] && {
+    echo "not_installed||"; return
+  }
+  if proot-distro login "$DISTRO_NAME" -- bash -c 'command -v opencode' &>/dev/null 2>&1; then
     local oc_ver
-    oc_ver=$(proot-distro login debian -- bash -c \
+    oc_ver=$(proot-distro login "$DISTRO_NAME" -- bash -c \
       'opencode --version 2>/dev/null | head -1' 2>/dev/null \
       | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
     [ -z "$oc_ver" ] && oc_ver="?"
@@ -185,7 +208,10 @@ check_opencode() {
 }
 
 check_openclaw() {
-  if proot-distro login debian -- bash -c \
+  [ -z "$DISTRO_NAME" ] || [ ! -f "${ROOTFS_PATH}bin/bash" ] && {
+    echo "not_installed||"; return
+  }
+  if proot-distro login "$DISTRO_NAME" -- bash -c \
     'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
      command -v openclaw' &>/dev/null 2>&1; then
     local cl_ver
@@ -256,7 +282,7 @@ _n8n_repair_scripts() {
   echo ""
 
   echo -n "  Verificando n8n en proot Debian... "
-  if ! proot-distro login debian -- bash -c 'command -v n8n' &>/dev/null 2>&1; then
+  if ! proot-distro login "$DISTRO_NAME" -- bash -c 'command -v n8n' &>/dev/null 2>&1; then
     echo -e "${RED}✗${NC}"
     echo -e "  ${RED}[ERROR]${NC} n8n no está instalado en proot Debian."
     echo -e "  ${YELLOW}[INFO]${NC} Ve al menú principal → [1] → instalar n8n primero."
@@ -310,7 +336,7 @@ N8N_CMD="\${N8N_CMD} && n8n start"
 [ -n "\$WEBHOOK_URL_CFG" ] && echo "[*] Webhook URL: \$WEBHOOK_URL_CFG"
 echo "[*] Protocolo: ${_REPAIR_PROTO}"
 tmux send-keys -t "\$SESSION:n8n" \
-  "proot-distro login debian -- bash -c '\${N8N_CMD}'" Enter
+  "proot-distro login "$DISTRO_NAME" -- bash -c '\${N8N_CMD}'" Enter
 
 echo "[*] Esperando que n8n inicie (35 seg)..."
 sleep 35
@@ -321,10 +347,10 @@ tmux new-window -t "\$SESSION" -n "tunnel"
 if [ -f "\$HOME/.cf_token" ]; then
   CF_TOK=\$(cat "\$HOME/.cf_token")
   tmux send-keys -t "\$SESSION:tunnel" \
-    "proot-distro login debian -- bash -c 'cloudflared tunnel --no-autoupdate run --token \${CF_TOK} 2>&1 | tee /root/cf_url.log'" Enter
+    "proot-distro login "$DISTRO_NAME" -- bash -c 'cloudflared tunnel --no-autoupdate run --token \${CF_TOK} 2>&1 | tee /root/cf_url.log'" Enter
 else
   tmux send-keys -t "\$SESSION:tunnel" \
-    "proot-distro login debian -- bash -c 'cloudflared tunnel --no-autoupdate --url http://localhost:5678 2>&1 | tee /root/cf_url.log'" Enter
+    "proot-distro login "$DISTRO_NAME" -- bash -c 'cloudflared tunnel --no-autoupdate --url http://localhost:5678 2>&1 | tee /root/cf_url.log'" Enter
 fi
 
 echo "[*] Obteniendo URL pública (40 seg)..."
@@ -333,7 +359,7 @@ sleep 40
 if [ -n "\$WEBHOOK_URL_CFG" ]; then
   CF_URL="\$WEBHOOK_URL_CFG"
 else
-  CF_URL=\$(proot-distro login debian -- bash -c \
+  CF_URL=\$(proot-distro login "$DISTRO_NAME" -- bash -c \
     "grep -o 'https://[a-zA-Z0-9.-]*\\.trycloudflare\\.com' /root/cf_url.log 2>/dev/null | head -1" 2>/dev/null)
 fi
 
@@ -363,7 +389,7 @@ SCRIPT
   cat > "$N8N_SCRIPTS/stop_servidor.sh" << 'SCRIPT'
 #!/data/data/com.termux/files/usr/bin/bash
 echo "[*] Deteniendo n8n y cloudflared..."
-proot-distro login debian -- bash -c \
+proot-distro login "$DISTRO_NAME" -- bash -c \
   'pkill -f n8n 2>/dev/null; pkill -f cloudflared 2>/dev/null; rm -f /root/cf_url.log' 2>/dev/null || true
 tmux kill-session -t "n8n-server" 2>/dev/null || true
 rm -f "$HOME/.last_cf_url" 2>/dev/null
@@ -379,7 +405,7 @@ SCRIPT
 URL=""
 [ -f "$HOME/.last_cf_url" ] && URL=$(cat "$HOME/.last_cf_url")
 if [ -z "$URL" ]; then
-  URL=$(proot-distro login debian -- bash -c \
+  URL=$(proot-distro login "$DISTRO_NAME" -- bash -c \
     "grep -o 'https://[a-zA-Z0-9.-]*\.trycloudflare\.com' /root/cf_url.log 2>/dev/null | head -1" 2>/dev/null)
 fi
 [ -n "$URL" ] && echo "" && echo "  ▸ $URL" && echo "" || \
@@ -430,7 +456,7 @@ SCRIPT
   cat > "$N8N_SCRIPTS/n8n_update.sh" << 'SCRIPT'
 #!/data/data/com.termux/files/usr/bin/bash
 echo "[*] Actualizando n8n..."
-proot-distro login debian -- bash -c \
+proot-distro login "$DISTRO_NAME" -- bash -c \
   'export HOME=/root && npm update -g n8n && echo "n8n: $(n8n --version)"'
 SCRIPT
   chmod +x "$N8N_SCRIPTS/n8n_update.sh"
@@ -444,9 +470,9 @@ SCRIPT
 FECHA=$(date +%Y%m%d_%H%M)
 DESTINO="/sdcard/Download/n8n_workflows_$FECHA.tar.gz"
 echo "[*] Creando backup de workflows y credenciales n8n..."
-proot-distro login debian -- bash -c \
+proot-distro login "$DISTRO_NAME" -- bash -c \
   "tar -czf /tmp/n8n_backup.tar.gz -C /root/.n8n . 2>/dev/null && echo done"
-proot-distro login debian -- bash -c "cat /tmp/n8n_backup.tar.gz" > "$DESTINO" 2>/dev/null
+proot-distro login "$DISTRO_NAME" -- bash -c "cat /tmp/n8n_backup.tar.gz" > "$DESTINO" 2>/dev/null
 SIZE=$(du -h "$DESTINO" 2>/dev/null | cut -f1)
 echo "[OK] Backup: $DESTINO ($SIZE)"
 SCRIPT
@@ -559,7 +585,7 @@ submenu_n8n() {
       5)
         clear; echo ""
         echo -e "  ${CYAN}Consola Debian — escribe 'exit' para volver${NC}"; echo ""
-        proot-distro login debian 2>/dev/null || \
+        proot-distro login "$DISTRO_NAME" 2>/dev/null || \
           echo -e "  ${RED}[ERROR]${NC} Proot Debian no encontrado"
         echo ""; read -r _ < /dev/tty ;;
       6)
@@ -651,7 +677,7 @@ submenu_n8n() {
 #  HELPERS OPENCLAW
 # ════════════════════════════════════════════
 _cl_get_token() {
-  proot-distro login debian -- bash -c \
+  proot-distro login "$DISTRO_NAME" -- bash -c \
     "python3 -c \"
 import json, sys
 try:
@@ -667,7 +693,7 @@ _cl_status() {
 }
 
 _cl_start() {
-  proot-distro login debian -- bash -c \
+  proot-distro login "$DISTRO_NAME" -- bash -c \
     'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
      export NODE_OPTIONS="--require /root/openclaw-shim.cjs"
      openclaw gateway --bind loopback' > "$HOME/.openclaw_gateway.log" 2>&1 &
@@ -675,7 +701,7 @@ _cl_start() {
 }
 
 _cl_stop() {
-  proot-distro login debian -- bash -c \
+  proot-distro login "$DISTRO_NAME" -- bash -c \
     'pkill -TERM -f "node.*openclaw" 2>/dev/null
      pkill -TERM -f "openclaw gateway" 2>/dev/null
      sleep 2
@@ -824,7 +850,7 @@ submenu_openclaw() {
               echo -e "  Abre: ${CYAN}http://127.0.0.1:18789${NC}"
             echo ""; read -r _ < /dev/tty ;;
           2)
-            proot-distro login debian -- bash -c \
+            proot-distro login "$DISTRO_NAME" -- bash -c \
               "export NVM_DIR=\"\$HOME/.nvm\"; [ -s \"\$NVM_DIR/nvm.sh\" ] && . \"\$NVM_DIR/nvm.sh\"
                export NODE_OPTIONS=\"--require /root/openclaw-shim.cjs\"
                openclaw tui --cwd '${REAL_PATH}'" < /dev/tty
@@ -921,7 +947,7 @@ submenu_openclaw() {
             echo ""
             echo -e "  ${CYAN}Lanzando openclaw configure...${NC}"
             echo -e "  ${DIM}Selecciona el provider con las flechas y Enter${NC}"; echo ""
-            proot-distro login debian -- bash -c \
+            proot-distro login "$DISTRO_NAME" -- bash -c \
               'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
                export NODE_OPTIONS="--require /root/openclaw-shim.cjs"
                openclaw configure' < /dev/tty
@@ -945,7 +971,7 @@ submenu_openclaw() {
             if [[ "$MCHOICE" =~ ^[0-9]+$ ]] && [ "$MCHOICE" -ge 1 ] && \
                [ "$MCHOICE" -le "${#MODELS[@]}" ]; then
               local CHOSEN_MODEL="${MODELS[$((MCHOICE-1))]}"
-              proot-distro login debian -- bash -c \
+              proot-distro login "$DISTRO_NAME" -- bash -c \
                 "python3 -c \"
 import json
 cfg_path='/root/.openclaw/openclaw.json'
@@ -1032,7 +1058,7 @@ submenu_opencode() {
         clear; echo ""
         echo -e "  ${CYAN}Abriendo OpenCode TUI en Debian...${NC}"
         echo -e "  ${DIM}Ctrl+C para salir${NC}"; echo ""
-        proot-distro login debian -- bash -c \
+        proot-distro login "$DISTRO_NAME" -- bash -c \
           'source ~/.bashrc 2>/dev/null; opencode' < /dev/tty
         echo ""; read -r _ < /dev/tty ;;
       2)
@@ -1045,7 +1071,7 @@ submenu_opencode() {
           echo -e "  ${CYAN}Iniciando OpenCode Web...${NC}"
           echo -e "  ${DIM}Cuando veas la URL presiona ENTER para volver al menú${NC}"
           echo -e "  ${DIM}El servidor quedará corriendo en background${NC}"; echo ""
-          proot-distro login debian -- bash -c \
+          proot-distro login "$DISTRO_NAME" -- bash -c \
             'source ~/.bashrc 2>/dev/null; BROWSER= opencode web --port 3000 --hostname 127.0.0.1' &
           echo $! > "$HOME/.opencode_web.pid"
           echo ""
@@ -1095,7 +1121,7 @@ submenu_opencode() {
         case "$MODO" in
           1)
             echo ""
-            proot-distro login debian -- bash -c \
+            proot-distro login "$DISTRO_NAME" -- bash -c \
               "source ~/.bashrc 2>/dev/null; cd '$REAL_PATH' && opencode ." < /dev/tty
             echo ""; read -r _ < /dev/tty ;;
           2)
@@ -1103,7 +1129,7 @@ submenu_opencode() {
             echo ""
             echo -e "  ${CYAN}Iniciando servidor en proyecto...${NC}"
             echo -e "  ${DIM}Cuando veas la URL presiona ENTER${NC}"; echo ""
-            proot-distro login debian -- bash -c \
+            proot-distro login "$DISTRO_NAME" -- bash -c \
               "source ~/.bashrc 2>/dev/null; cd '$REAL_PATH' && BROWSER= opencode web --port 3000 --hostname 127.0.0.1" &
             echo $! > "$HOME/.opencode_web.pid"
             echo ""
@@ -1212,17 +1238,17 @@ submenu_opencode() {
           bash "$HOME/install_opencode.sh" < /dev/tty
         else
           echo -e "  ${CYAN}Ejecutando instalación directa en Debian...${NC}"; echo ""
-          proot-distro login debian -- bash -c \
+          proot-distro login "$DISTRO_NAME" -- bash -c \
             'apt update -qq && apt install -y curl ripgrep tmux && \
              curl -fsSL https://opencode.ai/install | bash' < /dev/tty
           echo ""
           local OC_VER
-          OC_VER=$(proot-distro login debian -- bash -c \
+          OC_VER=$(proot-distro login "$DISTRO_NAME" -- bash -c \
             'source ~/.bashrc 2>/dev/null; opencode --version 2>/dev/null' 2>/dev/null \
             | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
           [ -n "$OC_VER" ] \
             && echo -e "  ${GREEN}[OK]${NC} OpenCode v${OC_VER} instalado" \
-            || echo -e "  ${YELLOW}[AVISO]${NC} Verificar: proot-distro login debian"
+            || echo -e "  ${YELLOW}[AVISO]${NC} Verificar: proot-distro login "$DISTRO_NAME""
         fi
         echo ""; read -r _ < /dev/tty ;;
       7)
@@ -1267,7 +1293,7 @@ except: pass
         read -r OL_INPUT < /dev/tty
 
         if [ "$OL_INPUT" = "r" ] || [ "$OL_INPUT" = "R" ]; then
-          proot-distro login debian -- bash -c \
+          proot-distro login "$DISTRO_NAME" -- bash -c \
             'rm -f /root/.config/opencode/opencode.json /root/.config/opencode/config.json && echo ok' 2>/dev/null
           echo -e "  ${GREEN}[OK]${NC} Config eliminado — OpenCode usará provider por defecto"
           echo ""; read -r _ < /dev/tty; continue
@@ -1290,7 +1316,7 @@ except: pass
         # apiKey requerido aunque Ollama no lo valide — sin él el provider
         # no aparece en el selector de modelos de la UI
         local OC_CFG_OK=false
-        python3 - << PYEOF | proot-distro login debian -- bash -c \
+        python3 - << PYEOF | proot-distro login "$DISTRO_NAME" -- bash -c \
           'mkdir -p /root/.config/opencode && cat > /root/.config/opencode/opencode.json' \
           2>/dev/null && OC_CFG_OK=true || OC_CFG_OK=false
 import json

@@ -28,6 +28,7 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
 BOLD='\033[1m'
+DIM='\033[2m'
 NC='\033[0m'
 
 log()    { echo -e "${GREEN}[OK]${NC} $1"; }
@@ -103,7 +104,7 @@ parse_args() {
 
   if [ -n "$TARGET_MODULE" ]; then
     case "$TARGET_MODULE" in
-      base|claude|expo|ollama|n8n|proot-base|proot-n8n|remote|opencode|openclaw|all) ;;
+      base|claude|claude-native|expo|ollama|n8n|proot-base|proot-n8n|proot-completo|remote|opencode|openclaw|all) ;;
       *) error "Módulo inválido: '$TARGET_MODULE'\n  Válidos: base | claude | expo | ollama | n8n | proot-base | proot-n8n | remote | opencode | openclaw | all" ;;
     esac
   fi
@@ -117,92 +118,133 @@ parse_args() {
 }
 
 # ════════════════════════════════════════════════════════════
-# CABECERA
+# HELPERS DE DISPONIBILIDAD
+# Construye el indicador ✓/○ para cada módulo.
+# _avail <PREFIX> → "1" si está en el release, "0" si no.
+# Solo válido cuando SOURCE=github y RELEASE_JSON cargado.
 # ════════════════════════════════════════════════════════════
-show_header() {
-  clear
-  echo -e "${CYAN}${BOLD}"
-  cat << 'HEADER'
-  ╔══════════════════════════════════════════════════╗
-  ║   termux-ai-stack · Restore v2.5.0              ║
-  ║   Restaura módulos desde backup                 ║
-  ╚══════════════════════════════════════════════════╝
-HEADER
-  echo -e "${NC}"
+declare -A _AVAIL_CACHE=()
+
+_avail() {
+  local key="$1"
+  [ -n "${_AVAIL_CACHE[$key]+x}" ] && { echo "${_AVAIL_CACHE[$key]}"; return; }
+  local url; url=$(get_part_url "$key")
+  local val; [ -n "$url" ] && val="1" || val="0"
+  _AVAIL_CACHE[$key]="$val"
+  echo "$val"
+}
+
+_pill() {
+  # $1 = PREFIX  →  imprime "✓" verde o "○" amarillo
+  if [ "$SOURCE" = "github" ]; then
+    [ "$(_avail "$1")" = "1" ] \
+      && printf "${GREEN}✓${NC}" \
+      || printf "${YELLOW}○${NC}"
+  else
+    # Fuente local — verificar archivo
+    ls "$LOCAL_DIR"/*${1}*.tar.xz &>/dev/null 2>&1 \
+      && printf "${GREEN}✓${NC}" \
+      || printf "${YELLOW}○${NC}"
+  fi
 }
 
 # ════════════════════════════════════════════════════════════
-# SELECCIÓN DE FUENTE
+# SELECCIÓN DE FUENTE  (silenciosa — sin pantalla propia)
 # ════════════════════════════════════════════════════════════
 select_source() {
-  echo -e "  ${BOLD}¿Desde dónde restaurar?${NC}"
-  echo ""
-  echo "  [1] GitHub Releases  — descarga el último release automáticamente"
+  local HAS_LOCAL=false
+  [ -d "$LOCAL_DIR" ] && ls "$LOCAL_DIR"/*.tar.xz &>/dev/null 2>&1 && HAS_LOCAL=true
 
-  if [ -d "$LOCAL_DIR" ] && ls "$LOCAL_DIR"/*.tar.xz &>/dev/null 2>&1; then
-    echo "  [2] Backup local     — generado con backup.sh en este dispositivo"
-    echo ""
-    echo -n "  Opción (1/2): "
+  if $HAS_LOCAL; then
+    clear; echo ""
+    echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
+    echo    "  ║  ⬡ RESTORE · Fuente                    ║"
+    echo    "  ╠══════════════════════════════════════════╣"
+    echo -e "  ║  ${NC}[1] GitHub Releases  (último release)  ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[2] Backup local     (/sdcard/Download)${CYAN}${BOLD}║"
+    echo -e "  ╚══════════════════════════════════════════╝${NC}"
+    echo ""; echo -n "  Opción (1/2): "
     read -r OPT_SRC < /dev/tty
     case "$OPT_SRC" in
-      1) SOURCE="github" ;;
-      2) SOURCE="local"  ;;
-      *) warn "Opción inválida — usando GitHub"; SOURCE="github" ;;
+      2) SOURCE="local" ;;
+      *) SOURCE="github" ;;
     esac
   else
-    echo -e "  ${YELLOW}○${NC} Backup local no disponible"
-    echo ""
-    echo -n "  Presiona Enter para continuar con GitHub Releases..."
-    read -r _ < /dev/tty
     SOURCE="github"
   fi
 }
 
 # ════════════════════════════════════════════════════════════
 # MENÚ INTERACTIVO
+# Consulta el release UNA sola vez, luego renderiza con ✓/○.
 # ════════════════════════════════════════════════════════════
 menu_interactivo() {
-  show_header
   select_source
-  echo ""
-  # Mostrar qué partes hay en el release antes de preguntar
+
+  # Pre-cargar release JSON una sola vez antes de renderizar
   if [ "$SOURCE" = "github" ]; then
-    list_release_parts
-    echo ""
+    clear; echo ""
+    echo -e "  ${CYAN}Consultando GitHub...${NC}"
+    fetch_release_json
   fi
 
-  echo -e "  ${BOLD}¿Qué módulo restaurar?${NC}"
+  clear; echo ""
+  echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
+  if [ "$SOURCE" = "github" ] && [ -n "$RELEASE_TAG" ]; then
+    printf  "  ║  ⬡ RESTORE · %-28s║\n" "${RELEASE_TAG}"
+  else
+    echo    "  ║  ⬡ RESTORE · Backup local               ║"
+  fi
+  echo    "  ╠══════════════════════════════════════════╣"
+
+  # ── Grupo BASE ────────────────────────────────────────────
+  echo -e "  ║  ${NC}${DIM}── BASE ──────────────────────────────${NC}${CYAN}${BOLD}  ║"
+  printf  "  ║  ${NC}[0] Scripts + tema + configs  $(_pill "part0-termux-base") ${CYAN}${BOLD}     ║\n"
+  printf  "  ║  ${NC}[2] Claude legacy v2.1.111    $(_pill "part2-claude-code") ${CYAN}${BOLD}    ║\n"
+  printf  "  ║  ${NC}[2b] Claude native v2.1.152+  $(_pill "part2b-claude-native") ${CYAN}${BOLD}   ║\n"
+  printf  "  ║  ${NC}[3] Expo / EAS CLI            $(_pill "part3-eas-expo") ${CYAN}${BOLD}     ║\n"
+  printf  "  ║  ${NC}[4] Ollama                    $(_pill "part4-ollama-standard") ${CYAN}${BOLD}     ║\n"
+  printf  "  ║  ${NC}[7] Remote (SSH + Dashboard)  $(_pill "part7-remote") ${CYAN}${BOLD}     ║\n"
+
+  # ── Grupo PROOT ───────────────────────────────────────────
+  echo -e "  ║  ${NC}${DIM}── PROOT DEBIAN ──────────────────────${NC}${CYAN}${BOLD}  ║"
+  printf  "  ║  ${NC}[5] n8n + cloudflared         $(_pill "part5-n8n-data") ${CYAN}${BOLD}     ║\n"
+  printf  "  ║  ${NC}[8] OpenCode                  $(_pill "part8-opencode") ${CYAN}${BOLD}     ║\n"
+  printf  "  ║  ${NC}[9] OpenClaw                  $(_pill "part9-openclaw") ${CYAN}${BOLD}     ║\n"
+
+  # ── Grupo ROOTFS ──────────────────────────────────────────
+  echo -e "  ║  ${NC}${DIM}── ROOTFS ────────────────────────────${NC}${CYAN}${BOLD}  ║"
+  printf  "  ║  ${NC}[6b] Debian limpio            $(_pill "part6-proot-base") ${CYAN}${BOLD}     ║\n"
+  printf  "  ║  ${NC}[6n] Debian + n8n             $(_pill "part6-proot-n8n") ${CYAN}${BOLD}     ║\n"
+  printf  "  ║  ${NC}[6c] Debian completo          $(_pill "part6-proot-completo") ${CYAN}${BOLD}     ║\n"
+
+  echo    "  ╠══════════════════════════════════════════╣"
+  echo -e "  ║  ${NC}[a] Todo   [q] Salir${CYAN}${BOLD}                    ║"
+  echo -e "  ╚══════════════════════════════════════════╝${NC}"
   echo ""
-  echo "  [0] base       — scripts + tema + configs       (part0)"
-  echo "  [2] claude     — Claude Code                    (part2)"
-  echo "  [3] expo       — EAS CLI + credenciales         (part3)"
-  echo "  [4] ollama     — Ollama binario                 (part4-*)"
-  echo "  [5] n8n        — n8n + cloudflared              (part5)"
-  echo "  [6b] proot-base — Rootfs Debian limpio          (part6-proot-base)"
-  echo "  [6n] proot-n8n  — Rootfs Debian + n8n           (part6-proot-n8n)"
-  echo "  [7] remote     — SSH + Dashboard                (part7)"
-  echo "  [8] opencode   — OpenCode en proot              (part8)"
-  echo "  [9] openclaw   — OpenClaw en proot              (part9)"
-  echo "  [a] all        — Todos los módulos"
-  echo "  [q] Salir"
+  [ "$SOURCE" = "github" ] && \
+    echo -e "  ${DIM}✓ disponible  ○ no en este release${NC}" || \
+    echo -e "  ${DIM}✓ en backup local  ○ no encontrado${NC}"
   echo ""
   echo -n "  Opción: "
   read -r OPT_MOD < /dev/tty
 
   case "$OPT_MOD" in
-    0)    TARGET_MODULE="base"       ;;
-    2)    TARGET_MODULE="claude"     ;;
-    3)    TARGET_MODULE="expo"       ;;
-    4)    TARGET_MODULE="ollama"     ;;
-    5)    TARGET_MODULE="n8n"        ;;
-    6b)   TARGET_MODULE="proot-base" ;;
-    6n)   TARGET_MODULE="proot-n8n"  ;;
-    7)    TARGET_MODULE="remote"     ;;
-    8)    TARGET_MODULE="opencode"   ;;
-    9)    TARGET_MODULE="openclaw"   ;;
-    a|A)  TARGET_MODULE="all"        ;;
-    q|Q)  echo "Cancelado."; exit 0  ;;
-    *)    error "Opción inválida"    ;;
+    0)    TARGET_MODULE="base"           ;;
+    2)    TARGET_MODULE="claude"         ;;
+    2b)   TARGET_MODULE="claude-native"  ;;
+    3)    TARGET_MODULE="expo"           ;;
+    4)    TARGET_MODULE="ollama"         ;;
+    5)    TARGET_MODULE="n8n"            ;;
+    6b)   TARGET_MODULE="proot-base"     ;;
+    6n)   TARGET_MODULE="proot-n8n"      ;;
+    6c)   TARGET_MODULE="proot-completo" ;;
+    7)    TARGET_MODULE="remote"         ;;
+    8)    TARGET_MODULE="opencode"       ;;
+    9)    TARGET_MODULE="openclaw"       ;;
+    a|A)  TARGET_MODULE="all"            ;;
+    q|Q)  echo "Cancelado."; exit 0      ;;
+    *)    error "Opción inválida"        ;;
   esac
 }
 
@@ -218,6 +260,7 @@ RELEASE_TAG=""
 declare -A PART_NAMES=(
   [0]="part0-termux-base"
   [2]="part2-claude-code"
+  [2b]="part2b-claude-native"
   [3]="part3-eas-expo"
   [4s]="part4-ollama-standard"
   [4o]="part4-ollama-optimized"
@@ -225,13 +268,15 @@ declare -A PART_NAMES=(
   [5]="part5-n8n-data"
   [6b]="part6-proot-base"
   [6n]="part6-proot-n8n"
+  [6c]="part6-proot-completo"
   [7]="part7-remote"
   [8]="part8-opencode"
   [9]="part9-openclaw"
 )
 declare -A PART_LABELS=(
   [0]="Termux base (scripts + tema + configs)"
-  [2]="Claude Code"
+  [2]="Claude Code legacy (npm · v2.1.111)"
+  [2b]="Claude Code native (glibc-runner · v2.1.152+)"
   [3]="Expo / EAS CLI"
   [4s]="Ollama estándar"
   [4o]="Ollama optimizado (i8mm+dotprod)"
@@ -239,23 +284,21 @@ declare -A PART_LABELS=(
   [5]="n8n + cloudflared"
   [6b]="Proot Debian limpio"
   [6n]="Proot Debian + n8n + cloudflared"
+  [6c]="Proot Debian completo (n8n + OpenCode + OpenClaw)"
   [7]="Remote (SSH + Dashboard)"
   [8]="OpenCode"
   [9]="OpenClaw (NVM + Node22)"
 )
 
 fetch_release_json() {
-  info "Consultando GitHub API — último release..."
   RELEASE_JSON=$(curl -fsSL "$GITHUB_API" 2>/dev/null)
   [ -z "$RELEASE_JSON" ] && error "No se pudo obtener el release de GitHub\n  Verifica tu conexión"
   RELEASE_TAG=$(echo "$RELEASE_JSON" | grep '"tag_name"' | grep -o '"v[^"]*"' | tr -d '"' | head -1)
-  [ -n "$RELEASE_TAG" ] && info "Release: $RELEASE_TAG"
 }
 
 # Busca por prefijo de parte: part2-* encontrará part2-claude-code-20260418_1714.tar.xz
-# No importa la fecha ni versión en el nombre — solo importa el prefijo partN-
 get_part_url() {
-  local PART_PREFIX="$1"   # ej: "part2-claude-code"
+  local PART_PREFIX="$1"
   echo "$RELEASE_JSON" | grep -o '"browser_download_url": *"[^"]*'"${PART_PREFIX}"'[^"]*"' \
     | grep -o 'https://[^"]*' | head -1
 }
@@ -263,51 +306,6 @@ get_part_url() {
 get_checksums_url() {
   echo "$RELEASE_JSON" | grep -o '"browser_download_url": *"[^"]*checksums[^"]*"' \
     | grep -o 'https://[^"]*' | head -1
-}
-
-# Lista qué partes están disponibles en el release actual
-# Lee el checksums.txt del release para saber exactamente qué hay
-list_release_parts() {
-  [ -z "$RELEASE_JSON" ] && fetch_release_json
-
-  echo ""
-  echo -e "  ${CYAN}${BOLD}Partes disponibles en el release ${RELEASE_TAG}:${NC}"
-  echo ""
-
-  CHECKSUMS_URL=$(get_checksums_url)
-  if [ -n "$CHECKSUMS_URL" ]; then
-    local CHECKSUMS_TMP="$TMP_DIR/checksums_preview.txt"
-    mkdir -p "$TMP_DIR"
-    curl -fsSL "$CHECKSUMS_URL" -o "$CHECKSUMS_TMP" 2>/dev/null
-    if [ -f "$CHECKSUMS_TMP" ] && [ -s "$CHECKSUMS_TMP" ]; then
-      for NUM in 0 2 3 4s 4o 4v 5 6b 6n 7 8 9; do
-        local PREFIX="${PART_NAMES[$NUM]}"
-        local LABEL="${PART_LABELS[$NUM]}"
-        local URL; URL=$(get_part_url "$PREFIX")
-        if [ -n "$URL" ]; then
-          local FNAME; FNAME=$(basename "$URL")
-          echo -e "  ${GREEN}✓${NC} ${PREFIX}  ${DIM}${LABEL}${NC}"
-          echo -e "       ${DIM}${FNAME}${NC}"
-        else
-          echo -e "  ${YELLOW}○${NC} ${PREFIX}  ${DIM}${LABEL}${NC} ${DIM}(no en este release)${NC}"
-        fi
-      done
-      rm -f "$CHECKSUMS_TMP"
-      return 0
-    fi
-  fi
-
-  # Fallback: verificar directamente por URL sin checksums.txt
-  for NUM in 0 2 3 4s 4o 4v 5 6b 6n 7 8 9; do
-    local PREFIX="${PART_NAMES[$NUM]}"
-    local LABEL="${PART_LABELS[$NUM]}"
-    local URL; URL=$(get_part_url "$PREFIX")
-    if [ -n "$URL" ]; then
-      echo -e "  ${GREEN}✓${NC} ${PREFIX}  ${DIM}${LABEL}${NC}  ${DIM}($(basename "$URL"))${NC}"
-    else
-      echo -e "  ${YELLOW}○${NC} ${PREFIX}  ${DIM}${LABEL}${NC} ${DIM}(no disponible)${NC}"
-    fi
-  done
 }
 
 # ════════════════════════════════════════════════════════════
@@ -544,8 +542,106 @@ WRAPPER_SCRIPT
 }
 
 # ════════════════════════════════════════════════════════════
-# RESTORE PARTE 3 — Expo / EAS CLI
+# RESTORE PARTE 2b — Claude Code Native (glibc-runner)
 # ════════════════════════════════════════════════════════════
+restore_part2b() {
+  titulo "PARTE 2b — Claude Code Native (glibc-runner)"
+
+  # Verificar/instalar glibc-runner antes de extraer
+  local GLIBC_LD="${TERMUX_PREFIX}/glibc/lib/ld-linux-aarch64.so.1"
+  if [ ! -f "$GLIBC_LD" ]; then
+    info "Instalando glibc-runner (requerido por Claude native)..."
+    pkg install -y glibc-repo 2>/dev/null || true
+    pkg update -y \
+      -o Dpkg::Options::="--force-confdef" \
+      -o Dpkg::Options::="--force-confold" 2>&1 | tail -2
+    pkg install -y glibc-runner patchelf-glibc \
+      -o Dpkg::Options::="--force-confdef" \
+      -o Dpkg::Options::="--force-confold" || \
+      error "No se pudo instalar glibc-runner"
+  fi
+  [ -f "$GLIBC_LD" ] || error "glibc ld.so no encontrado en $GLIBC_LD"
+  log "glibc-runner disponible ✓"
+
+  download_and_verify "part2b-claude-native"
+
+  local EXTRACT_TMP="$TMP_DIR/claude_native_extract"
+  mkdir -p "$EXTRACT_TMP"
+  tar -xJf "$DOWNLOADED_FILE" -C "$EXTRACT_TMP" 2>/dev/null
+
+  # Instalar binario — ya viene parcheado, NO re-patchear
+  local NATIVE_BIN="$EXTRACT_TMP/bin/claude"
+  [ -f "$NATIVE_BIN" ] || error "binario claude no encontrado en el backup"
+
+  mkdir -p "$HOME/.local/share/claude-code" "$HOME/.local/bin"
+  cp "$NATIVE_BIN" "$HOME/.local/share/claude-code/claude"
+  chmod +x "$HOME/.local/share/claude-code/claude"
+  log "Binario instalado en ~/.local/share/claude-code/claude ✓"
+
+  # Restaurar o recrear wrapper
+  if [ -f "$EXTRACT_TMP/wrapper/claude" ]; then
+    cp "$EXTRACT_TMP/wrapper/claude" "$HOME/.local/bin/claude"
+    chmod +x "$HOME/.local/bin/claude"
+    log "Wrapper restaurado ✓"
+  else
+    # Recrear wrapper si no está en el backup
+    cat > "$HOME/.local/bin/claude" << 'WRAPPER'
+#!/data/data/com.termux/files/usr/bin/bash
+unset LD_PRELOAD
+exec "$HOME/.local/share/claude-code/claude" "$@"
+WRAPPER
+    chmod +x "$HOME/.local/bin/claude"
+    log "Wrapper recreado ✓"
+  fi
+
+  # Restaurar settings.json
+  if [ -f "$EXTRACT_TMP/settings/settings.json" ]; then
+    mkdir -p "$HOME/.claude"
+    cp "$EXTRACT_TMP/settings/settings.json" "$HOME/.claude/settings.json"
+    log "settings.json restaurado ✓"
+  else
+    mkdir -p "$HOME/.claude"
+    cat > "$HOME/.claude/settings.json" << 'SETTINGS'
+{
+  "autoUpdates": false,
+  "env": {
+    "LD_PRELOAD": "/data/data/com.termux/files/usr/lib/libtermux-exec-ld-preload.so"
+  }
+}
+SETTINGS
+    log "settings.json recreado ✓"
+  fi
+
+  # Agregar ~/.local/bin al PATH si no está
+  if ! grep -q '\.local/bin' "$HOME/.bashrc" 2>/dev/null; then
+    echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.bashrc"
+    export PATH="$HOME/.local/bin:$PATH"
+    log "~/.local/bin agregado a PATH"
+  fi
+
+  # Verificar
+  local VER_CHECK
+  VER_CHECK=$("$HOME/.local/bin/claude" --version 2>/dev/null \
+    | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+  [ -n "$VER_CHECK" ] \
+    && log "Claude native v${VER_CHECK} funcionando ✓" \
+    || warn "Restaurado pero --version no respondió — verifica con: claude --version"
+
+  # Registry — usar función helper existente con campos extra
+  [ ! -f "$REGISTRY" ] && touch "$REGISTRY"
+  local tmp="$REGISTRY.tmp"
+  grep -v "^claude_code\." "$REGISTRY" > "$tmp" 2>/dev/null || touch "$tmp"
+  cat >> "$tmp" << EOF
+claude_code.installed=true
+claude_code.version=${VER_CHECK:-restored}
+claude_code.method=native
+claude_code.install_date=$(date +%Y-%m-%d)
+claude_code.location=termux_native
+EOF
+  mv "$tmp" "$REGISTRY"
+
+  rm -rf "$EXTRACT_TMP"
+}
 restore_part3() {
   titulo "PARTE 3 — Expo / EAS CLI"
 
@@ -710,7 +806,7 @@ restore_part5() {
   [ -z "$FILE_SIZE" ] || [ "$FILE_SIZE" -lt 1024 ] && \
     error "Archivo descargado corrupto (${FILE_SIZE:-0} bytes)"
 
-  local ROOTFS_TMP="${ROOTFS_PATH}tmp"
+  local ROOTFS_TMP="${ROOTFS_PATH}/tmp"
   mkdir -p "$ROOTFS_TMP"
   cp "$DOWNLOADED_FILE" "$ROOTFS_TMP/n8n_restore.tar.xz"
   [ ! -s "$ROOTFS_TMP/n8n_restore.tar.xz" ] && error "No se pudo copiar al proot"
@@ -959,8 +1055,8 @@ restore_part9() {
   download_and_verify "part9-openclaw"
   
   info "Inyectando OpenClaw en el rootfs existente ($DISTRO_NAME)..."
-  mkdir -p "${ROOTFS_PATH}tmp"
-  cp "$DOWNLOADED_FILE" "${ROOTFS_PATH}tmp/openclaw_restore.tar.xz"
+  mkdir -p "${ROOTFS_PATH}/tmp"
+  cp "$DOWNLOADED_FILE" "${ROOTFS_PATH}/tmp/openclaw_restore.tar.xz"
 
   proot-distro login "$DISTRO_NAME" -- bash << 'PROOT_OCL_R'
 export HOME=/root
@@ -1007,16 +1103,18 @@ run_restore() {
   mkdir -p "$TMP_DIR"
 
   case "$TARGET_MODULE" in
-    base)       restore_part0 ;;
-    claude)     restore_part2 ;;
-    expo)       restore_part3 ;;
-    ollama)     restore_part4 ;;
-    n8n)        restore_part5 ;;
-    proot-base) restore_part6 "part6-proot-base" ;;
-    proot-n8n)  restore_part6 "part6-proot-n8n"  ;;
-    remote)     restore_part7 ;;
-    opencode)   restore_part8 ;;
-    openclaw)   restore_part9 ;;
+    base)            restore_part0  ;;
+    claude)          restore_part2  ;;
+    claude-native)   restore_part2b ;;
+    expo)            restore_part3  ;;
+    ollama)          restore_part4 ;;
+    n8n)             restore_part5 ;;
+    proot-base)      restore_part6 "part6-proot-base"      ;;
+    proot-n8n)       restore_part6 "part6-proot-n8n"       ;;
+    proot-completo)  restore_part6 "part6-proot-completo"  ;;
+    remote)          restore_part7 ;;
+    opencode)        restore_part8 ;;
+    openclaw)        restore_part9 ;;
     all)
       restore_part0
       restore_part2
@@ -1033,17 +1131,13 @@ run_restore() {
   rm -rf "$TMP_DIR"
   trap - INT TERM
 
-  titulo "RESTORE COMPLETADO"
-  echo -e "${GREEN}${BOLD}"
-  cat << 'RESUMEN'
-  ╔══════════════════════════════════════════════════╗
-  ║     termux-ai-stack · Restore completado ✓      ║
-  ╚══════════════════════════════════════════════════╝
-RESUMEN
-  echo -e "${NC}"
-  echo -e "  Módulo restaurado: ${BOLD}$TARGET_MODULE${NC}"
+  clear; echo ""
+  echo -e "${GREEN}${BOLD}  ╔══════════════════════════════════════════╗"
+  echo    "  ║  ⬡ RESTORE COMPLETADO ✓                 ║"
+  echo -e "  ╚══════════════════════════════════════════╝${NC}"
   echo ""
-  echo -e "  ${CYAN}Siguiente paso:${NC} source ~/.bashrc   (o reinicia Termux)"
+  echo -e "  Módulo: ${BOLD}${TARGET_MODULE}${NC}"
+  echo -e "  ${CYAN}→ source ~/.bashrc  (o reinicia Termux)${NC}"
   echo ""
 }
 
@@ -1051,12 +1145,11 @@ RESUMEN
 # MAIN
 # ════════════════════════════════════════════════════════════
 parse_args "$@"
-show_header
 
 if [ -z "$TARGET_MODULE" ]; then
-  [ -z "$SOURCE" ] && select_source
   menu_interactivo
 else
+  # Modo --module directo: elegir fuente si no se especificó
   [ -z "$SOURCE" ] && select_source
 fi
 

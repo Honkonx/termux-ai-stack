@@ -35,6 +35,7 @@ TERMUX_PREFIX="/data/data/com.termux/files/usr"
 export PATH="$TERMUX_PREFIX/bin:$TERMUX_PREFIX/sbin:$PATH"
 
 REPO_RAW="https://raw.githubusercontent.com/Honkonx/termux-ai-stack/main/scripts"
+REPO_RAW_ROOT="https://raw.githubusercontent.com/Honkonx/termux-ai-stack/main"
 REGISTRY="$HOME/.android_server_registry"
 EAS_PROJECT_FILE="$HOME/.eas_active_project"
 
@@ -80,6 +81,25 @@ OPENCLAW_SCRIPTS="$SCRIPTS_DIR/openclaw"
 OPENCODE_SCRIPTS="$SCRIPTS_DIR/opencode"
 REMOTE_SCRIPTS="$SCRIPTS_DIR/remote"
 EXPO_SCRIPTS="$SCRIPTS_DIR/expo"
+
+# ════════════════════════════════════════════
+#  DETECCIÓN ROOTFS PROOT — canónica por directorio
+#  NO usar proot-distro list (falsos negativos — ARCHITECTURE.md §3.11)
+#  Variable global — heredada por menu_proot.sh via source
+# ════════════════════════════════════════════
+DISTRO_NAME=""
+ROOTFS_PATH=""
+_ROOTFS_BASE="${TERMUX_PREFIX}/var/lib/proot-distro/installed-rootfs"
+if [ -d "$_ROOTFS_BASE" ]; then
+  for _d in "$_ROOTFS_BASE"/*/; do
+    if [ -f "${_d}bin/bash" ]; then
+      DISTRO_NAME=$(basename "$_d")
+      ROOTFS_PATH="$_d"
+      break
+    fi
+  done
+fi
+unset _d
 
 # ════════════════════════════════════════════
 #  CREAR ESTRUCTURA DE CARPETAS
@@ -167,6 +187,9 @@ _eas_get_project() { [ -f "$EAS_PROJECT_FILE" ] && cat "$EAS_PROJECT_FILE" 2>/de
 _eas_set_project() { echo "$1" > "$EAS_PROJECT_FILE"; }
 
 find_claude_cli() {
+  # Método nativo: buscar cli.js dentro del binario no aplica,
+  # pero devolver ruta vacía para que check_claude use la detección por método
+  # Método legacy: buscar cli.js via wrapper o rutas conocidas
   local wrapper="$TERMUX_PREFIX/bin/claude"
   if [ -f "$wrapper" ]; then
     local cli_from_wrapper
@@ -188,6 +211,21 @@ find_claude_cli() {
   echo "${npm_root}/@anthropic-ai/claude-code/cli.js"
 }
 
+# Detecta qué método de Claude está instalado: "native" | "legacy" | "broken" | "none"
+# Mismo criterio que install_claude.sh para consistencia
+detect_claude_method() {
+  local native_bin="$HOME/.local/share/claude-code/claude"
+  if [ -f "$native_bin" ] && [ -x "$native_bin" ]; then
+    echo "native"; return
+  fi
+  local npm_root; npm_root=$(npm root -g 2>/dev/null)
+  if [ -f "${npm_root}/@anthropic-ai/claude-code/cli.js" ]; then
+    echo "legacy"; return
+  fi
+  [ -f "$TERMUX_PREFIX/bin/claude" ] && { echo "broken"; return; }
+  echo "none"
+}
+
 draw_module() {
   local num="$1" icon="$2" name="$3" state="$4" ver="$5" cmd="$6"
   local status_col cmd_col
@@ -207,17 +245,40 @@ draw_module() {
 }
 
 _ensure_install_script() {
-  local script="$1" dest="$HOME/$script"
+  local script="$1"
+  # Guard: script no puede estar vacío
+  [ -z "$script" ] && {
+    echo -e "\n  ${RED}[ERROR]${NC} _ensure_install_script: nombre de script vacío"
+    return 1
+  }
+  local dest="$HOME/$script"
+
   if [ ! -f "$dest" ] || [ ! -s "$dest" ]; then
     echo -e "  ${YELLOW}[AVISO]${NC} ~/$script no encontrado — descargando..."
-    rm -f "$dest"
-    curl -fsSL "$REPO_RAW/$script" -o "$dest" 2>/dev/null || \
-      wget -q "$REPO_RAW/$script" -O "$dest" 2>/dev/null
-    [ ! -f "$dest" ] || [ ! -s "$dest" ] && {
+
+    # Todos los install_*.sh, menu_nativo.sh, menu_proot.sh, backup.sh, restore.sh
+    # están en la RAÍZ del repo — NO en scripts/
+    # REPO_RAW apunta a scripts/ (solo para scripts Python/bot)
+    local url
+    case "$script" in
+      install_*.sh|menu_nativo.sh|menu_proot.sh|backup.sh|restore.sh|instalar.sh)
+        url="$REPO_RAW_ROOT/$script" ;;
+      *)
+        url="$REPO_RAW/$script" ;;
+    esac
+
+    curl -fsSL "$url" -o "$dest" 2>/dev/null || \
+      wget -q "$url" -O "$dest" 2>/dev/null
+
+    if [ ! -f "$dest" ] || [ ! -s "$dest" ]; then
       echo -e "\n  ${RED}[ERROR]${NC} No se pudo obtener $script"
-      read -r _ < /dev/tty; rm -f "$dest"; return 1
-    }
+      echo -e "  ${DIM}URL intentada: $url${NC}"
+      rm -f "$dest" 2>/dev/null
+      read -r _ < /dev/tty
+      return 1
+    fi
     chmod +x "$dest"
+    echo -e "  ${GREEN}[OK]${NC} $script descargado"
   fi
   return 0
 }
@@ -225,8 +286,8 @@ _ensure_install_script() {
 _ensure_restore_for_install() {
   if [ ! -f "$HOME/restore.sh" ] || [ ! -s "$HOME/restore.sh" ]; then
     echo -e "\n  ${YELLOW}[AVISO]${NC} restore.sh no encontrado — descargando..."
-    curl -fsSL "$REPO_RAW/restore.sh" -o "$HOME/restore.sh" 2>/dev/null || \
-      wget -q "$REPO_RAW/restore.sh" -O "$HOME/restore.sh" 2>/dev/null
+    curl -fsSL "$REPO_RAW_ROOT/restore.sh" -o "$HOME/restore.sh" 2>/dev/null || \
+      wget -q "$REPO_RAW_ROOT/restore.sh" -O "$HOME/restore.sh" 2>/dev/null
     [ ! -f "$HOME/restore.sh" ] || [ ! -s "$HOME/restore.sh" ] && {
       echo -e "  ${RED}[ERROR]${NC} No se pudo obtener restore.sh"
       read -r _ < /dev/tty; return 1
@@ -247,8 +308,8 @@ _require_nativo() {
   local f="$SCRIPTS_DIR/menu_nativo.sh"
   if [ ! -f "$f" ] || [ ! -s "$f" ]; then
     echo -e "\n  ${YELLOW}[AVISO]${NC} menu_nativo.sh no encontrado — descargando..."
-    curl -fsSL "$REPO_RAW/menu_nativo.sh" -o "$f" 2>/dev/null || \
-      wget -q "$REPO_RAW/menu_nativo.sh" -O "$f" 2>/dev/null
+    curl -fsSL "$REPO_RAW_ROOT/menu_nativo.sh" -o "$f" 2>/dev/null || \
+      wget -q "$REPO_RAW_ROOT/menu_nativo.sh" -O "$f" 2>/dev/null
     [ ! -f "$f" ] || [ ! -s "$f" ] && {
       echo -e "  ${RED}[ERROR]${NC} No se pudo obtener menu_nativo.sh"
       read -r _ < /dev/tty; return 1
@@ -266,8 +327,8 @@ _require_proot() {
   local f="$SCRIPTS_DIR/menu_proot.sh"
   if [ ! -f "$f" ] || [ ! -s "$f" ]; then
     echo -e "\n  ${YELLOW}[AVISO]${NC} menu_proot.sh no encontrado — descargando..."
-    curl -fsSL "$REPO_RAW/menu_proot.sh" -o "$f" 2>/dev/null || \
-      wget -q "$REPO_RAW/menu_proot.sh" -O "$f" 2>/dev/null
+    curl -fsSL "$REPO_RAW_ROOT/menu_proot.sh" -o "$f" 2>/dev/null || \
+      wget -q "$REPO_RAW_ROOT/menu_proot.sh" -O "$f" 2>/dev/null
     [ ! -f "$f" ] || [ ! -s "$f" ] && {
       echo -e "  ${RED}[ERROR]${NC} No se pudo obtener menu_proot.sh"
       read -r _ < /dev/tty; return 1
@@ -419,19 +480,23 @@ install_module() {
     return 0
   fi
 
-  # Claude, expo, opencode, openclaw
+  # Claude: pass-through directo a install_claude.sh
+  # El nuevo instalador tiene su propio flujo de 2 niveles (método + fuente)
+  # NO duplicar lógica aquí
+  if [ "$module_key" = "claude" ]; then
+    _ensure_install_script "install_claude.sh" || return 1
+    bash "$HOME/install_claude.sh" < /dev/tty
+    echo ""; read -r _ < /dev/tty
+    _post_install_cleanup
+    return 0
+  fi
+
+  # Expo, opencode, openclaw — menú fuente estándar
   echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
   printf  "  ║  %-40s║\n" "¿Cómo instalar ${name}?"
   echo    "  ╠══════════════════════════════════════════╣"
-  if [ "$module_key" = "claude" ]; then
-    echo -e "  ║  ${NC}[1] Instalar via npm${CYAN}${BOLD}                    ║"
-    echo -e "  ║  ${DIM}    npm install @2.1.111${CYAN}${BOLD}                ║"
-    echo -e "  ║  ${NC}[2] Desde GitHub Releases  ${GREEN}← RECOMENDADO${CYAN}${BOLD}║"
-    echo -e "  ║  ${GREEN}    ✓ sin auto-update · más estable${CYAN}${BOLD}     ║"
-  else
-    echo -e "  ║  ${NC}[1] Instalación limpia${CYAN}${BOLD}                  ║"
-    echo -e "  ║  ${NC}[2] Desde GitHub Releases${CYAN}${BOLD}               ║"
-  fi
+  echo -e "  ║  ${NC}[1] Instalación limpia${CYAN}${BOLD}                  ║"
+  echo -e "  ║  ${NC}[2] Desde GitHub Releases${CYAN}${BOLD}               ║"
   echo -e "  ║  ${NC}[b] Cancelar${CYAN}${BOLD}                            ║"
   echo -e "  ╚══════════════════════════════════════════╝${NC}"
   echo ""; echo -n "  Opción: "
@@ -452,7 +517,7 @@ install_module() {
   esac
 }
 
-# ════════════════════════════════════════════
+
 #  AYUDA
 # ════════════════════════════════════════════
 show_help() {
@@ -743,8 +808,8 @@ while true; do
       for SCRIPT in "${ROOT_SCRIPTS[@]}"; do
         echo -n "  Descargando $SCRIPT... "
         TMP_DL="$HOME/${SCRIPT}.tmp"
-        curl -fsSL "$REPO_RAW/$SCRIPT" -o "$TMP_DL" 2>/dev/null || \
-          wget -q "$REPO_RAW/$SCRIPT" -O "$TMP_DL" 2>/dev/null
+        curl -fsSL "$REPO_RAW_ROOT/$SCRIPT" -o "$TMP_DL" 2>/dev/null || \
+          wget -q "$REPO_RAW_ROOT/$SCRIPT" -O "$TMP_DL" 2>/dev/null
         if [ -f "$TMP_DL" ] && [ -s "$TMP_DL" ]; then
           mv "$TMP_DL" "$HOME/$SCRIPT"; chmod +x "$HOME/$SCRIPT"
           echo -e "${GREEN}✓${NC}"; UPDATE_OK=$((UPDATE_OK + 1))
@@ -754,12 +819,13 @@ while true; do
       done
 
       # Descargar módulos de menú a ~/scripts/
+      # menu_nativo.sh y menu_proot.sh están en raíz del repo
       mkdir -p "$SCRIPTS_DIR"
       for SCRIPT in "${MENU_SCRIPTS[@]}"; do
         echo -n "  Descargando $SCRIPT... "
         TMP_DL="$SCRIPTS_DIR/${SCRIPT}.tmp"
-        curl -fsSL "$REPO_RAW/$SCRIPT" -o "$TMP_DL" 2>/dev/null || \
-          wget -q "$REPO_RAW/$SCRIPT" -O "$TMP_DL" 2>/dev/null
+        curl -fsSL "$REPO_RAW_ROOT/$SCRIPT" -o "$TMP_DL" 2>/dev/null || \
+          wget -q "$REPO_RAW_ROOT/$SCRIPT" -O "$TMP_DL" 2>/dev/null
         if [ -f "$TMP_DL" ] && [ -s "$TMP_DL" ]; then
           mv "$TMP_DL" "$SCRIPTS_DIR/$SCRIPT"; chmod +x "$SCRIPTS_DIR/$SCRIPT"
           echo -e "${GREEN}✓${NC}"; UPDATE_OK=$((UPDATE_OK + 1))

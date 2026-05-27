@@ -22,7 +22,7 @@
 #    La interfaz TUI puede tener problemas de PTY — usar modo web.
 #    Modo web validado: opencode web --port 3000 --hostname 127.0.0.1
 #
-#  VERSIÓN: 1.0.0 | Mayo 2026
+#  VERSIÓN: 1.1.0 | Mayo 2026
 # ============================================================
 
 TERMUX_PREFIX="/data/data/com.termux/files/usr"
@@ -80,40 +80,14 @@ cat << 'HEADER'
 HEADER
 echo -e "${NC}"
 
-# ── Verificar si ya está instalado ───────────────────────────
-if proot-distro login debian -- bash -c 'command -v opencode' &>/dev/null 2>&1; then
-  OC_VER=$(proot-distro login debian -- bash -c \
-    'opencode --version 2>/dev/null | head -1' 2>/dev/null \
-    | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
-  echo -e "${GREEN}  ✓ OpenCode ya está instalado${NC}"
-  echo -e "  Versión actual: ${CYAN}${OC_VER:-?}${NC}"
-  echo ""
-  echo -n "  ¿Reinstalar/actualizar? (s/n): "
-  read -r REINSTALL < /dev/tty
-  [ "$REINSTALL" != "s" ] && [ "$REINSTALL" != "S" ] && {
-    info "Nada que hacer. Saliendo."
-    exit 0
-  }
-  rm -f "$CHECKPOINT"
-fi
-
-echo ""
-echo "  Este script instalará OpenCode en Debian proot:"
-echo "  ▸ Dependencias: curl ripgrep tmux"
-echo "  ▸ OpenCode vía instalador oficial"
-echo "  ▸ Fallback: npm install -g opencode-ai"
-echo "  ▸ Lanzador: ~/opencode_start.sh"
-echo "  ▸ Aliases: opencode-web, opencode-stop, opencode-status"
-echo ""
-echo -n "  ¿Continuar? (s/n): "
-read -r CONFIRM < /dev/tty
-[ "$CONFIRM" != "s" ] && [ "$CONFIRM" != "S" ] && { echo "Cancelado."; exit 0; }
-
 # ============================================================
-# PASO 1 — Verificar proot-distro y Debian
+# PASO 1 — Verificar proot-distro y rootfs Debian
+# Método canónico: detección por directorio (no proot-distro list)
+# Ref: ARCHITECTURE.md §3.11 — proot-distro list produce falsos negativos
 # ============================================================
 titulo "PASO 1 — Verificando entorno proot"
 
+# Instalar proot-distro si no está disponible
 if ! command -v proot-distro &>/dev/null; then
   info "Instalando proot-distro..."
   pkg install proot-distro -y \
@@ -122,27 +96,25 @@ if ! command -v proot-distro &>/dev/null; then
     error "No se pudo instalar proot-distro."
 fi
 
-# Detectar distro Debian instalada
-DISTRO_NAME=$(proot-distro list 2>/dev/null | grep -i "debian" | awk '{print $1}' | head -1)
-[ -z "$DISTRO_NAME" ] && DISTRO_NAME="debian"
-
-if ! proot-distro login "$DISTRO_NAME" -- bash -c 'echo ok' &>/dev/null 2>&1; then
-  warn "Debian no está instalado. Instalando..."
-  proot-distro install debian || error "No se pudo instalar Debian en proot."
+# ── Detección canónica del rootfs por directorio ─────────────
+# NO usar proot-distro list (produce falsos negativos documentados)
+ROOTFS_BASE="${TERMUX_PREFIX}/var/lib/proot-distro/installed-rootfs"
+DISTRO_NAME=""
+ROOTFS_PATH=""
+if [ -d "$ROOTFS_BASE" ]; then
+  for _d in "$ROOTFS_BASE"/*/; do
+    if [ -f "${_d}bin/bash" ]; then
+      DISTRO_NAME=$(basename "$_d")
+      ROOTFS_PATH="$_d"
+      break
+    fi
+  done
 fi
 
-log "proot Debian disponible"
-
-# ============================================================
-# PASO 1.5 — Asegurar que Debian rootfs existe
-# ============================================================
-titulo "PASO 1.5 — Verificando rootfs Debian"
-
-DISTRO_NAME="debian"
-ROOTFS_PATH="${TERMUX_PREFIX}/var/lib/proot-distro/installed-rootfs/${DISTRO_NAME}"
-
-if [ ! -d "$ROOTFS_PATH" ] || [ ! -f "$ROOTFS_PATH/bin/bash" ]; then
-  warn "Rootfs Debian no encontrado en $ROOTFS_PATH"
+if [ -n "$DISTRO_NAME" ]; then
+  log "Rootfs encontrado: $DISTRO_NAME ($ROOTFS_PATH)"
+else
+  warn "Rootfs Debian no encontrado en $ROOTFS_BASE"
   echo ""
   echo -e "  ${CYAN}¿Cómo instalar Debian?${NC}"
   echo ""
@@ -157,7 +129,7 @@ if [ ! -d "$ROOTFS_PATH" ] || [ ! -f "$ROOTFS_PATH/bin/bash" ]; then
     1)
       info "Descargando rootfs desde GitHub Releases..."
       if [ ! -f "$HOME/restore.sh" ]; then
-        curl -fsSL "https://raw.githubusercontent.com/Honkonx/termux-ai-stack/main/scripts/restore.sh" \
+        curl -fsSL "https://raw.githubusercontent.com/Honkonx/termux-ai-stack/main/restore.sh" \
           -o "$HOME/restore.sh" && chmod +x "$HOME/restore.sh"
       fi
       bash "$HOME/restore.sh" --module proot-base --source github || \
@@ -165,7 +137,7 @@ if [ ! -d "$ROOTFS_PATH" ] || [ ! -f "$ROOTFS_PATH/bin/bash" ]; then
       ;;
     2)
       info "Instalando Debian con proot-distro..."
-      proot-distro install debian || error "No se pudo instalar Debian"
+      proot-distro install debian || error "No se pudo instalar Debian en proot."
       ;;
     b|B|"")
       error "Cancelado por el usuario"
@@ -175,14 +147,49 @@ if [ ! -d "$ROOTFS_PATH" ] || [ ! -f "$ROOTFS_PATH/bin/bash" ]; then
       ;;
   esac
 
-  # Verificar que se instaló correctamente
-  if [ ! -d "$ROOTFS_PATH" ] || [ ! -f "$ROOTFS_PATH/bin/bash" ]; then
-    error "Rootfs Debian no disponible después de la instalación"
-  fi
-  log "Rootfs Debian listo"
-else
-  log "Rootfs Debian ya existe"
+  # Re-detectar tras instalación
+  for _d in "$ROOTFS_BASE"/*/; do
+    if [ -f "${_d}bin/bash" ]; then
+      DISTRO_NAME=$(basename "$_d")
+      ROOTFS_PATH="$_d"
+      break
+    fi
+  done
+  [ -z "$DISTRO_NAME" ] && error "Rootfs Debian no disponible tras la instalación"
+  log "Rootfs listo: $DISTRO_NAME"
 fi
+
+# ── Verificar si OpenCode ya está instalado ──────────────────
+# Ahora que tenemos DISTRO_NAME correcto, podemos hacer el check
+if proot-distro login "$DISTRO_NAME" -- bash -c 'command -v opencode' &>/dev/null 2>&1; then
+  OC_VER=$(proot-distro login "$DISTRO_NAME" -- bash -c \
+    'opencode --version 2>/dev/null | head -1' 2>/dev/null \
+    | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+  echo ""
+  echo -e "${GREEN}  ✓ OpenCode ya está instalado${NC}"
+  echo -e "  Versión actual: ${CYAN}${OC_VER:-?}${NC}"
+  echo ""
+  echo -n "  ¿Reinstalar/actualizar? (s/n): "
+  read -r REINSTALL < /dev/tty
+  [ "$REINSTALL" != "s" ] && [ "$REINSTALL" != "S" ] && {
+    info "Nada que hacer. Saliendo."
+    exit 0
+  }
+  rm -f "$CHECKPOINT"
+fi
+
+echo ""
+echo "  Este script instalará OpenCode en Debian proot:"
+echo "  ▸ Distro detectada: $DISTRO_NAME"
+echo "  ▸ Dependencias: curl ripgrep tmux"
+echo "  ▸ OpenCode vía instalador oficial"
+echo "  ▸ Fallback: npm install -g opencode-ai"
+echo "  ▸ Scripts en: ~/scripts/opencode/"
+echo "  ▸ Aliases: opencode-web, opencode-stop, opencode-status"
+echo ""
+echo -n "  ¿Continuar? (s/n): "
+read -r CONFIRM < /dev/tty
+[ "$CONFIRM" != "s" ] && [ "$CONFIRM" != "S" ] && { echo "Cancelado."; exit 0; }
 
 # ============================================================
 # PASO 2 — Dependencias en Debian
@@ -324,8 +331,8 @@ else
 alias opencode-web='bash ~/scripts/opencode/opencode_start.sh'
 alias opencode-stop='bash ~/scripts/opencode/opencode_stop.sh'
 alias opencode-status='tmux has-session -t opencode 2>/dev/null && echo "OpenCode corriendo en :3000" || echo "OpenCode detenido"'
-alias opencode-tui='proot-distro login debian -- bash -c "source ~/.bashrc 2>/dev/null; opencode"'
-alias debian='proot-distro login debian'
+alias opencode-tui='proot-distro login '"${DISTRO_NAME}"' -- bash -c "source ~/.bashrc 2>/dev/null; opencode"'
+alias debian='proot-distro login '"${DISTRO_NAME}"
 ALIASES
 
   log "Aliases agregados a ~/.bashrc"
