@@ -348,7 +348,8 @@ else
         backup.sh restore.sh \
         install_n8n.sh install_claude.sh install_ollama.sh \
         install_expo.sh install_python.sh install_ssh.sh \
-        install_remote.sh install_opencode.sh install_openclaw.sh
+        install_remote.sh install_opencode.sh install_openclaw.sh \
+        install_openclaude.sh
       do
         if download_file "$REPO_RAW_SCRIPT/$script" "$HOME/$script" "$script"; then
           SCRIPTS_OK=$((SCRIPTS_OK + 1))
@@ -454,7 +455,8 @@ else
             backup.sh restore.sh \
             install_n8n.sh install_claude.sh install_ollama.sh \
             install_expo.sh install_python.sh install_ssh.sh \
-            install_remote.sh install_opencode.sh install_openclaw.sh
+            install_remote.sh install_opencode.sh install_openclaw.sh \
+            install_openclaude.sh
           do
             download_file "$REPO_RAW_SCRIPT/$script" "$HOME/$script" "$script"
           done
@@ -471,7 +473,8 @@ else
           backup.sh restore.sh \
           install_n8n.sh install_claude.sh install_ollama.sh \
           install_expo.sh install_python.sh install_ssh.sh \
-          install_remote.sh install_opencode.sh install_openclaw.sh
+          install_remote.sh install_opencode.sh install_openclaw.sh \
+          install_openclaude.sh
         do
           download_file "$REPO_RAW_SCRIPT/$script" "$HOME/$script" "$script"
         done
@@ -493,7 +496,8 @@ for script in \
   backup.sh restore.sh \
   install_n8n.sh install_claude.sh install_ollama.sh \
   install_expo.sh install_python.sh install_ssh.sh \
-  install_remote.sh install_opencode.sh install_openclaw.sh
+  install_remote.sh install_opencode.sh install_openclaw.sh \
+  install_openclaude.sh
 do
   if [ -f "$HOME/$script" ] && [ -s "$HOME/$script" ]; then
     SIZE=$(wc -c < "$HOME/$script" 2>/dev/null)
@@ -685,7 +689,7 @@ echo "  SCRIPTS EN ~/:"
 for f in menu.sh \
           install_n8n.sh install_claude.sh install_ollama.sh \
           install_expo.sh install_python.sh install_ssh.sh install_remote.sh \
-          install_opencode.sh install_openclaw.sh \
+          install_opencode.sh install_openclaw.sh install_openclaude.sh \
           backup.sh restore.sh; do
   [ -f "$HOME/$f" ] && \
     echo -e "  ${GREEN}✓${NC} ~/$f" || \

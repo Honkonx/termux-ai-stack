@@ -55,6 +55,7 @@ _PROOT_LOADED=0
 _CC_CACHE=""   ; _CC_REFRESH=0
 _OC_CACHE=""   ; _OC_CACHE_TS=0
 _CLAW_CACHE="" ; _CLAW_CACHE_TS=0
+_OCL_CACHE=""  ; _OCL_REFRESH=0
 _PROOT_CACHE_TTL=30          # TTL caché en memoria (segundos)
 _PROOT_CACHE_TTL_PERSIST=300 # TTL caché en archivo — sobrevive reinicios (5 min)
 
@@ -371,6 +372,7 @@ check_claude()          { _run_check_nativo check_claude         "$@"; }
 check_n8n()             { _run_check_proot  check_n8n            "$@"; }
 check_opencode_cached() { _run_check_proot  check_opencode_cached "$@"; }
 check_openclaw_cached() { _run_check_proot  check_openclaw_cached "$@"; }
+check_openclaude()      { _run_check_nativo check_openclaude      "$@"; }
 
 # ════════════════════════════════════════════
 #  POST-INSTALL CLEANUP
@@ -491,6 +493,16 @@ install_module() {
     return 0
   fi
 
+  # OpenClaude: pass-through directo a install_openclaude.sh
+  # Instalación npm rápida — sin menú fuente, sin GitHub
+  if [ "$module_key" = "openclaude" ]; then
+    _ensure_install_script "install_openclaude.sh" || return 1
+    bash "$HOME/install_openclaude.sh" < /dev/tty
+    echo ""; read -r _ < /dev/tty
+    _post_install_cleanup
+    return 0
+  fi
+
   # Expo, opencode, openclaw — menú fuente estándar
   echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
   printf  "  ║  %-40s║\n" "¿Cómo instalar ${name}?"
@@ -539,6 +551,9 @@ show_help() {
   echo -e "  ║  OLLAMA${NC}"
   echo    "  ║  ollama-start  ollama-stop  ollama run [m]"
   echo -e "${CYAN}${BOLD}  ╠══════════════════════════════════════════╣"
+  echo -e "  ║  OPENCLAUDE${NC}"
+  echo    "  ║  openclaude  oc  (alias corto)"
+  echo -e "${CYAN}${BOLD}  ╠══════════════════════════════════════════╣"
   echo -e "  ║  REMOTE (SSH + Dashboard)${NC}"
   echo    "  ║  SSH WiFi: ssh -p 8022 user@IP"
   echo    "  ║  SSH Tunnel: cloudflared access ssh"
@@ -563,8 +578,9 @@ _add_bashrc()      { grep -q "$1" "$HOME/.bashrc" 2>/dev/null || echo "$1" >> "$
 #  HELPERS DE CACHÉ
 # ════════════════════════════════════════════
 _invalidate_cache() {
-  _CC_REFRESH=1; _CC_CACHE=""
-  _OC_CACHE="";  _OC_CACHE_TS=0
+  _CC_REFRESH=1;  _CC_CACHE=""
+  _OCL_REFRESH=1; _OCL_CACHE=""
+  _OC_CACHE="";   _OC_CACHE_TS=0
   _CLAW_CACHE=""; _CLAW_CACHE_TS=0
   # Borrar caché persistente — fuerza que el próximo render
   # llame a proot y escriba estado fresco al archivo
@@ -601,6 +617,15 @@ while true; do
   { check_expo;   } > "${_TMP}_ex"  2>/dev/null &
   { check_python; } > "${_TMP}_py"  2>/dev/null &
   { check_remote; } > "${_TMP}_rm"  2>/dev/null &
+
+  # OpenClaude: usa caché si está vigente (nativo — rápido)
+  if [ -z "$_OCL_CACHE" ] || [ "$_OCL_REFRESH" = "1" ]; then
+    { _OCL_CACHE=$(check_openclaude 2>/dev/null); _OCL_REFRESH=0
+      echo "$_OCL_CACHE"; } > "${_TMP}_ocl" 2>/dev/null &
+    _OCL_FROM_FILE=1
+  else
+    _OCL_FROM_FILE=0
+  fi
 
   # Claude: usa caché si está vigente
   if [ -z "$_CC_CACHE" ] || [ "$_CC_REFRESH" = "1" ]; then
@@ -651,6 +676,11 @@ while true; do
   IFS='|' read -r PY_STATE    PY_VER    PY_EXTRA    < "${_TMP}_py"   2>/dev/null
   IFS='|' read -r RM_STATE    RM_VER    RM_EXTRA    < "${_TMP}_rm"   2>/dev/null
 
+  if [ "$_OCL_FROM_FILE" = "1" ]; then
+    _OCL_CACHE=$(cat "${_TMP}_ocl" 2>/dev/null)
+  fi
+  IFS='|' read -r OCL_STATE OCL_VER OCL_EXTRA <<< "$_OCL_CACHE"
+
   if [ "$_CC_FROM_FILE" = "1" ]; then
     _CC_CACHE=$(cat "${_TMP}_cc" 2>/dev/null)
   fi
@@ -698,11 +728,13 @@ while true; do
   [ -z "$SVC_VER" ] && SVC_VER="──────────"
   draw_module "1" "⬡" "Servicios"    "$SVC_STATE" "$SVC_VER"        "→ submenú"
 
-  # [2] Code Tools — Claude Code + OpenCode
+  # [2] Code Tools — Claude Code + OpenCode + OpenClaude
   CT_STATE="ready"
-  [ "$CC_STATE" = "not_installed" ] && \
-  [ "$OC_STATE" = "not_installed" ] && CT_STATE="not_installed"
+  [ "$CC_STATE"  = "not_installed" ] && \
+  [ "$OC_STATE"  = "not_installed" ] && \
+  [ "$OCL_STATE" = "not_installed" ] && CT_STATE="not_installed"
   CT_VER="cc:${CC_VER:-?} oc:${OC_VER:-?}"
+  [ "$OCL_STATE" != "not_installed" ] && CT_VER="${CT_VER} ocl:${OCL_VER:-?}"
   draw_module "2" "◆" "Code Tools"   "$CT_STATE"  "$CT_VER"         "→ submenú"
 
   case "$OL_STATE" in running|stopped) OL_CMD="→ submenú" ;; *) OL_CMD="" ;; esac
@@ -794,6 +826,7 @@ while true; do
         "install_n8n.sh" "install_claude.sh" "install_ollama.sh"
         "install_expo.sh" "install_python.sh" "install_ssh.sh"
         "install_remote.sh" "install_opencode.sh" "install_openclaw.sh"
+        "install_openclaude.sh"
         "backup.sh" "restore.sh"
       )
       # Scripts que van en ~/scripts/  (módulos de menú)

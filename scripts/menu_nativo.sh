@@ -114,6 +114,15 @@ check_remote() {
   fi
 }
 
+check_openclaude() {
+  command -v openclaude &>/dev/null || { echo "not_installed||"; return; }
+  local ver; ver=$(get_reg openclaude version)
+  [ -z "$ver" ] && ver=$(npm list -g @gitlawb/openclaude 2>/dev/null \
+    | grep openclaude | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+  [ -z "$ver" ] && ver="?"
+  echo "ready|${ver}|"
+}
+
 # ════════════════════════════════════════════
 #  VARIABLES GLOBALES OLLAMA
 # ════════════════════════════════════════════
@@ -1385,7 +1394,7 @@ submenu_code_tools() {
 
   while true; do
     clear; echo ""
-    local CC_S CC_V CC_E OC_S OC_V OC_E
+    local CC_S CC_V CC_E OC_S OC_V OC_E OCL_S OCL_V OCL_E
 
     if [ "$_FIRST_RENDER" = "1" ] && [ -n "$_CC_INIT" ] && [ -n "$_OC_INIT" ]; then
       # Primer render: usar estados ya calculados — sin check adicional
@@ -1395,17 +1404,18 @@ submenu_code_tools() {
       OC_S="$_OC_INIT"
       OC_V=$(echo "$_OC_CACHE" | cut -d'|' -f2); [ -z "$OC_V" ] && OC_V="?"
       OC_E=""
+      IFS='|' read -r OCL_S OCL_V OCL_E <<< "$(check_openclaude)"
       _FIRST_RENDER=0
     else
       # Renders siguientes: chequeo real
-      IFS='|' read -r CC_S CC_V CC_E <<< "$(check_claude)"
-      IFS='|' read -r OC_S OC_V OC_E <<< "$(check_opencode_cached)"
+      IFS='|' read -r CC_S CC_V CC_E   <<< "$(check_claude)"
+      IFS='|' read -r OC_S OC_V OC_E   <<< "$(check_opencode_cached)"
+      IFS='|' read -r OCL_S OCL_V OCL_E <<< "$(check_openclaude)"
     fi
 
-    local CC_PILL OC_PILL CC_METHOD_LABEL
+    local CC_PILL OC_PILL OCL_PILL CC_METHOD_LABEL OCL_PROV_LABEL
     case "$CC_S" in
       ready)
-        # Mostrar método (native/legacy) como sub-label
         case "$CC_E" in
           native) CC_METHOD_LABEL="${DIM}native · glibc${NC}" ;;
           legacy) CC_METHOD_LABEL="${DIM}legacy · npm${NC}" ;;
@@ -1414,11 +1424,9 @@ submenu_code_tools() {
         esac
         CC_PILL="${GREEN}● listo   ${NC}" ;;
       not_installed)
-        CC_PILL="${YELLOW}○ no instal${NC}"; CC_V="──────────"
-        CC_METHOD_LABEL="" ;;
+        CC_PILL="${YELLOW}○ no instal${NC}"; CC_V="──────────"; CC_METHOD_LABEL="" ;;
       *)
-        CC_PILL="${YELLOW}● ${CC_S}${NC}"
-        CC_METHOD_LABEL="" ;;
+        CC_PILL="${YELLOW}● ${CC_S}${NC}"; CC_METHOD_LABEL="" ;;
     esac
     case "$OC_S" in
       running)       OC_PILL="${GREEN}● activo  ${NC}" ;;
@@ -1426,6 +1434,21 @@ submenu_code_tools() {
       not_installed) OC_PILL="${YELLOW}○ no instal${NC}"; OC_V="──────────" ;;
       *)             OC_PILL="${YELLOW}● ${OC_S}${NC}" ;;
     esac
+    case "$OCL_S" in
+      ready)         OCL_PILL="${GREEN}● listo   ${NC}" ;;
+      not_installed) OCL_PILL="${YELLOW}○ no instal${NC}"; OCL_V="──────────" ;;
+      *)             OCL_PILL="${YELLOW}● ${OCL_S}${NC}" ;;
+    esac
+    local _OCL_P; _OCL_P=$(get_reg openclaude provider)
+    case "$_OCL_P" in
+      ollama)     OCL_PROV_LABEL="${DIM}ollama local${NC}" ;;
+      anthropic)  OCL_PROV_LABEL="${DIM}anthropic${NC}" ;;
+      deepseek)   OCL_PROV_LABEL="${DIM}deepseek${NC}" ;;
+      openrouter) OCL_PROV_LABEL="${DIM}openrouter${NC}" ;;
+      manual)     OCL_PROV_LABEL="${DIM}manual${NC}" ;;
+      *)          OCL_PROV_LABEL="${DIM}sin conf.${NC}" ;;
+    esac
+    [ "$OCL_S" = "not_installed" ] && OCL_PROV_LABEL=""
 
     echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
     echo    "  ║  ◆ CODE TOOLS                           ║"
@@ -1436,8 +1459,12 @@ submenu_code_tools() {
     else
       printf  "  ║      ${NC}v%-6s  %b${CYAN}${BOLD}%-16s║\n" "$CC_V" "$CC_METHOD_LABEL" ""
     fi
+    echo -e "  ║  ${DIM}──────────────────────────────────────${NC}${CYAN}${BOLD}║"
     printf  "  ║  ${NC}[2] OpenCode     %b  %b${CYAN}${BOLD}║\n" "$OC_PILL" "${NC}→ submenú${CYAN}${BOLD}"
     printf  "  ║      ${NC}${DIM}%s${NC}${CYAN}${BOLD}%-$((28-${#OC_V}))s║\n" "$OC_V" ""
+    echo -e "  ║  ${DIM}──────────────────────────────────────${NC}${CYAN}${BOLD}║"
+    printf  "  ║  ${NC}[3] OpenClaude   %b  %b${CYAN}${BOLD}║\n" "$OCL_PILL" "${NC}→ submenú${CYAN}${BOLD}"
+    printf  "  ║      ${NC}v%-6s  %b${CYAN}${BOLD}%-16s║\n" "$OCL_V" "$OCL_PROV_LABEL" ""
     echo    "  ╠══════════════════════════════════════════╣"
     echo -e "  ║  ${NC}[b] Volver al menú principal${CYAN}${BOLD}           ║"
     echo -e "  ╚══════════════════════════════════════════╝${NC}"
@@ -1467,9 +1494,388 @@ submenu_code_tools() {
         else
           submenu_opencode
         fi ;;
+      3)
+        if [ "$OCL_S" = "not_installed" ]; then
+          _ensure_install_script "install_openclaude.sh" && \
+            bash "$HOME/install_openclaude.sh" < /dev/tty
+          echo ""; read -r _ < /dev/tty
+        else
+          submenu_openclaude
+        fi ;;
       b|B|"") break ;;
     esac
   done
+}
+
+# ════════════════════════════════════════════
+#  SUBMENÚ OPENCLAUDE
+# ════════════════════════════════════════════
+submenu_openclaude() {
+  local OCL_PROJ_DIR="$HOME/proyectos"
+  while true; do
+    clear; echo ""
+    local _OCL_VER; _OCL_VER=$(get_reg openclaude version)
+    [ -z "$_OCL_VER" ] && _OCL_VER="?"
+    local _OCL_PROV; _OCL_PROV=$(get_reg openclaude provider)
+    [ -z "$_OCL_PROV" ] && _OCL_PROV="sin conf."
+    local _OCL_MODEL; _OCL_MODEL=$(get_reg openclaude model)
+    [ -z "$_OCL_MODEL" ] && _OCL_MODEL="—"
+
+    echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
+    echo    "  ║  ◆ OPENCLAUDE                           ║"
+    echo    "  ╠══════════════════════════════════════════╣"
+    printf  "  ║  ${NC}v%-6s  proveedor: %-18s${CYAN}${BOLD}║\n" "$_OCL_VER" "$_OCL_PROV"
+    printf  "  ║  ${NC}modelo: %-32s${CYAN}${BOLD}║\n" "${_OCL_MODEL:0:32}"
+    echo    "  ╠══════════════════════════════════════════╣"
+    echo -e "  ║  ${NC}[1] Abrir en directorio actual          ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[2] Abrir en proyecto                   ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[3] Gestionar proyectos                 ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[4] Cambiar proveedor / modelo          ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[5] Ver configuración actual            ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[6] Instalar / reinstalar               ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[b] Volver                              ${CYAN}${BOLD}║"
+    echo -e "  ╚══════════════════════════════════════════╝${NC}"
+    echo ""; echo -n "  Opción: "
+    read -r OPT < /dev/tty
+
+    case "$OPT" in
+      1)
+        clear; echo ""
+        echo -e "  ${CYAN}Abriendo OpenClaude en $(pwd)...${NC}"
+        echo -e "  ${DIM}Proveedor: $_OCL_PROV · Modelo: $_OCL_MODEL${NC}"; echo ""
+        _ocl_apply_env
+        openclaude ;;
+      2)
+        clear; echo ""
+        mkdir -p "$OCL_PROJ_DIR"
+        mapfile -t PROJS < <(ls -1 "$OCL_PROJ_DIR/" 2>/dev/null)
+        echo -e "  ${CYAN}Proyectos en ~/proyectos/:${NC}"; echo ""
+        local IDX=1
+        [ ${#PROJS[@]} -gt 0 ] \
+          && for p in "${PROJS[@]}"; do printf "    [%d] %s\n" "$IDX" "$p"; IDX=$((IDX+1)); done \
+          || echo "    (ninguno)"
+        echo ""; echo "    [m] Ruta manual  [d] Download  [b] Volver"
+        echo ""; echo -n "  Elige: "
+        read -r PCHOICE < /dev/tty
+        local TARGET_DIR=""
+        case "$PCHOICE" in
+          m|M) echo -n "  Ruta: "; read -r TARGET_DIR < /dev/tty ;;
+          d|D)
+            mapfile -t DL_DIRS < <(find /storage/emulated/0/Download \
+              -maxdepth 1 -mindepth 1 -type d 2>/dev/null | xargs -I{} basename {})
+            [ ${#DL_DIRS[@]} -eq 0 ] && { echo "    (ninguna)"; read -r _ < /dev/tty; continue; }
+            for i in "${!DL_DIRS[@]}"; do printf "    [%d] %s\n" "$((i+1))" "${DL_DIRS[$i]}"; done
+            echo ""; echo -n "  Número: "; read -r DCHOICE < /dev/tty
+            if [[ "$DCHOICE" =~ ^[0-9]+$ ]] && [ "$DCHOICE" -ge 1 ] && \
+               [ "$DCHOICE" -le "${#DL_DIRS[@]}" ]; then
+              local DNAME="${DL_DIRS[$((DCHOICE-1))]}"
+              local LINK_DST="$HOME/proyectos/${DNAME}"
+              [ ! -e "$LINK_DST" ] && \
+                ln -s "/storage/emulated/0/Download/${DNAME}" "$LINK_DST" 2>/dev/null && \
+                echo -e "  ${GREEN}[OK]${NC} Symlink creado"
+              TARGET_DIR="$LINK_DST"
+            fi ;;
+          b|B|"") continue ;;
+          *)
+            [[ "$PCHOICE" =~ ^[0-9]+$ ]] && [ "$PCHOICE" -ge 1 ] && \
+            [ "$PCHOICE" -le "${#PROJS[@]}" ] && \
+              TARGET_DIR="$OCL_PROJ_DIR/${PROJS[$((PCHOICE-1))]}" ;;
+        esac
+        if [ -n "$TARGET_DIR" ] && [ -d "$TARGET_DIR" ]; then
+          echo -e "\n  ${CYAN}Abriendo en $TARGET_DIR...${NC}\n"
+          cd "$TARGET_DIR" || true
+          _ocl_apply_env
+          openclaude
+        elif [ -n "$TARGET_DIR" ]; then
+          echo -e "  ${RED}[ERROR]${NC} No existe: $TARGET_DIR"
+          read -r _ < /dev/tty
+        fi ;;
+      3)
+        while true; do
+          clear; echo ""
+          echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
+          echo    "  ║  ◆ OPENCLAUDE — Proyectos               ║"
+          echo    "  ╠══════════════════════════════════════════╣"
+          echo -e "  ║  ${NC}[1] Listar  [2] Nuevo symlink  [3] Borrar${CYAN}${BOLD}║"
+          echo -e "  ║  ${NC}[b] Volver${CYAN}${BOLD}                             ║"
+          echo -e "  ╚══════════════════════════════════════════╝${NC}"
+          echo ""; echo -n "  Opción: "; read -r GOPT < /dev/tty
+          case "$GOPT" in
+            1)
+              clear; echo ""
+              echo -e "  ${BOLD}Proyectos en ~/proyectos/:${NC}"; echo ""
+              mkdir -p "$HOME/proyectos"
+              ls "$HOME/proyectos/" 2>/dev/null | grep -q . \
+                && ls -la "$HOME/proyectos/" \
+                || echo -e "  ${DIM}(vacío)${NC}"
+              echo ""; read -r _ < /dev/tty ;;
+            2)
+              clear; echo ""
+              mapfile -t DL_DIRS < <(find /storage/emulated/0/Download \
+                -maxdepth 1 -mindepth 1 -type d 2>/dev/null | xargs -I{} basename {})
+              [ ${#DL_DIRS[@]} -eq 0 ] && {
+                echo -e "  ${YELLOW}No hay carpetas en Download${NC}"
+                read -r _ < /dev/tty; continue
+              }
+              for i in "${!DL_DIRS[@]}"; do
+                local LDST="$HOME/proyectos/${DL_DIRS[$i]}"
+                [ -L "$LDST" ] \
+                  && printf "    [%d] %s ${DIM}(ya existe)${NC}\n" "$((i+1))" "${DL_DIRS[$i]}" \
+                  || printf "    [%d] %s\n" "$((i+1))" "${DL_DIRS[$i]}"
+              done
+              echo ""; echo -n "  Número: "; read -r DCHOICE < /dev/tty
+              if [[ "$DCHOICE" =~ ^[0-9]+$ ]] && [ "$DCHOICE" -ge 1 ] && \
+                 [ "$DCHOICE" -le "${#DL_DIRS[@]}" ]; then
+                local DNAME="${DL_DIRS[$((DCHOICE-1))]}"
+                local LSRC="/storage/emulated/0/Download/${DNAME}"
+                local LDST2="$HOME/proyectos/${DNAME}"
+                mkdir -p "$HOME/proyectos"
+                [ -L "$LDST2" ] \
+                  && echo -e "  ${YELLOW}[AVISO]${NC} Ya existe: ~/proyectos/${DNAME}" \
+                  || { ln -s "$LSRC" "$LDST2" 2>/dev/null \
+                    && echo -e "  ${GREEN}[OK]${NC} Symlink creado" \
+                    || echo -e "  ${RED}[ERROR]${NC}"; }
+              fi
+              echo ""; read -r _ < /dev/tty ;;
+            3)
+              clear; echo ""
+              mkdir -p "$HOME/proyectos"
+              mapfile -t LINKS < <(find "$HOME/proyectos" -maxdepth 1 -type l 2>/dev/null \
+                | xargs -I{} basename {})
+              [ ${#LINKS[@]} -eq 0 ] && {
+                echo -e "  ${DIM}Sin symlinks${NC}"; read -r _ < /dev/tty; continue
+              }
+              for i in "${!LINKS[@]}"; do printf "    [%d] %s\n" "$((i+1))" "${LINKS[$i]}"; done
+              echo ""; echo -n "  Número: "; read -r LCHOICE < /dev/tty
+              if [[ "$LCHOICE" =~ ^[0-9]+$ ]] && [ "$LCHOICE" -ge 1 ] && \
+                 [ "$LCHOICE" -le "${#LINKS[@]}" ]; then
+                local LNAME="${LINKS[$((LCHOICE-1))]}"
+                echo -n "  ¿Eliminar ~/proyectos/${LNAME}? (s/n): "
+                read -r LCONFIRM < /dev/tty
+                [ "$LCONFIRM" = "s" ] || [ "$LCONFIRM" = "S" ] && {
+                  rm "$HOME/proyectos/$LNAME" \
+                    && echo -e "  ${GREEN}[OK]${NC} Eliminado" \
+                    || echo -e "  ${RED}[ERROR]${NC}"
+                }
+              fi
+              echo ""; read -r _ < /dev/tty ;;
+            b|B|"") break ;;
+          esac
+        done ;;
+      4) _ocl_select_provider ;;
+      5)
+        clear; echo ""
+        echo -e "  ${CYAN}${BOLD}Configuración OpenClaude${NC}"; echo ""
+        local BASE_URL API_KEY MODEL USE_OAI
+        BASE_URL=$(grep "^export OPENAI_BASE_URL=" "$HOME/.bashrc" 2>/dev/null | tail -1 | cut -d'=' -f2-)
+        API_KEY=$(grep  "^export OPENAI_API_KEY="  "$HOME/.bashrc" 2>/dev/null | tail -1 | cut -d'=' -f2-)
+        MODEL=$(grep    "^export OPENAI_MODEL="    "$HOME/.bashrc" 2>/dev/null | tail -1 | cut -d'=' -f2-)
+        USE_OAI=$(grep  "^export CLAUDE_CODE_USE_OPENAI=" "$HOME/.bashrc" 2>/dev/null | tail -1 | cut -d'=' -f2-)
+        echo -e "  CLAUDE_CODE_USE_OPENAI : ${USE_OAI:-no configurado}"
+        echo -e "  OPENAI_BASE_URL        : ${BASE_URL:-no configurado}"
+        if [ -n "$API_KEY" ]; then
+          echo -e "  OPENAI_API_KEY         : ${API_KEY:0:8}..."
+        else
+          echo -e "  OPENAI_API_KEY         : no configurado"
+        fi
+        echo -e "  OPENAI_MODEL           : ${MODEL:-no configurado}"
+        echo ""
+        echo -e "  ${DIM}Registry — proveedor: $_OCL_PROV · modelo: $_OCL_MODEL${NC}"
+        echo ""; read -r _ < /dev/tty ;;
+      6)
+        clear; echo ""
+        _ensure_install_script "install_openclaude.sh" || { read -r _ < /dev/tty; continue; }
+        bash "$HOME/install_openclaude.sh" < /dev/tty
+        echo ""; read -r _ < /dev/tty ;;
+      b|B|"") break ;;
+    esac
+  done
+}
+
+# ── Escribe proveedor en .bashrc y registry ───────────────
+_ocl_write_provider() {
+  local prov_name="$1" base_url="$2" api_key="$3" model="$4"
+  # Limpiar config anterior
+  grep -v "# openclaude-provider\|CLAUDE_CODE_USE_OPENAI\|OPENAI_BASE_URL\|OPENAI_API_KEY\|OPENAI_MODEL" \
+    "$HOME/.bashrc" > "$HOME/.bashrc.tmp" 2>/dev/null && mv "$HOME/.bashrc.tmp" "$HOME/.bashrc"
+  {
+    echo ""
+    echo "# openclaude-provider"
+    echo "export CLAUDE_CODE_USE_OPENAI=1"
+    echo "export OPENAI_BASE_URL=${base_url}"
+    [ -n "$api_key" ] && echo "export OPENAI_API_KEY=${api_key}"
+    echo "export OPENAI_MODEL=${model}"
+  } >> "$HOME/.bashrc"
+  # Aplicar en sesión actual
+  export CLAUDE_CODE_USE_OPENAI=1
+  export OPENAI_BASE_URL="$base_url"
+  [ -n "$api_key" ] && export OPENAI_API_KEY="$api_key"
+  export OPENAI_MODEL="$model"
+  # Actualizar registry
+  grep -v "^openclaude\.provider\|^openclaude\.model" "$REGISTRY" \
+    > "$REGISTRY.tmp" 2>/dev/null && mv "$REGISTRY.tmp" "$REGISTRY"
+  {
+    echo "openclaude.provider=${prov_name}"
+    echo "openclaude.model=${model}"
+  } >> "$REGISTRY"
+  echo -e "  ${GREEN}[OK]${NC} Proveedor guardado: ${prov_name} · ${model}"
+}
+
+# ── Submenú interactivo de selección de proveedor ────────
+_ocl_select_provider() {
+  while true; do
+    clear; echo ""
+    local _CUR_PROV; _CUR_PROV=$(get_reg openclaude provider)
+    local _CUR_MODEL; _CUR_MODEL=$(get_reg openclaude model)
+    [ -z "$_CUR_PROV"  ] && _CUR_PROV="sin conf."
+    [ -z "$_CUR_MODEL" ] && _CUR_MODEL="—"
+    echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
+    echo    "  ║  ◆ OPENCLAUDE — Proveedor               ║"
+    echo    "  ╠══════════════════════════════════════════╣"
+    printf  "  ║  ${NC}Actual: %-33s${CYAN}${BOLD}║\n" "${_CUR_PROV} · ${_CUR_MODEL:0:20}"
+    echo    "  ╠══════════════════════════════════════════╣"
+    echo -e "  ║  ${NC}[1] Ollama local    ${DIM}(:11434 · gratis)${NC}${CYAN}${BOLD}     ║"
+    echo -e "  ║  ${NC}[2] Anthropic       ${DIM}(API key · Claude)${NC}${CYAN}${BOLD}    ║"
+    echo -e "  ║  ${NC}[3] DeepSeek        ${DIM}(API key · barato)${NC}${CYAN}${BOLD}    ║"
+    echo -e "  ║  ${NC}[4] OpenRouter      ${DIM}(API key · gratis)${NC}${CYAN}${BOLD}    ║"
+    echo -e "  ║  ${NC}[5] Manual          ${DIM}(URL + key + modelo)${NC}${CYAN}${BOLD}  ║"
+    echo -e "  ║  ${NC}[b] Volver                              ${CYAN}${BOLD}║"
+    echo -e "  ╚══════════════════════════════════════════╝${NC}"
+    echo ""; echo -n "  Proveedor: "
+    read -r POPT < /dev/tty
+
+    case "$POPT" in
+      1)
+        clear; echo ""
+        echo -e "  ${CYAN}Ollama local — modelos disponibles:${NC}"; echo ""
+        if ! curl -sf "http://127.0.0.1:11434" &>/dev/null; then
+          echo -e "  ${YELLOW}[AVISO]${NC} Ollama no responde en :11434"
+          echo -e "  ${DIM}Inícialo primero desde el menú Ollama${NC}"; echo ""
+        fi
+        mapfile -t _OL_MODELS < <(
+          curl -sf "http://127.0.0.1:11434/api/tags" 2>/dev/null | \
+          python3 -c "
+import sys,json
+try:
+  d=json.load(sys.stdin)
+  [print(m['name']) for m in d.get('models',[])]
+except: pass
+" 2>/dev/null)
+        if [ ${#_OL_MODELS[@]} -gt 0 ]; then
+          for i in "${!_OL_MODELS[@]}"; do
+            printf "    [%d] %s\n" "$((i+1))" "${_OL_MODELS[$i]}"
+          done
+          echo ""; echo -n "  Número o nombre del modelo: "
+          read -r _ML < /dev/tty
+          local _MODEL=""
+          if [[ "$_ML" =~ ^[0-9]+$ ]] && [ "$_ML" -ge 1 ] && \
+             [ "$_ML" -le "${#_OL_MODELS[@]}" ]; then
+            _MODEL="${_OL_MODELS[$((_ML-1))]}" 
+          else
+            _MODEL="$_ML"
+          fi
+        else
+          echo -e "  ${YELLOW}(ninguno instalado)${NC}  usa: ollama pull <modelo>"
+          echo -n "  Escribe el nombre del modelo: "
+          read -r _MODEL < /dev/tty
+        fi
+        [ -z "$_MODEL" ] && _MODEL="qwen2.5-coder:7b"
+        _ocl_write_provider "ollama" "http://localhost:11434/v1" "ollama" "$_MODEL"
+        echo ""; read -r _ < /dev/tty; break ;;
+      2)
+        clear; echo ""
+        echo -e "  ${CYAN}Anthropic — Claude API${NC}"; echo ""
+        echo -e "  ${DIM}Obtén tu key en: https://console.anthropic.com${NC}"; echo ""
+        echo -n "  API Key (sk-ant-...): "
+        read -r _KEY < /dev/tty
+        [ -z "$_KEY" ] && { echo -e "  ${YELLOW}[AVISO]${NC} Key vacía — cancelado"; echo ""; read -r _ < /dev/tty; continue; }
+        echo ""
+        echo "    [1] claude-sonnet-4-5       (recomendado)"
+        echo "    [2] claude-haiku-4-5        (rápido · bajo costo)"
+        echo "    [3] claude-opus-4-5         (más capaz)"
+        echo "    [4] otro (escribir nombre)"
+        echo ""; echo -n "  Modelo [Enter=1]: "
+        read -r _MO < /dev/tty
+        case "$_MO" in
+          2) _MODEL="claude-haiku-4-5" ;;
+          3) _MODEL="claude-opus-4-5" ;;
+          4) echo -n "  Nombre: "; read -r _MODEL < /dev/tty ;;
+          *) _MODEL="claude-sonnet-4-5" ;;
+        esac
+        _ocl_write_provider "anthropic" "https://api.anthropic.com/v1" "$_KEY" "$_MODEL"
+        echo ""; read -r _ < /dev/tty; break ;;
+      3)
+        clear; echo ""
+        echo -e "  ${CYAN}DeepSeek API${NC}"; echo ""
+        echo -e "  ${DIM}Obtén tu key en: https://platform.deepseek.com${NC}"; echo ""
+        echo -n "  API Key: "
+        read -r _KEY < /dev/tty
+        [ -z "$_KEY" ] && { echo -e "  ${YELLOW}[AVISO]${NC} Key vacía — cancelado"; echo ""; read -r _ < /dev/tty; continue; }
+        echo ""
+        echo "    [1] deepseek-chat           (recomendado)"
+        echo "    [2] deepseek-coder          (código)"
+        echo "    [3] deepseek-reasoner       (razonamiento)"
+        echo "    [4] otro (escribir nombre)"
+        echo ""; echo -n "  Modelo [Enter=1]: "
+        read -r _MO < /dev/tty
+        case "$_MO" in
+          2) _MODEL="deepseek-coder" ;;
+          3) _MODEL="deepseek-reasoner" ;;
+          4) echo -n "  Nombre: "; read -r _MODEL < /dev/tty ;;
+          *) _MODEL="deepseek-chat" ;;
+        esac
+        _ocl_write_provider "deepseek" "https://api.deepseek.com/v1" "$_KEY" "$_MODEL"
+        echo ""; read -r _ < /dev/tty; break ;;
+      4)
+        clear; echo ""
+        echo -e "  ${CYAN}OpenRouter${NC}"; echo ""
+        echo -e "  ${DIM}Crea cuenta gratis: https://openrouter.ai${NC}"; echo ""
+        echo -n "  API Key (sk-or-...): "
+        read -r _KEY < /dev/tty
+        [ -z "$_KEY" ] && { echo -e "  ${YELLOW}[AVISO]${NC} Key vacía — cancelado"; echo ""; read -r _ < /dev/tty; continue; }
+        echo ""
+        echo "    [1] qwen/qwen3-coder:free        (gratis · 262K ctx)"
+        echo "    [2] deepseek/deepseek-chat:free   (gratis)"
+        echo "    [3] meta-llama/llama-3.3-70b-instruct:free"
+        echo "    [4] otro (escribir nombre)"
+        echo ""; echo -n "  Modelo [Enter=1]: "
+        read -r _MO < /dev/tty
+        case "$_MO" in
+          2) _MODEL="deepseek/deepseek-chat:free" ;;
+          3) _MODEL="meta-llama/llama-3.3-70b-instruct:free" ;;
+          4) echo -n "  Nombre: "; read -r _MODEL < /dev/tty ;;
+          *) _MODEL="qwen/qwen3-coder:free" ;;
+        esac
+        _ocl_write_provider "openrouter" "https://openrouter.ai/api/v1" "$_KEY" "$_MODEL"
+        echo ""; read -r _ < /dev/tty; break ;;
+      5)
+        clear; echo ""
+        echo -e "  ${CYAN}Manual — endpoint OpenAI-compatible${NC}"; echo ""
+        echo -n "  Base URL (ej: http://localhost:11434/v1): "
+        read -r _URL < /dev/tty
+        [ -z "$_URL" ] && { echo -e "  ${YELLOW}Cancelado${NC}"; echo ""; read -r _ < /dev/tty; continue; }
+        echo -n "  API Key (Enter si no aplica): "
+        read -r _KEY < /dev/tty
+        echo -n "  Modelo: "
+        read -r _MODEL < /dev/tty
+        [ -z "$_MODEL" ] && { echo -e "  ${YELLOW}[AVISO]${NC} Modelo vacío — cancelado"; echo ""; read -r _ < /dev/tty; continue; }
+        _ocl_write_provider "manual" "$_URL" "$_KEY" "$_MODEL"
+        echo ""; read -r _ < /dev/tty; break ;;
+      b|B|"") break ;;
+    esac
+  done
+}
+
+# ── Helper: aplicar variables de entorno del .bashrc antes de lanzar ──
+_ocl_apply_env() {
+  local _URL _KEY _MODEL
+  _URL=$(grep   "^export OPENAI_BASE_URL=" "$HOME/.bashrc" 2>/dev/null | tail -1 | cut -d'=' -f2-)
+  _KEY=$(grep   "^export OPENAI_API_KEY="  "$HOME/.bashrc" 2>/dev/null | tail -1 | cut -d'=' -f2-)
+  _MODEL=$(grep "^export OPENAI_MODEL="    "$HOME/.bashrc" 2>/dev/null | tail -1 | cut -d'=' -f2-)
+  [ -n "$_URL"   ] && export OPENAI_BASE_URL="$_URL"
+  [ -n "$_KEY"   ] && export OPENAI_API_KEY="$_KEY"
+  [ -n "$_MODEL" ] && export OPENAI_MODEL="$_MODEL"
+  export CLAUDE_CODE_USE_OPENAI=1
 }
 
 # ════════════════════════════════════════════
@@ -3221,7 +3627,8 @@ uninstall_module() {
       case "$_cm" in
         native)
           rm -rf "$HOME/.local/share/claude-code" 2>/dev/null || true
-          rm -f  "$HOME/.local/bin/claude" 2>/dev/null || true
+          rm -rf "$HOME/.local/share/claude"       2>/dev/null || true
+          rm -f  "$HOME/.local/bin/claude"          2>/dev/null || true
           echo -e "  ${GREEN}[OK]${NC} Claude native desinstalado"
           echo -e "  ${DIM}(glibc-runner conservado — puede usarlo OpenCode)${NC}" ;;
         legacy|broken)
@@ -3238,7 +3645,21 @@ uninstall_module() {
       esac
       rm -f "$HOME/.install_claude_checkpoint" 2>/dev/null || true
       grep -v "^claude_code\." "$REGISTRY" > "$REGISTRY.tmp" 2>/dev/null \
-        && mv "$REGISTRY.tmp" "$REGISTRY" ;;
+        && mv "$REGISTRY.tmp" "$REGISTRY"
+      if [ -d "$HOME/.claude" ]; then
+        echo ""
+        echo -e "  ${YELLOW}⚠${NC}  Se encontró ${CYAN}~/.claude/${NC} (credenciales, sesiones, proyectos)"
+        local _CLAUDE_SIZE; _CLAUDE_SIZE=$(du -sh "$HOME/.claude" 2>/dev/null | cut -f1)
+        echo -e "  ${DIM}Tamaño: ${_CLAUDE_SIZE:-?}${NC}"
+        echo -n "  ¿Borrar también ~/.claude/? (escribe SI para confirmar): "
+        read -r _CONFIRM_CLAUDE < /dev/tty
+        if [ "$_CONFIRM_CLAUDE" = "SI" ]; then
+          rm -rf "$HOME/.claude" 2>/dev/null || true
+          echo -e "  ${GREEN}[OK]${NC} ~/.claude/ eliminado"
+        else
+          echo -e "  ${DIM}~/.claude/ conservado${NC}"
+        fi
+      fi ;;
     ollama)
       tmux kill-session -t "ollama-server" 2>/dev/null || true
       pkg uninstall ollama -y 2>/dev/null || true
@@ -3312,6 +3733,16 @@ uninstall_module() {
       rm -f "$HOME/.openclaw_gateway.log" 2>/dev/null
       grep -v "^openclaw\." "$REGISTRY" > "$REGISTRY.tmp" 2>/dev/null && mv "$REGISTRY.tmp" "$REGISTRY"
       echo -e "  ${GREEN}[OK]${NC} OpenClaw desinstalado" ;;
+    openclaude)
+      npm uninstall -g @gitlawb/openclaude 2>/dev/null || true
+      npm cache clean --force 2>/dev/null || true
+      grep -v "# openclaude-provider\|# openclaude-alias\|CLAUDE_CODE_USE_OPENAI\|OPENAI_BASE_URL\|OPENAI_API_KEY\|OPENAI_MODEL\|alias oc=" \
+        "$HOME/.bashrc" > "$HOME/.bashrc.tmp" 2>/dev/null && mv "$HOME/.bashrc.tmp" "$HOME/.bashrc"
+      rm -f "$HOME/.install_openclaude_checkpoint" 2>/dev/null || true
+      grep -v "^openclaude\." "$REGISTRY" > "$REGISTRY.tmp" 2>/dev/null \
+        && mv "$REGISTRY.tmp" "$REGISTRY"
+      echo -e "  ${GREEN}[OK]${NC} OpenClaude desinstalado"
+      echo -e "  ${DIM}(Ollama conservado)${NC}" ;;
     proot)
       # Detener todos los servicios proot antes de eliminar
       tmux kill-session -t "n8n-server"  2>/dev/null || true
@@ -3345,25 +3776,26 @@ submenu_desinstalar() {
     echo -e "${RED}${BOLD}  ╔══════════════════════════════════════════╗"
     echo    "  ║  ⚠  Desinstalar módulo                  ║"
     echo    "  ╠══════════════════════════════════════════╣"
-    echo -e "  ║  ${NC}[1] n8n + proot  [2] Claude Code${RED}${BOLD}        ║"
-    echo -e "  ║  ${NC}[3] Ollama       [4] Expo / EAS${RED}${BOLD}         ║"
-    echo -e "  ║  ${NC}[5] Python       [6] Remote${RED}${BOLD}             ║"
-    echo -e "  ║  ${NC}[7] OpenCode     [8] OpenClaw${RED}${BOLD}           ║"
-    echo -e "  ║  ${NC}[9] Distro Debian (rootfs completo)${RED}${BOLD}     ║"
+    echo -e "  ║  ${NC}[1] n8n + proot    [2] Claude Code${RED}${BOLD}      ║"
+    echo -e "  ║  ${NC}[3] Ollama         [4] Expo / EAS${RED}${BOLD}       ║"
+    echo -e "  ║  ${NC}[5] Python         [6] Remote${RED}${BOLD}           ║"
+    echo -e "  ║  ${NC}[7] OpenCode       [8] OpenClaw${RED}${BOLD}         ║"
+    echo -e "  ║  ${NC}[9] Distro Debian  [10] OpenClaude${RED}${BOLD}      ║"
     echo -e "  ║  ${NC}[b] Cancelar${RED}${BOLD}                            ║"
     echo -e "  ╚══════════════════════════════════════════╝${NC}"
     echo ""; echo -n "  Módulo: "; read -r OPT < /dev/tty
 
     case "$OPT" in
-      1) uninstall_module "n8n"      "n8n + proot Debian"      ; break ;;
-      2) uninstall_module "claude"   "Claude Code"              ; break ;;
-      3) uninstall_module "ollama"   "Ollama"                   ; break ;;
-      4) uninstall_module "expo"     "Expo / EAS CLI"           ; break ;;
-      5) uninstall_module "python"   "Python + SQLite"          ; break ;;
-      6) uninstall_module "remote"   "Remote (SSH + Dashboard)" ; break ;;
-      7) uninstall_module "opencode" "OpenCode"                 ; break ;;
-      8) uninstall_module "openclaw" "OpenClaw"                 ; break ;;
-      9) uninstall_module "proot"    "Distro Debian (rootfs)"   ; break ;;
+      1)  uninstall_module "n8n"         "n8n + proot Debian"      ; break ;;
+      2)  uninstall_module "claude"      "Claude Code"              ; break ;;
+      3)  uninstall_module "ollama"      "Ollama"                   ; break ;;
+      4)  uninstall_module "expo"        "Expo / EAS CLI"           ; break ;;
+      5)  uninstall_module "python"      "Python + SQLite"          ; break ;;
+      6)  uninstall_module "remote"      "Remote (SSH + Dashboard)" ; break ;;
+      7)  uninstall_module "opencode"    "OpenCode"                 ; break ;;
+      8)  uninstall_module "openclaw"    "OpenClaw"                 ; break ;;
+      9)  uninstall_module "proot"       "Distro Debian (rootfs)"   ; break ;;
+      10) uninstall_module "openclaude"  "OpenClaude"               ; break ;;
       b|B|"") break ;;
     esac
   done
