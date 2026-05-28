@@ -81,26 +81,6 @@ cat << 'HEADER'
 HEADER
 echo -e "${NC}"
 
-# ── Verificar si ya está instalado ───────────────────────────
-if proot-distro login debian -- bash -c \
-  'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"; command -v openclaw' \
-  &>/dev/null 2>&1; then
-  CL_VER=$(proot-distro login debian -- bash -c \
-    'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
-     openclaw --version 2>/dev/null | head -1' 2>/dev/null \
-    | grep -oE '[0-9]+\.[0-9.]+' | head -1)
-  echo -e "${GREEN}  ✓ OpenClaw ya está instalado${NC}"
-  echo -e "  Versión actual: ${CYAN}${CL_VER:-?}${NC}"
-  echo ""
-  echo -n "  ¿Reinstalar/actualizar? (s/n): "
-  read -r REINSTALL < /dev/tty
-  [ "$REINSTALL" != "s" ] && [ "$REINSTALL" != "S" ] && {
-    info "Nada que hacer. Saliendo."
-    exit 0
-  }
-  rm -f "$CHECKPOINT"
-fi
-
 echo ""
 echo "  Este script instalará OpenClaw en proot Debian:"
 echo "  ▸ NVM + Node 22 (solo para OpenClaw)"
@@ -118,23 +98,106 @@ read -r CONFIRM < /dev/tty
 [ "$CONFIRM" != "s" ] && [ "$CONFIRM" != "S" ] && { echo "Cancelado."; exit 0; }
 
 # ============================================================
-# PASO 1 — Verificar proot-distro y Debian
+# PASO 1 — Verificar proot-distro y rootfs Debian
+# Método canónico: detección por directorio (no proot-distro list)
+# Ref: ARCHITECTURE.md §3.11 — proot-distro list produce falsos negativos
 # ============================================================
 titulo "PASO 1 — Verificando entorno proot"
 
+# Instalar proot-distro si no está disponible
 if ! command -v proot-distro &>/dev/null; then
   info "Instalando proot-distro..."
-  pkg install proot-distro -y \
+  pkg install proot-distro proot tmux curl wget tar xz-utils git busybox -y \
     -o Dpkg::Options::="--force-confdef" \
     -o Dpkg::Options::="--force-confold" || \
     error "No se pudo instalar proot-distro."
 fi
 
-if ! proot-distro login debian -- bash -c 'echo ok' &>/dev/null 2>&1; then
-  error "Debian no está instalado en proot. Instálalo primero con: proot-distro install debian"
+# ── Detección canónica del rootfs por directorio ─────────────
+ROOTFS_BASE="${TERMUX_PREFIX}/var/lib/proot-distro/installed-rootfs"
+DISTRO_NAME=""
+ROOTFS_PATH=""
+if [ -d "$ROOTFS_BASE" ]; then
+  for _d in "$ROOTFS_BASE"/*/; do
+    if [ -f "${_d}bin/bash" ]; then
+      DISTRO_NAME=$(basename "$_d")
+      ROOTFS_PATH="$_d"
+      break
+    fi
+  done
 fi
 
-log "proot Debian disponible"
+if [ -n "$DISTRO_NAME" ]; then
+  log "Rootfs encontrado: $DISTRO_NAME ($ROOTFS_PATH)"
+else
+  warn "Rootfs Debian no encontrado en $ROOTFS_BASE"
+  echo ""
+  echo -e "  ${CYAN}¿Cómo instalar Debian?${NC}"
+  echo ""
+  echo -e "  ${GREEN}[1]${NC} Desde GitHub Releases  (rápido ~5-10 min, proot-base)"
+  echo -e "  ${GREEN}[2]${NC} Instalación limpia     (proot-distro install, ~15-25 min)"
+  echo -e "  ${GREEN}[b]${NC} Cancelar"
+  echo ""
+  echo -n "  Opción: "
+  read -r INSTALL_ROOTFS_OPT < /dev/tty
+
+  case "$INSTALL_ROOTFS_OPT" in
+    1)
+      info "Descargando rootfs desde GitHub Releases..."
+      if [ ! -f "$HOME/restore.sh" ]; then
+        curl -fsSL "https://raw.githubusercontent.com/Honkonx/termux-ai-stack/main/restore.sh" \
+          -o "$HOME/restore.sh" && chmod +x "$HOME/restore.sh"
+      fi
+      bash "$HOME/restore.sh" --module proot-base --source github || \
+        error "Fallo la restauración del rootfs Debian"
+      ;;
+    2)
+      info "Instalando Debian con proot-distro..."
+      proot-distro install debian || error "No se pudo instalar Debian en proot."
+      ;;
+    b|B|"")
+      error "Cancelado por el usuario"
+      ;;
+    *)
+      error "Opción inválida"
+      ;;
+  esac
+
+  # Re-detectar tras instalación
+  for _d in "$ROOTFS_BASE"/*/; do
+    if [ -f "${_d}bin/bash" ]; then
+      DISTRO_NAME=$(basename "$_d")
+      ROOTFS_PATH="$_d"
+      break
+    fi
+  done
+  [ -z "$DISTRO_NAME" ] && error "Rootfs Debian no disponible tras la instalación"
+  log "Rootfs listo: $DISTRO_NAME"
+fi
+
+log "proot Debian disponible: $DISTRO_NAME"
+
+# ── Verificar si OpenClaw ya está instalado ──────────────────
+# Ahora que tenemos DISTRO_NAME correcto, podemos hacer el check
+if proot-distro login "$DISTRO_NAME" -- bash -c \
+  'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"; command -v openclaw' \
+  &>/dev/null 2>&1; then
+  CL_VER=$(proot-distro login "$DISTRO_NAME" -- bash -c \
+    'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+     openclaw --version 2>/dev/null | head -1' 2>/dev/null \
+    | grep -oE '[0-9]+\.[0-9.]+' | head -1)
+  echo ""
+  echo -e "${GREEN}  ✓ OpenClaw ya está instalado${NC}"
+  echo -e "  Versión actual: ${CYAN}${CL_VER:-?}${NC}"
+  echo ""
+  echo -n "  ¿Reinstalar/actualizar? (s/n): "
+  read -r REINSTALL < /dev/tty
+  [ "$REINSTALL" != "s" ] && [ "$REINSTALL" != "S" ] && {
+    info "Nada que hacer. Saliendo."
+    exit 0
+  }
+  rm -f "$CHECKPOINT"
+fi
 
 # ============================================================
 # PASO 2 — NVM + Node 22 en proot
@@ -145,21 +208,21 @@ if check_done "openclaw_nvm"; then
   log "NVM + Node 22 ya configurados [checkpoint]"
 else
   # Verificar si NVM ya existe en proot
-  NVM_EXISTS=$(proot-distro login debian -- bash -c \
+  NVM_EXISTS=$(proot-distro login "$DISTRO_NAME" -- bash -c \
     '[ -s "$HOME/.nvm/nvm.sh" ] && echo "yes" || echo "no"' 2>/dev/null)
 
   if [ "$NVM_EXISTS" = "yes" ]; then
     log "NVM ya existe en proot"
   else
     info "Instalando NVM en proot Debian..."
-    proot-distro login debian -- bash -c \
+    proot-distro login "$DISTRO_NAME" -- bash -c \
       'curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash' || \
       error "No se pudo instalar NVM."
     log "NVM instalado"
   fi
 
   # Verificar si Node 22 ya está disponible via NVM
-  NODE22_EXISTS=$(proot-distro login debian -- bash -c \
+  NODE22_EXISTS=$(proot-distro login "$DISTRO_NAME" -- bash -c \
     'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
      node --version 2>/dev/null | grep -c "^v22"' 2>/dev/null)
 
@@ -167,11 +230,11 @@ else
     log "Node 22 ya está activo"
   else
     info "Instalando Node 22 via NVM..."
-    proot-distro login debian -- bash -c \
+    proot-distro login "$DISTRO_NAME" -- bash -c \
       'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
        nvm install 22 && nvm use 22 && nvm alias default 22' || \
       error "No se pudo instalar Node 22."
-    NODE_VER=$(proot-distro login debian -- bash -c \
+    NODE_VER=$(proot-distro login "$DISTRO_NAME" -- bash -c \
       'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
        node --version 2>/dev/null' 2>/dev/null)
     log "Node ${NODE_VER:-22} instalado"
@@ -189,7 +252,7 @@ if check_done "openclaw_shim"; then
   log "Shim ya creado [checkpoint]"
 else
   info "Creando shim de red (fix os.networkInterfaces)..."
-  proot-distro login debian -- bash -c \
+  proot-distro login "$DISTRO_NAME" -- bash -c \
 'cat > /root/openclaw-shim.cjs << '"'"'EOF'"'"'
 const os = require('"'"'os'"'"');
 os.networkInterfaces = () => ({
@@ -217,20 +280,20 @@ if check_done "openclaw_install"; then
   log "OpenClaw ya instalado [checkpoint]"
 else
   info "Instalando openclaw via npm (Node 22 + shim)..."
-  proot-distro login debian -- bash -c \
+  proot-distro login "$DISTRO_NAME" -- bash -c \
     'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
      export NODE_OPTIONS="--require /root/openclaw-shim.cjs"
      npm install -g openclaw@latest 2>&1 | tail -5' || \
     error "No se pudo instalar OpenClaw."
 
   # Verificar instalación
-  CL_OK=$(proot-distro login debian -- bash -c \
+  CL_OK=$(proot-distro login "$DISTRO_NAME" -- bash -c \
     'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
      command -v openclaw && echo "ok" || echo "fail"' 2>/dev/null | tail -1)
 
   [ "$CL_OK" != "ok" ] && error "OpenClaw no quedó accesible. Revisa la instalación."
 
-  CL_VER=$(proot-distro login debian -- bash -c \
+  CL_VER=$(proot-distro login "$DISTRO_NAME" -- bash -c \
     'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
      openclaw --version 2>/dev/null | head -1' 2>/dev/null \
     | grep -oE '[0-9]+\.[0-9.]+' | head -1)
@@ -265,13 +328,13 @@ else
     echo ""
     info "Lanzando wizard — puede tardar, ten paciencia..."
     echo ""
-    proot-distro login debian -- bash -c \
+    proot-distro login "$DISTRO_NAME" -- bash -c \
       'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
        export NODE_OPTIONS="--require /root/openclaw-shim.cjs"
        openclaw setup --wizard' < /dev/tty
 
     # Verificar que el token quedó guardado
-    TOKEN_CHECK=$(proot-distro login debian -- bash -c \
+    TOKEN_CHECK=$(proot-distro login "$DISTRO_NAME" -- bash -c \
       "python3 -c \"import json; d=json.load(open('/root/.openclaw/openclaw.json')); print(d['gateway']['auth']['token'])\"" \
       2>/dev/null)
     if [ -n "$TOKEN_CHECK" ]; then
@@ -298,7 +361,7 @@ if check_done "openclaw_proot_bashrc"; then
   log "Entorno proot ya configurado [checkpoint]"
 else
   info "Configurando NVM + shim en .bashrc del proot..."
-  proot-distro login debian -- bash -c \
+  proot-distro login "$DISTRO_NAME" -- bash -c \
 'grep -v "NVM_DIR\|openclaw-shim\|openclaw aliases\|openclaw-start\|openclaw-stop\|claw-status\|claw-logs" \
   /root/.bashrc > /root/.bashrc.tmp 2>/dev/null && mv /root/.bashrc.tmp /root/.bashrc
 
@@ -342,7 +405,7 @@ PORT=18789
 
 # Verificar si ya está corriendo
 if curl -sf http://127.0.0.1:$PORT &>/dev/null; then
-  TOKEN=$(proot-distro login debian -- bash -c \
+  TOKEN=$(proot-distro login "$DISTRO_NAME" -- bash -c \
     "python3 -c \"import json; d=json.load(open('/root/.openclaw/openclaw.json')); print(d['gateway']['auth']['token'])\"" \
     2>/dev/null)
   echo ""
@@ -359,7 +422,7 @@ echo -e "    Espera ~30-60 segundos en ARM64"
 echo ""
 
 # Lanzar en background desde Termux nativo
-proot-distro login debian -- bash -c \
+proot-distro login "$DISTRO_NAME" -- bash -c \
   'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
    export NODE_OPTIONS="--require /root/openclaw-shim.cjs"
    openclaw gateway --bind loopback' > "$HOME/.openclaw_gateway.log" 2>&1 &
@@ -379,7 +442,7 @@ done
 echo ""
 
 if curl -sf http://127.0.0.1:$PORT &>/dev/null; then
-  TOKEN=$(proot-distro login debian -- bash -c \
+  TOKEN=$(proot-distro login "$DISTRO_NAME" -- bash -c \
     "python3 -c \"
 import json, sys
 try:
@@ -428,7 +491,7 @@ fi
 
 # Respaldo: pkill por nombre
 pkill -f "openclaw gateway" 2>/dev/null || true
-proot-distro login debian -- bash -c \
+proot-distro login "$DISTRO_NAME" -- bash -c \
   'pkill -f "openclaw gateway" 2>/dev/null || true' 2>/dev/null || true
 
 sleep 1
@@ -447,7 +510,7 @@ SCRIPT
 #!/data/data/com.termux/files/usr/bin/bash
 # Mostrar URL con token de OpenClaw — termux-ai-stack
 PORT=18789
-TOKEN=$(proot-distro login debian -- bash -c \
+TOKEN=$(proot-distro login "$DISTRO_NAME" -- bash -c \
   "python3 -c \"
 import json, sys
 try:
@@ -503,8 +566,9 @@ alias openclaw-start='bash ~/scripts/openclaw/openclaw_start.sh'
 alias openclaw-stop='bash ~/scripts/openclaw/openclaw_stop.sh'
 alias openclaw-token='bash ~/scripts/openclaw/openclaw_token.sh'
 alias openclaw-status='curl -sf http://127.0.0.1:18789 &>/dev/null && echo "OpenClaw activo :18789" || echo "OpenClaw detenido"'
-alias openclaw-tui='proot-distro login debian -- bash -c "source ~/.bashrc 2>/dev/null; openclaw tui"'
 ALIASES
+  # openclaw-tui necesita el nombre del distro expandido ahora
+  echo "alias openclaw-tui='proot-distro login ${DISTRO_NAME} -- bash -c \"source ~/.bashrc 2>/dev/null; openclaw tui\"'" >> "$BASHRC"
 
   log "Aliases agregados a ~/.bashrc de Termux"
   mark_done "openclaw_aliases"
@@ -515,7 +579,7 @@ fi
 # ============================================================
 titulo "PASO 9 — Actualizando registry"
 
-CL_VER_FINAL=$(proot-distro login debian -- bash -c \
+CL_VER_FINAL=$(proot-distro login "$DISTRO_NAME" -- bash -c \
   'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
    openclaw --version 2>/dev/null | head -1' 2>/dev/null \
   | grep -oE '[0-9]+\.[0-9.]+' | head -1)

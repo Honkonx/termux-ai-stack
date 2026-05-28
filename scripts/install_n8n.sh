@@ -94,16 +94,29 @@ cat << 'HEADER'
 HEADER
 echo -e "${NC}"
 
+# ── Detección temprana de rootfs (para check ya-instalado) ───
+# Canónica por directorio — proot-distro list produce falsos negativos
+_ROOTFS_BASE_EARLY="$TERMUX_PREFIX/var/lib/proot-distro/installed-rootfs"
+_DISTRO_EARLY=""
+if [ -d "$_ROOTFS_BASE_EARLY" ]; then
+  for _de in "$_ROOTFS_BASE_EARLY"/*/; do
+    if [ -f "${_de}bin/bash" ]; then
+      _DISTRO_EARLY=$(basename "$_de"); break
+    fi
+  done
+fi
+unset _de
+
 # ── Verificar si ya está instalado ───────────────────────────
 N8N_INSTALLED=false
-if proot-distro list 2>/dev/null | grep -q "debian.*installed"; then
-  if proot-distro login debian -- bash -c 'command -v n8n' &>/dev/null 2>&1; then
+if [ -n "$_DISTRO_EARLY" ]; then
+  if proot-distro login "$_DISTRO_EARLY" -- bash -c 'command -v n8n' &>/dev/null 2>&1; then
     N8N_INSTALLED=true
   fi
 fi
 
 if [ "$N8N_INSTALLED" = true ]; then
-  N8N_VER=$(proot-distro login debian -- bash -c 'n8n --version 2>/dev/null' 2>/dev/null | head -1)
+  N8N_VER=$(proot-distro login "$_DISTRO_EARLY" -- bash -c 'n8n --version 2>/dev/null' 2>/dev/null | head -1)
   echo -e "${GREEN}  ✓ n8n ya está instalado${NC}"
   echo -e "  Versión actual: ${CYAN}${N8N_VER}${NC}"
   echo ""
@@ -349,59 +362,69 @@ fi
 
 # ============================================================
 # PASO 3 — Instalar Debian Bookworm (proot)
+# Detección canónica: por directorio, no por nombre hardcodeado.
+# Ref: ARCHITECTURE.md §3.11 — proot-distro list produce falsos negativos
 # ============================================================
 titulo "PASO 3 — Instalando Debian Bookworm"
 
+# ── Detección canónica del rootfs ────────────────────────────
+_ROOTFS_BASE="$TERMUX_PREFIX/var/lib/proot-distro/installed-rootfs"
+DISTRO_NAME=""
+ROOTFS_PATH=""
+if [ -d "$_ROOTFS_BASE" ]; then
+  for _d in "$_ROOTFS_BASE"/*/; do
+    if [ -f "${_d}bin/bash" ]; then
+      DISTRO_NAME=$(basename "$_d")
+      ROOTFS_PATH="$_d"
+      break
+    fi
+  done
+fi
+unset _d
+
 if [ "${CLEAN_ROOTFS:-true}" = "false" ]; then
   log "Rootfs instalado desde GitHub en paso anterior [skip]"
+  # DISTRO_NAME ya debería estar detectado — si no, re-detectar
+  [ -z "$DISTRO_NAME" ] && error "Rootfs no encontrado tras restore — verifica con: ls $_ROOTFS_BASE"
 elif check_done "debian_install"; then
   log "Debian ya instalado [checkpoint]"
+  [ -z "$DISTRO_NAME" ] && error "Checkpoint activo pero rootfs no encontrado en $_ROOTFS_BASE"
 else
-  # ── Detección rootfs existente — NUNCA intentar instalar si ya existe ──
-  ROOTFS_DIR_CHECK="$TERMUX_PREFIX/var/lib/proot-distro/installed-rootfs/debian"
-  if [ -d "$ROOTFS_DIR_CHECK" ] && [ -f "$ROOTFS_DIR_CHECK/bin/bash" ]; then
-    log "Rootfs Debian ya existe en disco — saltando instalación"
-    log "Ruta: $ROOTFS_DIR_CHECK"
+  if [ -n "$DISTRO_NAME" ]; then
+    # Rootfs ya existe — nunca reinstalar
+    log "Rootfs ya existe en disco — saltando instalación"
+    log "Distro: $DISTRO_NAME  Ruta: $ROOTFS_PATH"
   else
     echo ""
-    echo -e "  ${YELLOW}Descargando rootfs Debian Bookworm ARM64...${NC}"
-    echo -e "  ${YELLOW}Tamaño aproximado: ~200MB comprimido${NC}"
-    echo -e "  ${YELLOW}Mantén la pantalla encendida durante la descarga.${NC}"
+    echo -e "  ${YELLOW}Instalando rootfs Debian Bookworm ARM64...${NC}"
+    echo -e "  ${YELLOW}Tamaño: ~200MB comprimido / ~500MB expandido${NC}"
+    echo -e "  ${YELLOW}Mantén la pantalla encendida. Puede tardar 5-15 min.${NC}"
     echo ""
 
-    # Mostrar progreso real con wget si está disponible, fallback a proot-distro
-    DISTRO_URL="https://github.com/termux/proot-distro/raw/master/distros/debian.sh"
-    ROOTFS_URL=$(curl -fsSL "$DISTRO_URL" 2>/dev/null | grep "DISTRO_TARBALL_URL" | head -1 | cut -d'"' -f2)
+    # Una sola llamada a proot-distro install — sin pre-descarga manual
+    # (la pre-descarga + proot-distro install causaba doble extracción)
+    info "Ejecutando: proot-distro install debian"
+    proot-distro install debian || error "Falló instalación de Debian"
 
-    if [ -n "$ROOTFS_URL" ] && command -v wget &>/dev/null; then
-      ROOTFS_DLDIR="${TERMUX_PREFIX}/var/lib/proot-distro/dlcache"
-      mkdir -p "$ROOTFS_DLDIR"
-      ROOTFS_FILE="$ROOTFS_DLDIR/$(basename "$ROOTFS_URL")"
-
-      info "URL: $ROOTFS_URL"
-      info "Destino: $ROOTFS_FILE"
-      echo ""
-
-      wget --progress=bar:force:noscroll \
-        -O "$ROOTFS_FILE" "$ROOTFS_URL" 2>&1 || {
-        warn "Descarga manual falló — usando proot-distro install (sin progreso visible)"
-        rm -f "$ROOTFS_FILE"
-        proot-distro install debian || error "Falló instalación de Debian"
-      }
-
-      if [ -f "$ROOTFS_FILE" ]; then
-        info "Extrayendo rootfs (~500MB sin comprimir, puede tardar 3-5 min)..."
-        proot-distro install debian || error "Falló extracción de Debian"
+    # Re-detectar tras instalación
+    for _d in "$_ROOTFS_BASE"/*/; do
+      if [ -f "${_d}bin/bash" ]; then
+        DISTRO_NAME=$(basename "$_d")
+        ROOTFS_PATH="$_d"
+        break
       fi
-    else
-      info "Descargando e instalando Debian (sin barra de progreso)..."
-      proot-distro install debian || error "Falló instalación de Debian"
-    fi
+    done
+    unset _d
 
-    log "Debian Bookworm instalado"
+    [ -z "$DISTRO_NAME" ] && \
+      error "Rootfs Debian no encontrado tras la instalación — revisa: ls $_ROOTFS_BASE"
+
+    log "Debian instalado: $DISTRO_NAME ($ROOTFS_PATH)"
   fi
   mark_done "debian_install"
 fi
+
+info "Usando distro: ${DISTRO_NAME}"
 
 # ============================================================
 # PASO 4 — Instalar n8n + cloudflared dentro del proot
@@ -421,7 +444,7 @@ else
   info "Instalando software en Debian (15-25 min)..."
   info "No cierres Termux durante este paso..."
 
-  proot-distro login debian -- bash << 'INNER'
+  proot-distro login "$DISTRO_NAME" -- bash << 'INNER'
 set -e
 export HOME=/root
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
@@ -536,7 +559,7 @@ N8N_CMD="\${N8N_CMD} && n8n start"
 
 [ -n "\$WEBHOOK_URL_CFG" ] && echo "[*] Webhook URL: \$WEBHOOK_URL_CFG"
 tmux send-keys -t "\$SESSION:n8n" \
-  "proot-distro login debian -- bash -c '\${N8N_CMD}'" Enter
+  "proot-distro login "$DISTRO_NAME" -- bash -c '\${N8N_CMD}'" Enter
 
 echo "[*] Esperando que n8n inicie (35 seg)..."
 sleep 35
@@ -549,10 +572,10 @@ tmux new-window -t "\$SESSION" -n "tunnel"
 if [ -f "\$HOME/.cf_token" ]; then
   CF_TOK=\$(cat "\$HOME/.cf_token")
   tmux send-keys -t "\$SESSION:tunnel" \
-    "proot-distro login debian -- bash -c 'cloudflared tunnel --no-autoupdate run --token \${CF_TOK} 2>&1 | tee /root/cf_url.log'" Enter
+    "proot-distro login "$DISTRO_NAME" -- bash -c 'cloudflared tunnel --no-autoupdate run --token \${CF_TOK} 2>&1 | tee /root/cf_url.log'" Enter
 else
   tmux send-keys -t "\$SESSION:tunnel" \
-    "proot-distro login debian -- bash -c 'cloudflared tunnel --no-autoupdate --url http://localhost:5678 2>&1 | tee /root/cf_url.log'" Enter
+    "proot-distro login "$DISTRO_NAME" -- bash -c 'cloudflared tunnel --no-autoupdate --url http://localhost:5678 2>&1 | tee /root/cf_url.log'" Enter
 fi
 
 echo "[*] Obteniendo URL pública (40 seg)..."
@@ -562,7 +585,7 @@ sleep 40
 if [ -n "\$WEBHOOK_URL_CFG" ]; then
   CF_URL="\$WEBHOOK_URL_CFG"
 else
-  CF_URL=\$(proot-distro login debian -- bash -c \
+  CF_URL=\$(proot-distro login "$DISTRO_NAME" -- bash -c \
     "grep -o 'https://[a-zA-Z0-9.-]*\\.trycloudflare\\.com' /root/cf_url.log 2>/dev/null | head -1" 2>/dev/null)
 fi
 
@@ -592,7 +615,7 @@ log "start_servidor.sh creado (con NODE_FUNCTION_ALLOW_BUILTIN + fix cloudflared
 cat > "$N8N_SCRIPTS/stop_servidor.sh" << 'SCRIPT'
 #!/data/data/com.termux/files/usr/bin/bash
 echo "[*] Deteniendo n8n y cloudflared..."
-proot-distro login debian -- bash -c \
+proot-distro login "$DISTRO_NAME" -- bash -c \
   'pkill -f n8n 2>/dev/null; pkill -f cloudflared 2>/dev/null; rm -f /root/cf_url.log' 2>/dev/null || true
 tmux kill-session -t "n8n-server" 2>/dev/null || true
 rm -f "$HOME/.last_cf_url" 2>/dev/null
@@ -607,7 +630,7 @@ cat > "$N8N_SCRIPTS/ver_url.sh" << 'SCRIPT'
 URL=""
 [ -f "$HOME/.last_cf_url" ] && URL=$(cat "$HOME/.last_cf_url")
 if [ -z "$URL" ]; then
-  URL=$(proot-distro login debian -- bash -c \
+  URL=$(proot-distro login "$DISTRO_NAME" -- bash -c \
     "grep -o 'https://[a-zA-Z0-9.-]*\.trycloudflare\.com' /root/cf_url.log 2>/dev/null | head -1" 2>/dev/null)
 fi
 [ -n "$URL" ] && echo "" && echo "  ▸ $URL" && echo "" || \
@@ -655,7 +678,7 @@ log "n8n_log.sh creado"
 cat > "$N8N_SCRIPTS/n8n_update.sh" << 'SCRIPT'
 #!/data/data/com.termux/files/usr/bin/bash
 echo "[*] Actualizando n8n..."
-proot-distro login debian -- bash -c \
+proot-distro login "$DISTRO_NAME" -- bash -c \
   'export HOME=/root && npm update -g n8n && echo "n8n: $(n8n --version)"'
 SCRIPT
 chmod +x "$N8N_SCRIPTS/n8n_update.sh"
@@ -667,9 +690,9 @@ cat > "$N8N_SCRIPTS/n8n_backup.sh" << 'SCRIPT'
 FECHA=$(date +%Y%m%d_%H%M)
 DESTINO="/sdcard/Download/n8n_workflows_$FECHA.tar.gz"
 echo "[*] Creando backup de workflows y credenciales n8n..."
-proot-distro login debian -- bash -c \
+proot-distro login "$DISTRO_NAME" -- bash -c \
   "tar -czf /tmp/n8n_backup.tar.gz -C /root/.n8n . 2>/dev/null && echo done"
-proot-distro login debian -- bash -c "cat /tmp/n8n_backup.tar.gz" > "$DESTINO" 2>/dev/null
+proot-distro login "$DISTRO_NAME" -- bash -c "cat /tmp/n8n_backup.tar.gz" > "$DESTINO" 2>/dev/null
 SIZE=$(du -h "$DESTINO" 2>/dev/null | cut -f1)
 echo "[OK] Backup workflows: $DESTINO ($SIZE)"
 SCRIPT
@@ -697,7 +720,7 @@ log "cf_token.sh creado"
 # --- debian.sh --- (punto de entrada — va en ~/)
 cat > "$HOME/debian.sh" << 'SCRIPT'
 #!/data/data/com.termux/files/usr/bin/bash
-proot-distro login debian
+proot-distro login "$DISTRO_NAME"
 SCRIPT
 chmod +x "$HOME/debian.sh"
 log "debian.sh creado"
@@ -767,7 +790,7 @@ fi
 # ============================================================
 titulo "PASO 8 — Actualizando registry"
 
-N8N_VER_REG=$(proot-distro login debian -- bash -c \
+N8N_VER_REG=$(proot-distro login "$DISTRO_NAME" -- bash -c \
   'n8n --version 2>/dev/null' 2>/dev/null | head -1)
 [ -z "$N8N_VER_REG" ] && N8N_VER_REG="unknown"
 
