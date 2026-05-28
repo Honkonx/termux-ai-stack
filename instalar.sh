@@ -38,6 +38,7 @@ export LD_LIBRARY_PATH="$TERMUX_PREFIX/lib"
 exec < /dev/tty
 
 # ── URLs ──────────────────────────────────────────────────────
+REPO_RAW_ROOT="https://raw.githubusercontent.com/Honkonx/termux-ai-stack/main"
 REPO_RAW_SCRIPT="https://raw.githubusercontent.com/Honkonx/termux-ai-stack/main/scripts"
 REPO_URL="https://github.com/Honkonx/termux-ai-stack"
 GITHUB_API="https://api.github.com/repos/Honkonx/termux-ai-stack/releases/latest"
@@ -139,12 +140,12 @@ if ! check_done "base_scripts" && ! check_done "base_mode_chosen"; then
   echo ""
   echo -e "  ${BOLD}¿Cómo instalar los scripts base?${NC}"
   echo ""
-  echo -e "  ${GREEN}[1] GitHub Release${NC} (experimental)"
+  echo -e "  ${GREEN}[1] GitHub Release${NC} (RECOMENDADO)"
   echo "      Descarga part0-termux-base del último release"
   echo "      ✓ Un solo archivo · Incluye tema y configs"
   echo -e "      ✓ ${BOLD}Salta pkg update${NC} — mucho más rápido"
   echo ""
-  echo -e "  ${CYAN}[2] Scripts individuales${NC} (todo limpio)"
+  echo -e "  ${CYAN}[2] Scripts individuales${NC} (desde el repo)"
   echo "      Descarga cada script por separado"
   echo "      ✓ Siempre la versión más reciente del repo"
   echo ""
@@ -342,14 +343,21 @@ else
       SCRIPTS_OK=0
       SCRIPTS_FAIL=0
 
-      # Scripts que van en ~/  (puntos de entrada)
+      # ESTRUCTURA DEL REPO:
+      #   Raiz  (REPO_RAW_ROOT): menu.sh, instalar.sh
+      #   scripts/ (REPO_RAW_SCRIPT): install_*.sh, backup.sh, restore.sh
+      #   scripts/ (REPO_RAW_SCRIPT): menu_nativo.sh, menu_proot.sh
+
+      # menu.sh va en raiz del repo
+      download_file "$REPO_RAW_ROOT/menu.sh" "$HOME/menu.sh" "menu.sh" \
+        && SCRIPTS_OK=$((SCRIPTS_OK + 1)) || SCRIPTS_FAIL=$((SCRIPTS_FAIL + 1))
+
+      # Scripts que van en ~/  — todos en scripts/ del repo
       for script in \
-        menu.sh \
         backup.sh restore.sh \
         install_n8n.sh install_claude.sh install_ollama.sh \
         install_expo.sh install_python.sh install_ssh.sh \
-        install_remote.sh install_opencode.sh install_openclaw.sh \
-        install_openclaude.sh
+        install_remote.sh install_opencode.sh install_openclaw.sh
       do
         if download_file "$REPO_RAW_SCRIPT/$script" "$HOME/$script" "$script"; then
           SCRIPTS_OK=$((SCRIPTS_OK + 1))
@@ -449,14 +457,14 @@ else
         else
           warn "Descarga fallida — usando Modo B como fallback..."
           rm -f "$BASE_TMP"
-          # Fallback automático a scripts individuales
+          # Fallback automatico a scripts individuales
+          # menu.sh esta en raiz del repo; los demas en scripts/
+          download_file "$REPO_RAW_ROOT/menu.sh" "$HOME/menu.sh" "menu.sh"
           for script in \
-            menu.sh \
             backup.sh restore.sh \
             install_n8n.sh install_claude.sh install_ollama.sh \
             install_expo.sh install_python.sh install_ssh.sh \
-            install_remote.sh install_opencode.sh install_openclaw.sh \
-            install_openclaude.sh
+            install_remote.sh install_opencode.sh install_openclaw.sh
           do
             download_file "$REPO_RAW_SCRIPT/$script" "$HOME/$script" "$script"
           done
@@ -467,14 +475,14 @@ else
           mark_done "base_scripts"
         fi
       else
-        warn "No se encontró part0-termux-base en el release — usando Modo B..."
+        warn "No se encontro part0-termux-base en el release — usando Modo B..."
+        # menu.sh esta en raiz del repo; los demas en scripts/
+        download_file "$REPO_RAW_ROOT/menu.sh" "$HOME/menu.sh" "menu.sh"
         for script in \
-          menu.sh \
           backup.sh restore.sh \
           install_n8n.sh install_claude.sh install_ollama.sh \
           install_expo.sh install_python.sh install_ssh.sh \
-          install_remote.sh install_opencode.sh install_openclaw.sh \
-          install_openclaude.sh
+          install_remote.sh install_opencode.sh install_openclaw.sh
         do
           download_file "$REPO_RAW_SCRIPT/$script" "$HOME/$script" "$script"
         done
@@ -496,8 +504,7 @@ for script in \
   backup.sh restore.sh \
   install_n8n.sh install_claude.sh install_ollama.sh \
   install_expo.sh install_python.sh install_ssh.sh \
-  install_remote.sh install_opencode.sh install_openclaw.sh \
-  install_openclaude.sh
+  install_remote.sh install_opencode.sh install_openclaw.sh
 do
   if [ -f "$HOME/$script" ] && [ -s "$HOME/$script" ]; then
     SIZE=$(wc -c < "$HOME/$script" 2>/dev/null)
@@ -689,7 +696,7 @@ echo "  SCRIPTS EN ~/:"
 for f in menu.sh \
           install_n8n.sh install_claude.sh install_ollama.sh \
           install_expo.sh install_python.sh install_ssh.sh install_remote.sh \
-          install_opencode.sh install_openclaw.sh install_openclaude.sh \
+          install_opencode.sh install_openclaw.sh \
           backup.sh restore.sh; do
   [ -f "$HOME/$f" ] && \
     echo -e "  ${GREEN}✓${NC} ~/$f" || \

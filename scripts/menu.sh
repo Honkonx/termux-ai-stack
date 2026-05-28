@@ -837,19 +837,27 @@ while true; do
 
       UPDATE_OK=0; UPDATE_FAIL=0
 
-      # Descargar scripts de raíz a ~/
+      # ESTRUCTURA DEL REPO:
+      #   Raiz  (REPO_RAW_ROOT): menu.sh, instalar.sh, menu_nativo.sh, menu_proot.sh
+      #   scripts/ (REPO_RAW):  install_*.sh, backup.sh, restore.sh
       for SCRIPT in "${ROOT_SCRIPTS[@]}"; do
         echo -n "  Descargando $SCRIPT... "
         TMP_DL="$HOME/${SCRIPT}.tmp"
-        curl -fsSL "$REPO_RAW_ROOT/$SCRIPT" -o "$TMP_DL" 2>/dev/null || \
-          wget -q "$REPO_RAW_ROOT/$SCRIPT" -O "$TMP_DL" 2>/dev/null
+        if [ "$SCRIPT" = "menu.sh" ]; then
+          _DL_URL="$REPO_RAW_ROOT/$SCRIPT"
+        else
+          _DL_URL="$REPO_RAW/$SCRIPT"
+        fi
+        curl -fsSL "$_DL_URL" -o "$TMP_DL" 2>/dev/null || \
+          wget -q "$_DL_URL" -O "$TMP_DL" 2>/dev/null
         if [ -f "$TMP_DL" ] && [ -s "$TMP_DL" ]; then
           mv "$TMP_DL" "$HOME/$SCRIPT"; chmod +x "$HOME/$SCRIPT"
           echo -e "${GREEN}✓${NC}"; UPDATE_OK=$((UPDATE_OK + 1))
         else
-          rm -f "$TMP_DL"; echo -e "${RED}✗${NC}"; UPDATE_FAIL=$((UPDATE_FAIL + 1))
+          rm -f "$TMP_DL"; echo -e "${RED}\u2717${NC}"; UPDATE_FAIL=$((UPDATE_FAIL + 1))
         fi
       done
+      unset _DL_URL
 
       # Descargar módulos de menú a ~/scripts/
       # menu_nativo.sh y menu_proot.sh están en raíz del repo

@@ -806,34 +806,26 @@ restore_part5() {
   [ -z "$FILE_SIZE" ] || [ "$FILE_SIZE" -lt 1024 ] && \
     error "Archivo descargado corrupto (${FILE_SIZE:-0} bytes)"
 
-  local ROOTFS_TMP="${ROOTFS_PATH}/tmp"
-  mkdir -p "$ROOTFS_TMP"
-  cp "$DOWNLOADED_FILE" "$ROOTFS_TMP/n8n_restore.tar.xz"
-  [ ! -s "$ROOTFS_TMP/n8n_restore.tar.xz" ] && error "No se pudo copiar al proot"
-
-  info "Extrayendo n8n dentro del proot ($DISTRO_NAME)..."
-  proot-distro login "$DISTRO_NAME" -- bash << 'PROOT_INNER'
-export HOME=/root
-export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-
-ARCHIVE="/tmp/n8n_restore.tar.xz"
-[ ! -f "$ARCHIVE" ] && { echo "[ERROR] No se encontró el archivo en el proot"; exit 1; }
-
-mkdir -p /usr/local/lib/node_modules /usr/local/bin /root/.n8n
-
-echo "[INFO] Extrayendo en /..."
-tar -xJf "$ARCHIVE" -C / 2>/dev/null || \
-  tar -xJf "$ARCHIVE" -C / --ignore-failed-read 2>/dev/null || \
-  { echo "[ERROR] Extracción fallida"; exit 1; }
-
-[ -f /usr/local/bin/n8n ]         && chmod +x /usr/local/bin/n8n
-[ -f /usr/local/bin/cloudflared ] && chmod +x /usr/local/bin/cloudflared
-[ -f /usr/local/bin/node ]        && chmod +x /usr/local/bin/node
-
-[ -f /usr/local/bin/n8n ] && echo "[OK] n8n verificado" || echo "[AVISO] n8n no encontrado"
-rm -f "$ARCHIVE"
-echo "[DONE]"
-PROOT_INNER
+  # ── Estrategia de inyección: pipe vía stdin ──────────────────
+  # NO usamos /tmp del proot: Android 15 puede montar tmpfs
+  # independiente dentro del proot, haciendo que el archivo
+  # copiado a ${ROOTFS_PATH}/tmp/ no aparezca como /tmp/ adentro.
+  # Solución: pasar el .tar.xz directo por stdin al proot.
+  info "Extrayendo n8n dentro del proot ($DISTRO_NAME) vía stdin..."
+  proot-distro login "$DISTRO_NAME" -- bash -c \
+    'export HOME=/root
+     export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+     mkdir -p /usr/local/lib/node_modules /usr/local/bin /root/.n8n
+     echo "[INFO] Recibiendo y extrayendo en /..."
+     tar -xJf - -C / 2>/dev/null || \
+       tar -xJf - -C / --ignore-failed-read 2>/dev/null || \
+       { echo "[ERROR] Extraccion fallida"; exit 1; }
+     [ -f /usr/local/bin/n8n ]         && chmod +x /usr/local/bin/n8n
+     [ -f /usr/local/bin/cloudflared ] && chmod +x /usr/local/bin/cloudflared
+     [ -f /usr/local/bin/node ]        && chmod +x /usr/local/bin/node
+     [ -f /usr/local/bin/n8n ] && echo "[OK] n8n verificado" || echo "[AVISO] n8n no encontrado en PATH"
+     echo "[DONE]"' \
+    < "$DOWNLOADED_FILE"
 
   [ $? -ne 0 ] && error "Fallo la restauración de n8n"
 
@@ -995,28 +987,18 @@ restore_part8() {
   fi
 
   download_and_verify "part8-opencode"
-  
-  info "Inyectando OpenCode en el rootfs existente ($DISTRO_NAME)..."
-  mkdir -p "${ROOTFS_PATH}/tmp"
-  cp "$DOWNLOADED_FILE" "${ROOTFS_PATH}/tmp/opencode_restore.tar.xz"
 
-  proot-distro login "$DISTRO_NAME" -- bash -c '
-    export HOME=/root
-    export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-    ARCHIVE="/tmp/opencode_restore.tar.xz"
-    if [ ! -f "$ARCHIVE" ]; then
-      echo "[ERROR] Archivo no encontrado en proot"
-      exit 1
-    fi
-    echo "[INFO] Extrayendo OpenCode en /..."
-    tar -xJf "$ARCHIVE" -C / 2>/dev/null || tar -xJf "$ARCHIVE" -C / --ignore-failed-read 2>/dev/null || {
-      echo "[ERROR] Extracción fallida"
-      exit 1
-    }
-    command -v opencode >/dev/null 2>&1 && echo "[OK] opencode verificado" || echo "[AVISO] opencode no encontrado en PATH"
-    rm -f "$ARCHIVE"
-    echo "[DONE]"
-  '
+  info "Inyectando OpenCode en el rootfs existente ($DISTRO_NAME) via stdin..."
+  proot-distro login "$DISTRO_NAME" -- bash -c \
+    'export HOME=/root
+     export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+     echo "[INFO] Extrayendo OpenCode en /..."
+     tar -xJf - -C / 2>/dev/null || \
+       tar -xJf - -C / --ignore-failed-read 2>/dev/null || \
+       { echo "[ERROR] Extraccion fallida"; exit 1; }
+     command -v opencode >/dev/null 2>&1 && echo "[OK] opencode verificado" || echo "[AVISO] opencode no encontrado en PATH"
+     echo "[DONE]"' \
+    < "$DOWNLOADED_FILE"
 
   [ $? -ne 0 ] && { warn "Fallo restaurando OpenCode"; return 1; }
 
@@ -1053,39 +1035,26 @@ restore_part9() {
   fi
 
   download_and_verify "part9-openclaw"
-  
-  info "Inyectando OpenClaw en el rootfs existente ($DISTRO_NAME)..."
-  mkdir -p "${ROOTFS_PATH}/tmp"
-  cp "$DOWNLOADED_FILE" "${ROOTFS_PATH}/tmp/openclaw_restore.tar.xz"
 
-  proot-distro login "$DISTRO_NAME" -- bash << 'PROOT_OCL_R'
-export HOME=/root
-export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-
-ARCHIVE="/tmp/openclaw_restore.tar.xz"
-[ ! -f "$ARCHIVE" ] && { echo "[ERROR] Archivo no encontrado en proot"; exit 1; }
-
-echo "[INFO] Extrayendo OpenClaw en /..."
-tar -xJf "$ARCHIVE" -C / 2>/dev/null || \
-  tar -xJf "$ARCHIVE" -C / --ignore-failed-read 2>/dev/null || \
-  { echo "[ERROR] Extracción fallida"; exit 1; }
-
-# Cargar NVM y verificar openclaw
-export NVM_DIR="$HOME/.nvm"
-[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
-
-# Agregar NVM al .bashrc si no está — sin sobreescribir
-if ! grep -q "NVM_DIR" /root/.bashrc 2>/dev/null; then
-  echo '' >> /root/.bashrc
-  echo 'export NVM_DIR="$HOME/.nvm"' >> /root/.bashrc
-  echo '[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"' >> /root/.bashrc
-  echo "[INFO] NVM agregado a .bashrc"
-fi
-
-command -v openclaw &>/dev/null && echo "[OK] openclaw verificado" || echo "[AVISO] openclaw no en PATH — puede necesitar reiniciar sesión proot"
-rm -f "$ARCHIVE"
-echo "[DONE]"
-PROOT_OCL_R
+  info "Inyectando OpenClaw en el rootfs existente ($DISTRO_NAME) via stdin..."
+  proot-distro login "$DISTRO_NAME" -- bash -c \
+    'export HOME=/root
+     export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+     echo "[INFO] Extrayendo OpenClaw en /..."
+     tar -xJf - -C / 2>/dev/null || \
+       tar -xJf - -C / --ignore-failed-read 2>/dev/null || \
+       { echo "[ERROR] Extraccion fallida"; exit 1; }
+     export NVM_DIR="$HOME/.nvm"
+     [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+     if ! grep -q "NVM_DIR" /root/.bashrc 2>/dev/null; then
+       echo "" >> /root/.bashrc
+       echo "export NVM_DIR=\"\$HOME/.nvm\"" >> /root/.bashrc
+       echo "[ -s \"\$NVM_DIR/nvm.sh\" ] && \\. \"\$NVM_DIR/nvm.sh\"" >> /root/.bashrc
+       echo "[INFO] NVM agregado a .bashrc"
+     fi
+     command -v openclaw >/dev/null 2>&1 && echo "[OK] openclaw verificado" || echo "[AVISO] openclaw no en PATH — puede necesitar reiniciar sesion proot"
+     echo "[DONE]"' \
+    < "$DOWNLOADED_FILE"
 
   [ $? -ne 0 ] && { warn "Fallo restaurando OpenClaw"; return 1; }
 
