@@ -131,6 +131,7 @@ _check_proot_combined() {
   local raw
   raw=$(proot-distro login "$DISTRO_NAME" -- bash -c '
     # ── opencode ──
+    source ~/.bashrc 2>/dev/null
     OC_BIN=$(command -v opencode 2>/dev/null)
     if [ -n "$OC_BIN" ]; then
       OC_VER=$(opencode --version 2>/dev/null | grep -oE "[0-9]+\.[0-9]+\.[0-9]+" | head -1)
@@ -193,7 +194,8 @@ check_opencode() {
   [ -z "$DISTRO_NAME" ] || [ ! -f "${ROOTFS_PATH}/bin/bash" ] && {
     echo "not_installed||"; return
   }
-  if proot-distro login "$DISTRO_NAME" -- bash -c 'command -v opencode' &>/dev/null 2>&1; then
+  if proot-distro login "$DISTRO_NAME" -- bash -c \
+    'source ~/.bashrc 2>/dev/null; command -v opencode' &>/dev/null 2>&1; then
     local oc_ver
     oc_ver=$(proot-distro login "$DISTRO_NAME" -- bash -c \
       'opencode --version 2>/dev/null | head -1' 2>/dev/null \

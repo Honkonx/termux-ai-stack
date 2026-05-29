@@ -106,7 +106,7 @@ _detect_rootfs() {
   ROOTFS_PATH=""
   if [ -d "$ROOTFS_BASE" ]; then
     for _d in "$ROOTFS_BASE"/*/; do
-      _d="${_d%/}"   # quitar trailing slash
+      _d="${_d%/}"
       if [ -f "${_d}/bin/bash" ]; then
         DISTRO_NAME=$(basename "$_d")
         ROOTFS_PATH="$_d"
@@ -143,7 +143,6 @@ else
       ;;
     2)
       info "Instalando Debian con proot-distro..."
-      # Verificar que no exista ya (evita "container already exists")
       if [ -d "$ROOTFS_BASE/debian" ] && [ -f "$ROOTFS_BASE/debian/bin/bash" ]; then
         log "Rootfs debian ya existe en disco — saltando instalación"
       else
@@ -158,7 +157,6 @@ else
       ;;
   esac
 
-  # Re-detectar tras instalación (sleep 2: dar tiempo al FS para flush)
   sleep 2
   _detect_rootfs
   [ -z "$DISTRO_NAME" ] && \
@@ -168,7 +166,8 @@ fi
 
 # ── Verificar si OpenCode ya está instalado ──────────────────
 # Ahora que tenemos DISTRO_NAME correcto, podemos hacer el check
-if proot-distro login "$DISTRO_NAME" -- bash -c 'command -v opencode' &>/dev/null 2>&1; then
+if proot-distro login "$DISTRO_NAME" -- bash -c \
+  'source ~/.bashrc 2>/dev/null; command -v opencode' &>/dev/null 2>&1; then
   OC_VER=$(proot-distro login "$DISTRO_NAME" -- bash -c \
     'opencode --version 2>/dev/null | head -1' 2>/dev/null \
     | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
@@ -295,7 +294,7 @@ if tmux has-session -t "\$SESSION" 2>/dev/null; then
   echo -e "     URL: http://127.0.0.1:\${PORT}"
   echo -e "     ${DIM}Abre en Brave, Chrome u otro navegador${NC}"
 else
-  echo -e "${RED}[ERROR]${NC} No se pudo iniciar. Verifica con: proot-distro login \$DISTRO"
+  echo -e "${RED}[ERROR]${NC} No se pudo iniciar. Verifica con: proot-distro login debian"
 fi
 SCRIPT
   chmod +x "$OPENCODE_SCRIPTS/opencode_start.sh"
