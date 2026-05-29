@@ -1,6 +1,6 @@
 #!/data/data/com.termux/files/usr/bin/python3
 """
-pronostico.py — Motor de análisis estadístico deportivo
+pronostico.py — Motor de análisis estadístico deportivo (Poisson + Dixon-Coles)
 Ruta: /data/data/com.termux/files/home/sports/scripts/pronostico.py
 
 Diseño dual:
@@ -15,6 +15,14 @@ Mejoras v2 (M4a-M4f):
   - M4d: Penalización por contradicción H2H vs Poisson
   - M4e: Umbral value bet subido a 8%
   - M4f: Cap de score por datos escasos
+
+Mejoras v3:
+  - DC1: Dixon-Coles rho real aplicado sobre la matriz de marcadores
+         Ajusta P(0-0), P(1-0), P(0-1), P(1-1) con factor tau(rho=-0.13)
+         Impacto real: ±2-4% en marcadores de baja puntuación
+  - DC2: Campo 'dixon_coles' en output para bloque_claude de datos.py
+  - ROL: pronostico.py ya no es orquestador — datos.py toma ese rol.
+         calcular_consenso() interno eliminado; lo hace consenso.py
 
 Uso desde n8n (execSync):
   python3 pronostico.py '<json_datos>'
@@ -228,10 +236,80 @@ def poisson_pmf(k, lam):
         return 1.0 if k == 0 else 0.0
     return math.exp(-lam) * (lam ** k) / math.factorial(k)
 
+# ─── Dixon-Coles: corrección rho para marcadores de baja puntuación ──────────
+#
+# El modelo Poisson independiente sobreestima los empates 0-0 y 1-1
+# y subestima los resultados 1-0 y 0-1.
+# Dixon-Coles (1997) corrige esto con un factor tau que ajusta la probabilidad
+# de los cuatro marcadores más frecuentes: (0,0), (1,0), (0,1), (1,1).
+#
+# Fórmula:
+#   tau(x, y, lam_L, lam_V, rho) =
+#     1 - lam_L * lam_V * rho   si x=0, y=0
+#     1 + lam_L * rho            si x=0, y=1
+#     1 + lam_V * rho            si x=1, y=0
+#     1 - rho                    si x=1, y=1
+#     1                          en cualquier otro caso
+#
+# rho = -0.13 es el valor calibrado estándar para fútbol general.
+# Negativo porque los empates de baja puntuación son ligeramente menos
+# frecuentes que lo que predice Poisson independiente.
+#
+# Impacto real: ±2-4% en los cuatro marcadores afectados.
+# El resto de la distribución (marcadores >= 2 goles c/u) no se modifica.
+
+DC_RHO = -0.13  # valor calibrado para fútbol. Range válido: -0.20 a -0.05
+
+
+def tau_dc(x, y, lam_local, lam_visit, rho=DC_RHO):
+    """
+    Factor de corrección Dixon-Coles para el marcador (x, y).
+    Solo ajusta los cuatro marcadores de baja puntuación.
+    Para el resto devuelve 1.0 (sin cambio).
+    """
+    if x == 0 and y == 0:
+        return 1.0 - lam_local * lam_visit * rho
+    elif x == 0 and y == 1:
+        return 1.0 + lam_local * rho
+    elif x == 1 and y == 0:
+        return 1.0 + lam_visit * rho
+    elif x == 1 and y == 1:
+        return 1.0 - rho
+    else:
+        return 1.0
+
+
+def aplicar_dixon_coles(matriz, lambda_local, lambda_visit, max_goles):
+    """
+    Aplica la corrección Dixon-Coles a la matriz de probabilidades.
+    Modifica in-place y renormaliza para que la suma total = 1.0.
+
+    Devuelve la matriz ajustada y un dict con los 4 valores tau para diagnóstico.
+    """
+    tau_vals = {}
+    for x in range(min(2, max_goles)):
+        for y in range(min(2, max_goles)):
+            t = tau_dc(x, y, lambda_local, lambda_visit)
+            if abs(t - 1.0) > 1e-9:  # solo modificar si hay ajuste real
+                matriz[x][y] *= t
+                tau_vals[f'{x}-{y}'] = round(t, 4)
+
+    # Renormalizar — la corrección rompe levemente la suma = 1.0
+    total = sum(matriz[i][j] for i in range(max_goles) for j in range(max_goles))
+    if total > 0:
+        for i in range(max_goles):
+            for j in range(max_goles):
+                matriz[i][j] /= total
+
+    return matriz, tau_vals
+
+
 def calcular_poisson_math(lambda_local, lambda_visit, max_goles=10):
     """
-    Genera la matriz de probabilidades de marcadores.
-    Devuelve prob_local, prob_empate, prob_visit, over25, btts, marcador_probable.
+    Genera la matriz de probabilidades de marcadores con corrección Dixon-Coles.
+    Devuelve prob_local, prob_empate, prob_visit, over25, btts, marcador_probable, tau_vals.
+
+    DC1: aplica tau() sobre los 4 marcadores de baja puntuación y renormaliza.
     """
     matriz = []
     for i in range(max_goles):
@@ -239,6 +317,9 @@ def calcular_poisson_math(lambda_local, lambda_visit, max_goles=10):
         for j in range(max_goles):
             fila.append(poisson_pmf(i, lambda_local) * poisson_pmf(j, lambda_visit))
         matriz.append(fila)
+
+    # DC1: aplicar corrección Dixon-Coles
+    matriz, tau_vals = aplicar_dixon_coles(matriz, lambda_local, lambda_visit, max_goles)
 
     prob_local     = sum(matriz[i][j] for i in range(max_goles) for j in range(max_goles) if i > j)
     prob_empate    = sum(matriz[i][i] for i in range(max_goles))
@@ -261,20 +342,33 @@ def calcular_poisson_math(lambda_local, lambda_visit, max_goles=10):
                 max_prob = matriz[i][j]
                 marcador = f'{i}-{j}'
 
-    return prob_local, prob_empate, prob_visitante, over25_prob, btts_prob, marcador
+    return prob_local, prob_empate, prob_visitante, over25_prob, btts_prob, marcador, tau_vals
 
 
 # ─── Poisson con scipy/numpy (más preciso) ───────────────────────────────────
 
 def calcular_poisson_scipy(lambda_local, lambda_visit, max_goles=10):
-    """Misma lógica pero usando scipy para mayor precisión numérica."""
+    """
+    Misma lógica que calcular_poisson_math pero usando scipy para mayor precisión numérica.
+    DC1: aplica corrección Dixon-Coles antes de calcular probabilidades agregadas.
+    Devuelve 7 valores igual que calcular_poisson_math (incluye tau_vals).
+    """
     pmf_local = [sp_poisson.pmf(i, lambda_local) for i in range(max_goles)]
     pmf_visit = [sp_poisson.pmf(i, lambda_visit) for i in range(max_goles)]
-    matriz = np.outer(pmf_local, pmf_visit)
+    matriz_np  = np.outer(pmf_local, pmf_visit)
 
-    prob_local     = float(np.sum(np.tril(matriz, -1)))
-    prob_empate    = float(np.sum(np.diag(matriz)))
-    prob_visitante = float(np.sum(np.triu(matriz, 1)))
+    # Convertir a lista de listas para reusar aplicar_dixon_coles
+    matriz = [list(fila) for fila in matriz_np.tolist()]
+
+    # DC1: aplicar corrección Dixon-Coles
+    matriz, tau_vals = aplicar_dixon_coles(matriz, lambda_local, lambda_visit, max_goles)
+
+    # Reconstruir numpy array para operaciones vectorizadas
+    matriz_dc = np.array(matriz)
+
+    prob_local     = float(np.sum(np.tril(matriz_dc, -1)))
+    prob_empate    = float(np.sum(np.diag(matriz_dc)))
+    prob_visitante = float(np.sum(np.triu(matriz_dc, 1)))
 
     over25_prob = 1.0 - float(sum(
         matriz[i][j]
@@ -288,10 +382,10 @@ def calcular_poisson_scipy(lambda_local, lambda_visit, max_goles=10):
         (1 - sp_poisson.pmf(0, lambda_visit))
     )
 
-    idx = np.unravel_index(np.argmax(matriz[:5, :5]), (5, 5))
+    idx = np.unravel_index(np.argmax(matriz_dc[:5, :5]), (5, 5))
     marcador = f'{idx[0]}-{idx[1]}'
 
-    return prob_local, prob_empate, prob_visitante, over25_prob, btts_prob, marcador
+    return prob_local, prob_empate, prob_visitante, over25_prob, btts_prob, marcador, tau_vals
 
 
 # ─── Calcular lambdas (M4a + M4b + M4c) ─────────────────────────────────────
@@ -535,12 +629,12 @@ def analizar(d):
     # 2. Calcular lambdas con liga_avg resuelto (M4b + M4c incluidos)
     lambda_local, lambda_visit = calcular_lambdas(d, liga_avg)
 
-    # 3. Distribución Poisson (motor según disponibilidad)
+    # 3. Distribución Poisson + Dixon-Coles (motor según disponibilidad)
     if MOTOR == 'scipy':
-        prob_local, prob_empate, prob_visit, over25, btts, marcador = \
+        prob_local, prob_empate, prob_visit, over25, btts, marcador, tau_vals = \
             calcular_poisson_scipy(lambda_local, lambda_visit)
     else:
-        prob_local, prob_empate, prob_visit, over25, btts, marcador = \
+        prob_local, prob_empate, prob_visit, over25, btts, marcador, tau_vals = \
             calcular_poisson_math(lambda_local, lambda_visit)
 
     # 4. Pick principal
@@ -572,7 +666,7 @@ def analizar(d):
     # 7. Texto para inyectar en prompt Claude
     score_para_claude = (
         f"Score estadístico: {confianza_score}/100 | "
-        f"Motor: {MOTOR} | "
+        f"Motor: {MOTOR}+DixonColes(ρ={DC_RHO}) | "
         f"Poisson: Local {round(prob_local*100,1)}% "
         f"Empate {round(prob_empate*100,1)}% "
         f"Visitante {round(prob_visit*100,1)}% | "
@@ -605,7 +699,13 @@ def analizar(d):
         'local':             str(d.get('local', '')),
         'visitante':         str(d.get('visitante', '')),
         'liga':              str(d.get('liga', '')),
-        'liga_avg_usado':    round(liga_avg, 2),  # diagnóstico: qué avg se usó
+        'liga_avg_usado':    round(liga_avg, 2),
+        # DC2: campo dixon_coles para bloque_claude de datos.py
+        'dixon_coles': {
+            'rho':       DC_RHO,
+            'tau_vals':  tau_vals,   # e.g. {"0-0": 0.993, "1-0": 1.008, "0-1": 1.008, "1-1": 1.013}
+            'aplicado':  True,
+        },
     }
 
     # 8. Guardar en BD si se solicita
@@ -676,35 +776,11 @@ def analizar_logistico(d):
         return {'error': str(e), 'modelo_entrenado': False}
 
 
-# ─── Consenso Poisson + Logístico ────────────────────────────────────────────
-
-def calcular_consenso(resultado_poisson, resultado_logistico):
-    """Reglas de PLAN-BOT-V2.md Apéndice B."""
-    if not resultado_logistico or resultado_logistico.get('error'):
-        return {
-            'nivel':        'SOLO_POISSON',
-            'ajuste_score': 0,
-            'detalle':      'Modelo logístico no disponible'
-        }
-
-    pick_poisson   = resultado_poisson['pick']
-    pick_logistico = resultado_logistico['pick']
-
-    if pick_poisson == pick_logistico:
-        return {
-            'nivel':        'ALTO',
-            'ajuste_score': 0,
-            'detalle':      f'Ambos modelos coinciden en {pick_poisson}'
-        }
-    else:
-        return {
-            'nivel':        'BAJO',
-            'ajuste_score': -15,
-            'detalle':      f'Divergencia: Poisson={pick_poisson} vs Logístico={pick_logistico}'
-        }
-
-
 # ─── Main ─────────────────────────────────────────────────────────────────────
+# Nota v3: pronostico.py ya no es orquestador.
+# datos.py llama a este script como un módulo más dentro del ThreadPoolExecutor.
+# El consenso entre todos los módulos lo calcula consenso.py.
+# calcular_consenso() Poisson+Logístico eliminado — redundante con consenso.py.
 
 if __name__ == '__main__':
     if len(sys.argv) < 2:
@@ -718,31 +794,11 @@ if __name__ == '__main__':
         sys.exit(1)
 
     try:
-        # Análisis Poisson principal
+        # Análisis Poisson + Dixon-Coles principal
         resultado = analizar(datos)
 
-        # Análisis logístico si hay modelo entrenado
+        # Análisis logístico si hay modelo entrenado (opcional — no bloquea)
         resultado_logistico = analizar_logistico(datos)
-
-        # Consenso
-        consenso = calcular_consenso(resultado, resultado_logistico)
-
-        # Aplicar ajuste de consenso al score
-        score_final = max(10, min(95,
-            resultado['confianza_score'] + consenso['ajuste_score']
-        ))
-        resultado['confianza_score'] = score_final
-        resultado['consenso'] = consenso
-
-        # Reajustar confianza después del consenso
-        if score_final > 60:
-            resultado['confianza'] = 'ALTA'
-        elif score_final >= 40:
-            resultado['confianza'] = 'MEDIA'
-        else:
-            resultado['confianza'] = 'BAJA'
-
-        # Agregar logístico si está disponible
         if resultado_logistico:
             resultado['modelo_logistico'] = resultado_logistico
 

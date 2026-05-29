@@ -23,7 +23,7 @@
 #    (Node 22) — n8n usa Node 20 del sistema Debian, no se toca.
 #    El shim parchea os.networkInterfaces() para Android.
 #
-#  VERSIÓN: 1.0.0 | Mayo 2026
+#  VERSIÓN: 1.1.0 | Mayo 2026
 # ============================================================
 
 TERMUX_PREFIX="/data/data/com.termux/files/usr"
@@ -81,6 +81,65 @@ cat << 'HEADER'
 HEADER
 echo -e "${NC}"
 
+# ============================================================
+# DETECCIÓN TEMPRANA DEL ROOTFS
+# Canónica por directorio — antes de cualquier otra operación.
+# Ref: ARCHITECTURE.md §3.11 — proot-distro list produce falsos negativos
+# ============================================================
+
+# Instalar proot-distro si no está disponible
+if ! command -v proot-distro &>/dev/null; then
+  info "Instalando proot-distro..."
+  pkg install proot-distro proot tmux curl wget tar xz-utils git busybox -y \
+    -o Dpkg::Options::="--force-confdef" \
+    -o Dpkg::Options::="--force-confold" || \
+    error "No se pudo instalar proot-distro."
+fi
+
+# Detección canónica: buscar cualquier distro con /bin/bash
+# NO usar proot-distro list ni login debian hardcodeado
+ROOTFS_BASE="${TERMUX_PREFIX}/var/lib/proot-distro/installed-rootfs"
+DISTRO_NAME=""
+ROOTFS_PATH=""
+_detect_rootfs() {
+  DISTRO_NAME=""
+  ROOTFS_PATH=""
+  if [ -d "$ROOTFS_BASE" ]; then
+    for _d in "$ROOTFS_BASE"/*/; do
+      _d="${_d%/}"   # quitar trailing slash
+      if [ -f "${_d}/bin/bash" ]; then
+        DISTRO_NAME=$(basename "$_d")
+        ROOTFS_PATH="$_d"
+        break
+      fi
+    done
+  fi
+}
+_detect_rootfs
+
+# ── Verificar si OpenClaw ya está instalado ──────────────────
+# Este check se hace DESPUÉS de tener DISTRO_NAME
+if [ -n "$DISTRO_NAME" ]; then
+  if proot-distro login "$DISTRO_NAME" -- bash -c \
+    'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"; command -v openclaw' \
+    &>/dev/null 2>&1; then
+    CL_VER=$(proot-distro login "$DISTRO_NAME" -- bash -c \
+      'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+       openclaw --version 2>/dev/null | head -1' 2>/dev/null \
+      | grep -oE '[0-9]+\.[0-9.]+' | head -1)
+    echo -e "${GREEN}  ✓ OpenClaw ya está instalado${NC}"
+    echo -e "  Versión actual: ${CYAN}${CL_VER:-?}${NC}"
+    echo ""
+    echo -n "  ¿Reinstalar/actualizar? (s/n): "
+    read -r REINSTALL < /dev/tty
+    [ "$REINSTALL" != "s" ] && [ "$REINSTALL" != "S" ] && {
+      info "Nada que hacer. Saliendo."
+      exit 0
+    }
+    rm -f "$CHECKPOINT"
+  fi
+fi
+
 echo ""
 echo "  Este script instalará OpenClaw en proot Debian:"
 echo "  ▸ NVM + Node 22 (solo para OpenClaw)"
@@ -99,37 +158,11 @@ read -r CONFIRM < /dev/tty
 
 # ============================================================
 # PASO 1 — Verificar proot-distro y rootfs Debian
-# Método canónico: detección por directorio (no proot-distro list)
-# Ref: ARCHITECTURE.md §3.11 — proot-distro list produce falsos negativos
 # ============================================================
 titulo "PASO 1 — Verificando entorno proot"
 
-# Instalar proot-distro si no está disponible
-if ! command -v proot-distro &>/dev/null; then
-  info "Instalando proot-distro..."
-  pkg install proot-distro proot tmux curl wget tar xz-utils git busybox -y \
-    -o Dpkg::Options::="--force-confdef" \
-    -o Dpkg::Options::="--force-confold" || \
-    error "No se pudo instalar proot-distro."
-fi
-
-# ── Detección canónica del rootfs por directorio ─────────────
-ROOTFS_BASE="${TERMUX_PREFIX}/var/lib/proot-distro/installed-rootfs"
-DISTRO_NAME=""
-ROOTFS_PATH=""
-if [ -d "$ROOTFS_BASE" ]; then
-  for _d in "$ROOTFS_BASE"/*/; do
-    if [ -f "${_d}bin/bash" ]; then
-      DISTRO_NAME=$(basename "$_d")
-      ROOTFS_PATH="$_d"
-      break
-    fi
-  done
-fi
-
-if [ -n "$DISTRO_NAME" ]; then
-  log "Rootfs encontrado: $DISTRO_NAME ($ROOTFS_PATH)"
-else
+# Si no hay rootfs → ofrecer instalación
+if [ -z "$DISTRO_NAME" ]; then
   warn "Rootfs Debian no encontrado en $ROOTFS_BASE"
   echo ""
   echo -e "  ${CYAN}¿Cómo instalar Debian?${NC}"
@@ -149,11 +182,16 @@ else
           -o "$HOME/restore.sh" && chmod +x "$HOME/restore.sh"
       fi
       bash "$HOME/restore.sh" --module proot-base --source github || \
-        error "Fallo la restauración del rootfs Debian"
+        error "Falló la restauración del rootfs Debian"
       ;;
     2)
       info "Instalando Debian con proot-distro..."
-      proot-distro install debian || error "No se pudo instalar Debian en proot."
+      # Verificar que no exista ya (evita "already exists")
+      if [ -d "$ROOTFS_BASE/debian" ] && [ -f "$ROOTFS_BASE/debian/bin/bash" ]; then
+        log "Rootfs debian ya existe en disco — saltando instalación"
+      else
+        proot-distro install debian || error "No se pudo instalar Debian en proot."
+      fi
       ;;
     b|B|"")
       error "Cancelado por el usuario"
@@ -163,41 +201,17 @@ else
       ;;
   esac
 
-  # Re-detectar tras instalación
-  for _d in "$ROOTFS_BASE"/*/; do
-    if [ -f "${_d}bin/bash" ]; then
-      DISTRO_NAME=$(basename "$_d")
-      ROOTFS_PATH="$_d"
-      break
-    fi
-  done
-  [ -z "$DISTRO_NAME" ] && error "Rootfs Debian no disponible tras la instalación"
+  # Re-detectar tras instalación (con sleep para esperar flush del FS)
+  sleep 2
+  _detect_rootfs
+  [ -z "$DISTRO_NAME" ] && \
+    error "Rootfs Debian no disponible tras la instalación — verifica: ls $ROOTFS_BASE"
   log "Rootfs listo: $DISTRO_NAME"
+else
+  log "Rootfs encontrado: $DISTRO_NAME ($ROOTFS_PATH)"
 fi
 
-log "proot Debian disponible: $DISTRO_NAME"
-
-# ── Verificar si OpenClaw ya está instalado ──────────────────
-# Ahora que tenemos DISTRO_NAME correcto, podemos hacer el check
-if proot-distro login "$DISTRO_NAME" -- bash -c \
-  'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"; command -v openclaw' \
-  &>/dev/null 2>&1; then
-  CL_VER=$(proot-distro login "$DISTRO_NAME" -- bash -c \
-    'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
-     openclaw --version 2>/dev/null | head -1' 2>/dev/null \
-    | grep -oE '[0-9]+\.[0-9.]+' | head -1)
-  echo ""
-  echo -e "${GREEN}  ✓ OpenClaw ya está instalado${NC}"
-  echo -e "  Versión actual: ${CYAN}${CL_VER:-?}${NC}"
-  echo ""
-  echo -n "  ¿Reinstalar/actualizar? (s/n): "
-  read -r REINSTALL < /dev/tty
-  [ "$REINSTALL" != "s" ] && [ "$REINSTALL" != "S" ] && {
-    info "Nada que hacer. Saliendo."
-    exit 0
-  }
-  rm -f "$CHECKPOINT"
-fi
+info "Usando distro: ${DISTRO_NAME}"
 
 # ============================================================
 # PASO 2 — NVM + Node 22 en proot
@@ -345,7 +359,7 @@ else
     fi
   else
     warn "Setup omitido — el gateway NO arrancará sin configuración"
-    warn "Ejecuta después: proot-distro login debian → openclaw setup --wizard"
+    warn "Ejecuta después: proot-distro login $DISTRO_NAME → openclaw setup --wizard"
     warn "O desde el menú: [1] OpenClaw → [8] Instalar/configurar"
   fi
 
@@ -394,24 +408,28 @@ if check_done "openclaw_scripts"; then
 else
   mkdir -p "$OPENCLAW_SCRIPTS"
 
+  # Capturar DISTRO_NAME para embeber en los scripts generados
+  _DN="$DISTRO_NAME"
+
   # ── openclaw_start.sh ─────────────────────────────────────
-  cat > "$OPENCLAW_SCRIPTS/openclaw_start.sh" << 'SCRIPT'
+  cat > "$OPENCLAW_SCRIPTS/openclaw_start.sh" << SCRIPT
 #!/data/data/com.termux/files/usr/bin/bash
 # Lanzador OpenClaw Gateway — termux-ai-stack
 # Arranca el gateway en background desde Termux nativo
 
-PID_FILE="$HOME/.openclaw_gateway.pid"
+PID_FILE="\$HOME/.openclaw_gateway.pid"
 PORT=18789
+DISTRO_NAME="${_DN}"
 
 # Verificar si ya está corriendo
-if curl -sf http://127.0.0.1:$PORT &>/dev/null; then
-  TOKEN=$(proot-distro login "$DISTRO_NAME" -- bash -c \
+if curl -sf http://127.0.0.1:\$PORT &>/dev/null; then
+  TOKEN=\$(proot-distro login "\$DISTRO_NAME" -- bash -c \
     "python3 -c \"import json; d=json.load(open('/root/.openclaw/openclaw.json')); print(d['gateway']['auth']['token'])\"" \
     2>/dev/null)
   echo ""
-  echo -e "\033[0;32m[OK]\033[0m Gateway ya corriendo en :${PORT}"
+  echo -e "\033[0;32m[OK]\033[0m Gateway ya corriendo en :\${PORT}"
   echo ""
-  echo -e "  URL: \033[0;36mhttp://127.0.0.1:${PORT}/#token=${TOKEN}\033[0m"
+  echo -e "  URL: \033[0;36mhttp://127.0.0.1:\${PORT}/#token=\${TOKEN}\033[0m"
   echo ""
   exit 0
 fi
@@ -422,27 +440,27 @@ echo -e "    Espera ~30-60 segundos en ARM64"
 echo ""
 
 # Lanzar en background desde Termux nativo
-proot-distro login "$DISTRO_NAME" -- bash -c \
-  'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+proot-distro login "\$DISTRO_NAME" -- bash -c \
+  'export NVM_DIR="\$HOME/.nvm"; [ -s "\$NVM_DIR/nvm.sh" ] && . "\$NVM_DIR/nvm.sh"
    export NODE_OPTIONS="--require /root/openclaw-shim.cjs"
-   openclaw gateway --bind loopback' > "$HOME/.openclaw_gateway.log" 2>&1 &
+   openclaw gateway --bind loopback' > "\$HOME/.openclaw_gateway.log" 2>&1 &
 
-echo $! > "$PID_FILE"
+echo \$! > "\$PID_FILE"
 
 # Esperar hasta que responda (máx 60s — ARM64 es lento al arrancar)
 TRIES=0
-while [ $TRIES -lt 30 ]; do
+while [ \$TRIES -lt 30 ]; do
   sleep 2
-  if curl -sf http://127.0.0.1:$PORT &>/dev/null; then
+  if curl -sf http://127.0.0.1:\$PORT &>/dev/null; then
     break
   fi
-  TRIES=$((TRIES + 1))
+  TRIES=\$((TRIES + 1))
   echo -n "."
 done
 echo ""
 
-if curl -sf http://127.0.0.1:$PORT &>/dev/null; then
-  TOKEN=$(proot-distro login "$DISTRO_NAME" -- bash -c \
+if curl -sf http://127.0.0.1:\$PORT &>/dev/null; then
+  TOKEN=\$(proot-distro login "\$DISTRO_NAME" -- bash -c \
     "python3 -c \"
 import json, sys
 try:
@@ -454,13 +472,13 @@ except Exception as e:
   echo ""
   echo -e "\033[0;32m[OK]\033[0m Gateway iniciado"
   echo ""
-  if [ -n "$TOKEN" ]; then
+  if [ -n "\$TOKEN" ]; then
     echo -e "  URL con token:"
-    echo -e "  \033[0;36mhttp://127.0.0.1:${PORT}/#token=${TOKEN}\033[0m"
+    echo -e "  \033[0;36mhttp://127.0.0.1:\${PORT}/#token=\${TOKEN}\033[0m"
     echo ""
     echo -e "  Abre la URL manualmente en Brave o Chrome"
   else
-    echo -e "  URL base: \033[0;36mhttp://127.0.0.1:${PORT}\033[0m"
+    echo -e "  URL base: \033[0;36mhttp://127.0.0.1:\${PORT}\033[0m"
     echo -e "  \033[1;33m[AVISO]\033[0m Token no encontrado — ejecuta openclaw setup --wizard"
   fi
   echo ""
@@ -475,23 +493,24 @@ SCRIPT
   log "openclaw_start.sh creado"
 
   # ── openclaw_stop.sh ──────────────────────────────────────
-  cat > "$OPENCLAW_SCRIPTS/openclaw_stop.sh" << 'SCRIPT'
+  cat > "$OPENCLAW_SCRIPTS/openclaw_stop.sh" << SCRIPT
 #!/data/data/com.termux/files/usr/bin/bash
 # Detener OpenClaw Gateway — termux-ai-stack
-PID_FILE="$HOME/.openclaw_gateway.pid"
+PID_FILE="\$HOME/.openclaw_gateway.pid"
+DISTRO_NAME="${_DN}"
 
 echo -e "\033[0;36m[+] Deteniendo OpenClaw...\033[0m"
 
 # Matar por PID guardado
-if [ -f "$PID_FILE" ]; then
-  PID=$(cat "$PID_FILE")
-  kill "$PID" 2>/dev/null && echo -e "\033[0;32m[OK]\033[0m Proceso $PID terminado"
-  rm -f "$PID_FILE"
+if [ -f "\$PID_FILE" ]; then
+  PID=\$(cat "\$PID_FILE")
+  kill "\$PID" 2>/dev/null && echo -e "\033[0;32m[OK]\033[0m Proceso \$PID terminado"
+  rm -f "\$PID_FILE"
 fi
 
 # Respaldo: pkill por nombre
 pkill -f "openclaw gateway" 2>/dev/null || true
-proot-distro login "$DISTRO_NAME" -- bash -c \
+proot-distro login "\$DISTRO_NAME" -- bash -c \
   'pkill -f "openclaw gateway" 2>/dev/null || true' 2>/dev/null || true
 
 sleep 1
@@ -506,11 +525,12 @@ SCRIPT
   log "openclaw_stop.sh creado"
 
   # ── openclaw_token.sh ─────────────────────────────────────
-  cat > "$OPENCLAW_SCRIPTS/openclaw_token.sh" << 'SCRIPT'
+  cat > "$OPENCLAW_SCRIPTS/openclaw_token.sh" << SCRIPT
 #!/data/data/com.termux/files/usr/bin/bash
 # Mostrar URL con token de OpenClaw — termux-ai-stack
 PORT=18789
-TOKEN=$(proot-distro login "$DISTRO_NAME" -- bash -c \
+DISTRO_NAME="${_DN}"
+TOKEN=\$(proot-distro login "\$DISTRO_NAME" -- bash -c \
   "python3 -c \"
 import json, sys
 try:
@@ -520,11 +540,11 @@ except Exception:
     print('')
 \"" 2>/dev/null | tr -d '[:space:]')
 
-if [ -z "$TOKEN" ]; then
+if [ -z "\$TOKEN" ]; then
   echo ""
   echo -e "\033[0;31m[ERROR]\033[0m Token no encontrado"
   echo "  OpenClaw necesita configuración inicial."
-  echo "  Ejecuta: proot-distro login debian"
+  echo "  Ejecuta: proot-distro login \$DISTRO_NAME"
   echo "  Luego:   openclaw setup --wizard"
   echo ""
   exit 1
@@ -532,7 +552,7 @@ fi
 
 echo ""
 echo -e "  URL con token:"
-echo -e "  \033[0;36mhttp://127.0.0.1:${PORT}/#token=${TOKEN}\033[0m"
+echo -e "  \033[0;36mhttp://127.0.0.1:\${PORT}/#token=\${TOKEN}\033[0m"
 echo ""
 
 echo "  Copia la URL y ábrela en Brave o Chrome"
@@ -557,7 +577,8 @@ else
   grep -v "openclaw-start\|openclaw-stop\|openclaw-status\|openclaw-token\|openclaw-tui\|# OpenClaw" \
     "$BASHRC" > "$BASHRC.tmp" 2>/dev/null && mv "$BASHRC.tmp" "$BASHRC"
 
-  cat >> "$BASHRC" << 'ALIASES'
+  # DISTRO_NAME se expande aquí (fuera del heredoc con comillas simples)
+  cat >> "$BASHRC" << ALIASES
 
 # ════════════════════════════════
 #  OpenClaw · aliases Termux
@@ -566,9 +587,8 @@ alias openclaw-start='bash ~/scripts/openclaw/openclaw_start.sh'
 alias openclaw-stop='bash ~/scripts/openclaw/openclaw_stop.sh'
 alias openclaw-token='bash ~/scripts/openclaw/openclaw_token.sh'
 alias openclaw-status='curl -sf http://127.0.0.1:18789 &>/dev/null && echo "OpenClaw activo :18789" || echo "OpenClaw detenido"'
+alias openclaw-tui='proot-distro login ${DISTRO_NAME} -- bash -c "source ~/.bashrc 2>/dev/null; openclaw tui"'
 ALIASES
-  # openclaw-tui necesita el nombre del distro expandido ahora
-  echo "alias openclaw-tui='proot-distro login ${DISTRO_NAME} -- bash -c \"source ~/.bashrc 2>/dev/null; openclaw tui\"'" >> "$BASHRC"
 
   log "Aliases agregados a ~/.bashrc de Termux"
   mark_done "openclaw_aliases"
@@ -603,6 +623,7 @@ echo -e "${NC}"
 echo "  Versión:  ${CL_VER_FINAL}"
 echo "  Puerto:   18789"
 echo "  Entorno:  proot Debian (Node 22 via NVM)"
+echo "  Distro:   ${DISTRO_NAME}"
 echo ""
 echo "  COMANDOS:"
 echo "  openclaw-start   → iniciar gateway + abrir browser con token"

@@ -17,7 +17,7 @@
 #    bash ~/restore.sh --module base --source local  → base desde backup local
 #
 #  REPO: https://github.com/Honkonx/termux-ai-stack
-#  VERSIÓN: 2.5.0 | Abril 2026
+#  VERSIÓN: 2.6.0 | Mayo 2026
 # ============================================================
 
 TERMUX_PREFIX="/data/data/com.termux/files/usr"
@@ -53,9 +53,12 @@ SOURCE=""
 DISTRO_NAME=""
 ROOTFS_PATH=""
 detect_distro() {
+  DISTRO_NAME=""
+  ROOTFS_PATH=""
   if [ -d "$ROOTFS_BASE" ]; then
     for d in "$ROOTFS_BASE"/*/; do
-      if [ -f "${d}bin/bash" ]; then
+      d="${d%/}"   # quitar trailing slash
+      if [ -f "${d}/bin/bash" ]; then
         DISTRO_NAME=$(basename "$d")
         ROOTFS_PATH="$d"
         return 0
@@ -104,8 +107,8 @@ parse_args() {
 
   if [ -n "$TARGET_MODULE" ]; then
     case "$TARGET_MODULE" in
-      base|claude|claude-native|expo|ollama|n8n|proot-base|proot-n8n|proot-completo|remote|opencode|openclaw|all) ;;
-      *) error "Módulo inválido: '$TARGET_MODULE'\n  Válidos: base | claude | expo | ollama | n8n | proot-base | proot-n8n | remote | opencode | openclaw | all" ;;
+      base|claude|claude-native|expo|ollama|n8n|proot-base|proot-completo|remote|opencode|openclaw|all) ;;
+      *) error "Módulo inválido: '$TARGET_MODULE'\n  Válidos: base | claude | expo | ollama | n8n | proot-base | proot-completo | remote | opencode | openclaw | all" ;;
     esac
   fi
 
@@ -215,7 +218,6 @@ menu_interactivo() {
   # ── Grupo ROOTFS ──────────────────────────────────────────
   echo -e "  ║  ${NC}${DIM}── ROOTFS ────────────────────────────${NC}${CYAN}${BOLD}  ║"
   printf  "  ║  ${NC}[6b] Debian limpio            $(_pill "part6-proot-base") ${CYAN}${BOLD}     ║\n"
-  printf  "  ║  ${NC}[6n] Debian + n8n             $(_pill "part6-proot-n8n") ${CYAN}${BOLD}     ║\n"
   printf  "  ║  ${NC}[6c] Debian completo          $(_pill "part6-proot-completo") ${CYAN}${BOLD}     ║\n"
 
   echo    "  ╠══════════════════════════════════════════╣"
@@ -237,7 +239,6 @@ menu_interactivo() {
     4)    TARGET_MODULE="ollama"         ;;
     5)    TARGET_MODULE="n8n"            ;;
     6b)   TARGET_MODULE="proot-base"     ;;
-    6n)   TARGET_MODULE="proot-n8n"      ;;
     6c)   TARGET_MODULE="proot-completo" ;;
     7)    TARGET_MODULE="remote"         ;;
     8)    TARGET_MODULE="opencode"       ;;
@@ -267,7 +268,6 @@ declare -A PART_NAMES=(
   [4v]="part4-ollama-vulkan"
   [5]="part5-n8n-data"
   [6b]="part6-proot-base"
-  [6n]="part6-proot-n8n"
   [6c]="part6-proot-completo"
   [7]="part7-remote"
   [8]="part8-opencode"
@@ -283,7 +283,6 @@ declare -A PART_LABELS=(
   [4v]="Ollama Vulkan GPU"
   [5]="n8n + cloudflared"
   [6b]="Proot Debian limpio"
-  [6n]="Proot Debian + n8n + cloudflared"
   [6c]="Proot Debian completo (n8n + OpenCode + OpenClaw)"
   [7]="Remote (SSH + Dashboard)"
   [8]="OpenCode"
@@ -806,24 +805,25 @@ restore_part5() {
   [ -z "$FILE_SIZE" ] || [ "$FILE_SIZE" -lt 1024 ] && \
     error "Archivo descargado corrupto (${FILE_SIZE:-0} bytes)"
 
-  # ── Estrategia de inyección: pipe vía stdin ──────────────────
-  # NO usamos /tmp del proot: Android 15 puede montar tmpfs
-  # independiente dentro del proot, haciendo que el archivo
-  # copiado a ${ROOTFS_PATH}/tmp/ no aparezca como /tmp/ adentro.
-  # Solución: pasar el .tar.xz directo por stdin al proot.
   info "Extrayendo n8n dentro del proot ($DISTRO_NAME) vía stdin..."
+  # NO usamos /tmp del proot: Android 15 monta tmpfs independiente dentro
+  # del contenedor — el archivo copiado a ${ROOTFS_PATH}/tmp/ no aparece
+  # como /tmp/ adentro. Solución: pasar el .tar.xz directo por stdin.
   proot-distro login "$DISTRO_NAME" -- bash -c \
     'export HOME=/root
      export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-     mkdir -p /usr/local/lib/node_modules /usr/local/bin /root/.n8n
+     mkdir -p /usr/local/lib/node_modules /usr/local/bin /usr/lib/node_modules /usr/bin /root/.n8n
      echo "[INFO] Recibiendo y extrayendo en /..."
      tar -xJf - -C / 2>/dev/null || \
        tar -xJf - -C / --ignore-failed-read 2>/dev/null || \
        { echo "[ERROR] Extraccion fallida"; exit 1; }
      [ -f /usr/local/bin/n8n ]         && chmod +x /usr/local/bin/n8n
+     [ -f /usr/bin/n8n ]               && chmod +x /usr/bin/n8n
      [ -f /usr/local/bin/cloudflared ] && chmod +x /usr/local/bin/cloudflared
      [ -f /usr/local/bin/node ]        && chmod +x /usr/local/bin/node
-     [ -f /usr/local/bin/n8n ] && echo "[OK] n8n verificado" || echo "[AVISO] n8n no encontrado en PATH"
+     [ -f /usr/bin/node ]              && chmod +x /usr/bin/node
+     [ -f /usr/local/bin/n8n ] || [ -f /usr/bin/n8n ] && \
+       echo "[OK] n8n verificado" || echo "[AVISO] n8n no encontrado en PATH"
      echo "[DONE]"' \
     < "$DOWNLOADED_FILE"
 
@@ -841,7 +841,7 @@ restore_part5() {
 # RESTORE PARTE 6 — Proot Debian
 # ════════════════════════════════════════════════════════════
 restore_part6() {
-  local PROOT_VARIANT="${1:-proot-n8n}"  # default histórico: n8n
+  local PROOT_VARIANT="${1:-proot-base}"  # default: base limpio
   titulo "PARTE 6 — Proot Debian (${PROOT_VARIANT})"
   _ensure_proot_pkg
 
@@ -987,15 +987,17 @@ restore_part8() {
   fi
 
   download_and_verify "part8-opencode"
-
-  info "Inyectando OpenCode en el rootfs existente ($DISTRO_NAME) via stdin..."
+  
+  info "Inyectando OpenCode en el rootfs existente ($DISTRO_NAME) vía stdin..."
+  # NO usamos /tmp del proot — Android 15 tmpfs independiente (ver ARCHITECTURE §3.11)
   proot-distro login "$DISTRO_NAME" -- bash -c \
     'export HOME=/root
      export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
      echo "[INFO] Extrayendo OpenCode en /..."
-     tar -xJf - -C / 2>/dev/null || \
-       tar -xJf - -C / --ignore-failed-read 2>/dev/null || \
-       { echo "[ERROR] Extraccion fallida"; exit 1; }
+     tar -xJf - -C / 2>/dev/null || tar -xJf - -C / --ignore-failed-read 2>/dev/null || {
+       echo "[ERROR] Extracción fallida"
+       exit 1
+     }
      command -v opencode >/dev/null 2>&1 && echo "[OK] opencode verificado" || echo "[AVISO] opencode no encontrado en PATH"
      echo "[DONE]"' \
     < "$DOWNLOADED_FILE"
@@ -1035,24 +1037,25 @@ restore_part9() {
   fi
 
   download_and_verify "part9-openclaw"
-
-  info "Inyectando OpenClaw en el rootfs existente ($DISTRO_NAME) via stdin..."
+  
+  info "Inyectando OpenClaw en el rootfs existente ($DISTRO_NAME) vía stdin..."
+  # NO usamos /tmp del proot — Android 15 tmpfs independiente (ver ARCHITECTURE §3.11)
   proot-distro login "$DISTRO_NAME" -- bash -c \
     'export HOME=/root
      export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
      echo "[INFO] Extrayendo OpenClaw en /..."
      tar -xJf - -C / 2>/dev/null || \
        tar -xJf - -C / --ignore-failed-read 2>/dev/null || \
-       { echo "[ERROR] Extraccion fallida"; exit 1; }
+       { echo "[ERROR] Extracción fallida"; exit 1; }
      export NVM_DIR="$HOME/.nvm"
-     [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+     [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
      if ! grep -q "NVM_DIR" /root/.bashrc 2>/dev/null; then
        echo "" >> /root/.bashrc
        echo "export NVM_DIR=\"\$HOME/.nvm\"" >> /root/.bashrc
        echo "[ -s \"\$NVM_DIR/nvm.sh\" ] && \\. \"\$NVM_DIR/nvm.sh\"" >> /root/.bashrc
        echo "[INFO] NVM agregado a .bashrc"
      fi
-     command -v openclaw >/dev/null 2>&1 && echo "[OK] openclaw verificado" || echo "[AVISO] openclaw no en PATH — puede necesitar reiniciar sesion proot"
+     command -v openclaw &>/dev/null && echo "[OK] openclaw verificado" || echo "[AVISO] openclaw no en PATH — puede necesitar reiniciar sesión proot"
      echo "[DONE]"' \
     < "$DOWNLOADED_FILE"
 
@@ -1079,7 +1082,6 @@ run_restore() {
     ollama)          restore_part4 ;;
     n8n)             restore_part5 ;;
     proot-base)      restore_part6 "part6-proot-base"      ;;
-    proot-n8n)       restore_part6 "part6-proot-n8n"       ;;
     proot-completo)  restore_part6 "part6-proot-completo"  ;;
     remote)          restore_part7 ;;
     opencode)        restore_part8 ;;
@@ -1090,7 +1092,7 @@ run_restore() {
       restore_part3
       restore_part4
       restore_part5
-      restore_part6 "part6-proot-n8n"
+      restore_part6 "part6-proot-completo"
       restore_part7
       restore_part8
       restore_part9

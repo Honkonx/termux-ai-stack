@@ -28,7 +28,7 @@
 #    ❌ Claude Code    → usar install_claude.sh
 #    ❌ Ollama         → usar install_ollama.sh
 #
-#  VERSIÓN: 2.5.0 | Abril 2026
+#  VERSIÓN: 2.6.0 | Mayo 2026
 # ============================================================
 
 TERMUX_PREFIX="/data/data/com.termux/files/usr"
@@ -94,33 +94,43 @@ cat << 'HEADER'
 HEADER
 echo -e "${NC}"
 
-# ── Detección temprana de rootfs (para check ya-instalado) ───
-# Canónica por directorio — proot-distro list produce falsos negativos
-_ROOTFS_BASE_EARLY="$TERMUX_PREFIX/var/lib/proot-distro/installed-rootfs"
-_DISTRO_EARLY=""
-if [ -d "$_ROOTFS_BASE_EARLY" ]; then
-  for _de in "$_ROOTFS_BASE_EARLY"/*/; do
-    if [ -f "${_de}bin/bash" ]; then
-      _DISTRO_EARLY=$(basename "$_de"); break
-    fi
-  done
-fi
-unset _de
+# ── Detección canónica del rootfs ────────────────────────────
+# Función reutilizable — NO usar proot-distro list (falsos negativos)
+# Ref: ARCHITECTURE.md §3.11
+ROOTFS_BASE="$TERMUX_PREFIX/var/lib/proot-distro/installed-rootfs"
+DISTRO_NAME=""
+ROOTFS_PATH=""
+_detect_rootfs() {
+  DISTRO_NAME=""
+  ROOTFS_PATH=""
+  if [ -d "$ROOTFS_BASE" ]; then
+    for _d in "$ROOTFS_BASE"/*/; do
+      _d="${_d%/}"   # quitar trailing slash
+      if [ -f "${_d}/bin/bash" ]; then
+        DISTRO_NAME=$(basename "$_d")
+        ROOTFS_PATH="$_d"
+        break
+      fi
+    done
+  fi
+}
+_detect_rootfs
 
 # ── Verificar si ya está instalado ───────────────────────────
 N8N_INSTALLED=false
-if [ -n "$_DISTRO_EARLY" ]; then
-  if proot-distro login "$_DISTRO_EARLY" -- bash -c 'command -v n8n' &>/dev/null 2>&1; then
+if [ -n "$DISTRO_NAME" ]; then
+  if proot-distro login "$DISTRO_NAME" -- bash -c 'command -v n8n' &>/dev/null 2>&1; then
     N8N_INSTALLED=true
   fi
 fi
 
 if [ "$N8N_INSTALLED" = true ]; then
-  N8N_VER=$(proot-distro login "$_DISTRO_EARLY" -- bash -c 'n8n --version 2>/dev/null' 2>/dev/null | head -1)
+  N8N_VER=$(proot-distro login "$DISTRO_NAME" -- bash -c 'n8n --version 2>/dev/null' 2>/dev/null | head -1)
   echo -e "${GREEN}  ✓ n8n ya está instalado${NC}"
   echo -e "  Versión actual: ${CYAN}${N8N_VER}${NC}"
   echo ""
-  read -r -p "  ¿Reinstalar/actualizar? (s/n): " REINSTALL
+  echo -n "  ¿Reinstalar/actualizar? (s/n): "
+  read -r REINSTALL < /dev/tty
   [ "$REINSTALL" != "s" ] && [ "$REINSTALL" != "S" ] && {
     info "Nada que hacer. Saliendo."
     exit 0
@@ -135,9 +145,11 @@ if [ -f "$CHECKPOINT" ] && [ -s "$CHECKPOINT" ]; then
     echo -e "  ${GREEN}✓${NC} $line"
   done < "$CHECKPOINT"
   echo ""
-  read -r -p "  ¿Continuar desde donde quedó? (s/n): " CONT
+  echo -n "  ¿Continuar desde donde quedó? (s/n): "
+  read -r CONT < /dev/tty
   [ "$CONT" != "s" ] && [ "$CONT" != "S" ] && {
-    read -r -p "  ¿Reiniciar desde cero? (s/n): " RESET
+    echo -n "  ¿Reiniciar desde cero? (s/n): "
+    read -r RESET < /dev/tty
     [ "$RESET" = "s" ] || [ "$RESET" = "S" ] && rm -f "$CHECKPOINT"
   }
   echo ""
@@ -175,7 +187,7 @@ else
   echo "  [q] Cancelar"
   echo ""
   echo -n "  Opción (1/2/3/4/q): "
-  read -r INSTALL_MODE
+  read -r INSTALL_MODE < /dev/tty
   echo ""
 fi
 
@@ -346,7 +358,8 @@ else
   echo "  B) Con cuenta Cloudflare → URL fija permanente (gratis)"
   echo "     cloudflare.com → Zero Trust → Networks → Tunnels → Create tunnel"
   echo ""
-  read -r -p "  Token cloudflared (ENTER para URL temporal): " CF_TOKEN
+  echo -n "  Token cloudflared (ENTER para URL temporal): "
+  read -r CF_TOKEN < /dev/tty
   echo ""
 
   if [ -n "$CF_TOKEN" ]; then
@@ -367,31 +380,17 @@ fi
 # ============================================================
 titulo "PASO 3 — Instalando Debian Bookworm"
 
-# ── Detección canónica del rootfs ────────────────────────────
-_ROOTFS_BASE="$TERMUX_PREFIX/var/lib/proot-distro/installed-rootfs"
-DISTRO_NAME=""
-ROOTFS_PATH=""
-if [ -d "$_ROOTFS_BASE" ]; then
-  for _d in "$_ROOTFS_BASE"/*/; do
-    if [ -f "${_d}bin/bash" ]; then
-      DISTRO_NAME=$(basename "$_d")
-      ROOTFS_PATH="$_d"
-      break
-    fi
-  done
-fi
-unset _d
+# ── Detección canónica PASO 3 (re-usar función) ──────────────
+_detect_rootfs
 
 if [ "${CLEAN_ROOTFS:-true}" = "false" ]; then
   log "Rootfs instalado desde GitHub en paso anterior [skip]"
-  # DISTRO_NAME ya debería estar detectado — si no, re-detectar
-  [ -z "$DISTRO_NAME" ] && error "Rootfs no encontrado tras restore — verifica con: ls $_ROOTFS_BASE"
+  [ -z "$DISTRO_NAME" ] && error "Rootfs no encontrado tras restore — verifica con: ls $ROOTFS_BASE"
 elif check_done "debian_install"; then
   log "Debian ya instalado [checkpoint]"
-  [ -z "$DISTRO_NAME" ] && error "Checkpoint activo pero rootfs no encontrado en $_ROOTFS_BASE"
+  [ -z "$DISTRO_NAME" ] && error "Checkpoint activo pero rootfs no encontrado en $ROOTFS_BASE"
 else
   if [ -n "$DISTRO_NAME" ]; then
-    # Rootfs ya existe — nunca reinstalar
     log "Rootfs ya existe en disco — saltando instalación"
     log "Distro: $DISTRO_NAME  Ruta: $ROOTFS_PATH"
   else
@@ -401,23 +400,15 @@ else
     echo -e "  ${YELLOW}Mantén la pantalla encendida. Puede tardar 5-15 min.${NC}"
     echo ""
 
-    # Una sola llamada a proot-distro install — sin pre-descarga manual
-    # (la pre-descarga + proot-distro install causaba doble extracción)
     info "Ejecutando: proot-distro install debian"
     proot-distro install debian || error "Falló instalación de Debian"
 
-    # Re-detectar tras instalación
-    for _d in "$_ROOTFS_BASE"/*/; do
-      if [ -f "${_d}bin/bash" ]; then
-        DISTRO_NAME=$(basename "$_d")
-        ROOTFS_PATH="$_d"
-        break
-      fi
-    done
-    unset _d
+    # Re-detectar tras instalación (sleep 2: esperar flush del FS)
+    sleep 2
+    _detect_rootfs
 
     [ -z "$DISTRO_NAME" ] && \
-      error "Rootfs Debian no encontrado tras la instalación — revisa: ls $_ROOTFS_BASE"
+      error "Rootfs Debian no encontrado tras la instalación — revisa: ls $ROOTFS_BASE"
 
     log "Debian instalado: $DISTRO_NAME ($ROOTFS_PATH)"
   fi
@@ -559,7 +550,7 @@ N8N_CMD="\${N8N_CMD} && n8n start"
 
 [ -n "\$WEBHOOK_URL_CFG" ] && echo "[*] Webhook URL: \$WEBHOOK_URL_CFG"
 tmux send-keys -t "\$SESSION:n8n" \
-  "proot-distro login "$DISTRO_NAME" -- bash -c '\${N8N_CMD}'" Enter
+  "proot-distro login \"\$DISTRO_NAME\" -- bash -c '\${N8N_CMD}'" Enter
 
 echo "[*] Esperando que n8n inicie (35 seg)..."
 sleep 35
@@ -572,10 +563,10 @@ tmux new-window -t "\$SESSION" -n "tunnel"
 if [ -f "\$HOME/.cf_token" ]; then
   CF_TOK=\$(cat "\$HOME/.cf_token")
   tmux send-keys -t "\$SESSION:tunnel" \
-    "proot-distro login "$DISTRO_NAME" -- bash -c 'cloudflared tunnel --no-autoupdate run --token \${CF_TOK} 2>&1 | tee /root/cf_url.log'" Enter
+    "proot-distro login \"\$DISTRO_NAME\" -- bash -c 'cloudflared tunnel --no-autoupdate run --token \${CF_TOK} 2>&1 | tee /root/cf_url.log'" Enter
 else
   tmux send-keys -t "\$SESSION:tunnel" \
-    "proot-distro login "$DISTRO_NAME" -- bash -c 'cloudflared tunnel --no-autoupdate --url http://localhost:5678 2>&1 | tee /root/cf_url.log'" Enter
+    "proot-distro login \"\$DISTRO_NAME\" -- bash -c 'cloudflared tunnel --no-autoupdate --url http://localhost:5678 2>&1 | tee /root/cf_url.log'" Enter
 fi
 
 echo "[*] Obteniendo URL pública (40 seg)..."
@@ -585,7 +576,7 @@ sleep 40
 if [ -n "\$WEBHOOK_URL_CFG" ]; then
   CF_URL="\$WEBHOOK_URL_CFG"
 else
-  CF_URL=\$(proot-distro login "$DISTRO_NAME" -- bash -c \
+  CF_URL=\$(proot-distro login "\$DISTRO_NAME" -- bash -c \
     "grep -o 'https://[a-zA-Z0-9.-]*\\.trycloudflare\\.com' /root/cf_url.log 2>/dev/null | head -1" 2>/dev/null)
 fi
 
@@ -685,16 +676,16 @@ chmod +x "$N8N_SCRIPTS/n8n_update.sh"
 log "n8n_update.sh creado"
 
 # --- n8n_backup.sh ---
-cat > "$N8N_SCRIPTS/n8n_backup.sh" << 'SCRIPT'
+cat > "$N8N_SCRIPTS/n8n_backup.sh" << SCRIPT
 #!/data/data/com.termux/files/usr/bin/bash
-FECHA=$(date +%Y%m%d_%H%M)
-DESTINO="/sdcard/Download/n8n_workflows_$FECHA.tar.gz"
+FECHA=\$(date +%Y%m%d_%H%M)
+DESTINO="/sdcard/Download/n8n_workflows_\$FECHA.tar.gz"
 echo "[*] Creando backup de workflows y credenciales n8n..."
-proot-distro login "$DISTRO_NAME" -- bash -c \
-  "tar -czf /tmp/n8n_backup.tar.gz -C /root/.n8n . 2>/dev/null && echo done"
-proot-distro login "$DISTRO_NAME" -- bash -c "cat /tmp/n8n_backup.tar.gz" > "$DESTINO" 2>/dev/null
-SIZE=$(du -h "$DESTINO" 2>/dev/null | cut -f1)
-echo "[OK] Backup workflows: $DESTINO ($SIZE)"
+# Inyección via stdout — sin /tmp (noexec en Android 15)
+proot-distro login "${DISTRO_NAME}" -- bash -c \
+  'tar -czf - -C /root/.n8n . 2>/dev/null' > "\$DESTINO"
+SIZE=\$(du -h "\$DESTINO" 2>/dev/null | cut -f1)
+echo "[OK] Backup workflows: \$DESTINO (\$SIZE)"
 SCRIPT
 chmod +x "$N8N_SCRIPTS/n8n_backup.sh"
 log "n8n_backup.sh creado"
@@ -705,7 +696,8 @@ cat > "$N8N_SCRIPTS/cf_token.sh" << 'SCRIPT'
 echo ""
 echo "  Token actual: $([ -f ~/.cf_token ] && echo 'configurado (URL fija)' || echo 'no configurado (URL temporal)')"
 echo ""
-read -r -p "  Nuevo token (ENTER para URL temporal): " TOKEN
+echo -n "  Nuevo token (ENTER para URL temporal): "
+read -r TOKEN < /dev/tty
 if [ -n "$TOKEN" ]; then
   echo "$TOKEN" > "$HOME/.cf_token"
   echo "[OK] Token guardado"
@@ -718,9 +710,9 @@ chmod +x "$N8N_SCRIPTS/cf_token.sh"
 log "cf_token.sh creado"
 
 # --- debian.sh --- (punto de entrada — va en ~/)
-cat > "$HOME/debian.sh" << 'SCRIPT'
+cat > "$HOME/debian.sh" << SCRIPT
 #!/data/data/com.termux/files/usr/bin/bash
-proot-distro login "$DISTRO_NAME"
+proot-distro login "${DISTRO_NAME}"
 SCRIPT
 chmod +x "$HOME/debian.sh"
 log "debian.sh creado"

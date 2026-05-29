@@ -22,7 +22,7 @@
 #    La interfaz TUI puede tener problemas de PTY — usar modo web.
 #    Modo web validado: opencode web --port 3000 --hostname 127.0.0.1
 #
-#  VERSIÓN: 1.1.0 | Mayo 2026
+#  VERSIÓN: 1.2.0 | Mayo 2026
 # ============================================================
 
 TERMUX_PREFIX="/data/data/com.termux/files/usr"
@@ -90,7 +90,7 @@ titulo "PASO 1 — Verificando entorno proot"
 # Instalar proot-distro si no está disponible
 if ! command -v proot-distro &>/dev/null; then
   info "Instalando proot-distro..."
-  pkg install proot-distro -y \
+  pkg install proot-distro proot tmux curl wget tar xz-utils git busybox -y \
     -o Dpkg::Options::="--force-confdef" \
     -o Dpkg::Options::="--force-confold" || \
     error "No se pudo instalar proot-distro."
@@ -101,15 +101,21 @@ fi
 ROOTFS_BASE="${TERMUX_PREFIX}/var/lib/proot-distro/installed-rootfs"
 DISTRO_NAME=""
 ROOTFS_PATH=""
-if [ -d "$ROOTFS_BASE" ]; then
-  for _d in "$ROOTFS_BASE"/*/; do
-    if [ -f "${_d}bin/bash" ]; then
-      DISTRO_NAME=$(basename "$_d")
-      ROOTFS_PATH="$_d"
-      break
-    fi
-  done
-fi
+_detect_rootfs() {
+  DISTRO_NAME=""
+  ROOTFS_PATH=""
+  if [ -d "$ROOTFS_BASE" ]; then
+    for _d in "$ROOTFS_BASE"/*/; do
+      _d="${_d%/}"   # quitar trailing slash
+      if [ -f "${_d}/bin/bash" ]; then
+        DISTRO_NAME=$(basename "$_d")
+        ROOTFS_PATH="$_d"
+        break
+      fi
+    done
+  fi
+}
+_detect_rootfs
 
 if [ -n "$DISTRO_NAME" ]; then
   log "Rootfs encontrado: $DISTRO_NAME ($ROOTFS_PATH)"
@@ -137,7 +143,12 @@ else
       ;;
     2)
       info "Instalando Debian con proot-distro..."
-      proot-distro install debian || error "No se pudo instalar Debian en proot."
+      # Verificar que no exista ya (evita "container already exists")
+      if [ -d "$ROOTFS_BASE/debian" ] && [ -f "$ROOTFS_BASE/debian/bin/bash" ]; then
+        log "Rootfs debian ya existe en disco — saltando instalación"
+      else
+        proot-distro install debian || error "No se pudo instalar Debian en proot."
+      fi
       ;;
     b|B|"")
       error "Cancelado por el usuario"
@@ -147,15 +158,11 @@ else
       ;;
   esac
 
-  # Re-detectar tras instalación
-  for _d in "$ROOTFS_BASE"/*/; do
-    if [ -f "${_d}bin/bash" ]; then
-      DISTRO_NAME=$(basename "$_d")
-      ROOTFS_PATH="$_d"
-      break
-    fi
-  done
-  [ -z "$DISTRO_NAME" ] && error "Rootfs Debian no disponible tras la instalación"
+  # Re-detectar tras instalación (sleep 2: dar tiempo al FS para flush)
+  sleep 2
+  _detect_rootfs
+  [ -z "$DISTRO_NAME" ] && \
+    error "Rootfs Debian no disponible tras la instalación — verifica: ls $ROOTFS_BASE"
   log "Rootfs listo: $DISTRO_NAME"
 fi
 
@@ -288,7 +295,7 @@ if tmux has-session -t "\$SESSION" 2>/dev/null; then
   echo -e "     URL: http://127.0.0.1:\${PORT}"
   echo -e "     ${DIM}Abre en Brave, Chrome u otro navegador${NC}"
 else
-  echo -e "${RED}[ERROR]${NC} No se pudo iniciar. Verifica con: proot-distro login debian"
+  echo -e "${RED}[ERROR]${NC} No se pudo iniciar. Verifica con: proot-distro login \$DISTRO"
 fi
 SCRIPT
   chmod +x "$OPENCODE_SCRIPTS/opencode_start.sh"
@@ -323,7 +330,7 @@ else
   grep -v "opencode-web\|opencode-stop\|opencode-status\|opencode-tui" \
     "$BASHRC" > "$BASHRC.tmp" 2>/dev/null && mv "$BASHRC.tmp" "$BASHRC"
 
-  cat >> "$BASHRC" << 'ALIASES'
+  cat >> "$BASHRC" << ALIASES
 
 # ════════════════════════════════
 #  OpenCode · aliases
@@ -331,8 +338,8 @@ else
 alias opencode-web='bash ~/scripts/opencode/opencode_start.sh'
 alias opencode-stop='bash ~/scripts/opencode/opencode_stop.sh'
 alias opencode-status='tmux has-session -t opencode 2>/dev/null && echo "OpenCode corriendo en :3000" || echo "OpenCode detenido"'
-alias opencode-tui='proot-distro login '"${DISTRO_NAME}"' -- bash -c "source ~/.bashrc 2>/dev/null; opencode"'
-alias debian='proot-distro login '"${DISTRO_NAME}"
+alias opencode-tui='proot-distro login ${DISTRO_NAME} -- bash -c "source ~/.bashrc 2>/dev/null; opencode"'
+alias debian='proot-distro login ${DISTRO_NAME}'
 ALIASES
 
   log "Aliases agregados a ~/.bashrc"

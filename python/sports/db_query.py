@@ -1,6 +1,7 @@
 #!/data/data/com.termux/files/usr/bin/python3
 """
-db_query.py v4 — Motor SQL del bot deportivo + KairosApp
+db_query.py v4.1 — Motor SQL del bot deportivo + KairosApp
+# FIXES S31: init_db syntax · actualizar_job_app dispatcher · leer_job_pendiente origen
 Ruta: /data/data/com.termux/files/home/sports/scripts/db_query.py
 
 Configuración admin:
@@ -260,6 +261,44 @@ def init_db(conn):
         CREATE INDEX IF NOT EXISTS idx_analisis_ind_partido ON analisis_individuales(partido_id);
         CREATE INDEX IF NOT EXISTS idx_cache_consenso_partido ON cache_consenso(partido_id);
 
+        -- v5: análisis por módulo — una fila por script por partido
+        -- Permite trackear winrate de cada módulo independientemente
+        -- y proveer datos_json completo para el agente IA
+        CREATE TABLE IF NOT EXISTS analisis_modulos (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            partido_id     TEXT NOT NULL,
+            job_id         TEXT,
+            modulo         TEXT NOT NULL,  -- 'poisson'|'forma'|'h2h'|'odds'|'tabla'|'externo'
+            pick           TEXT,           -- 'Local'|'Visitante'|'Empate'
+            prob_local     REAL,
+            prob_empate    REAL,
+            prob_visitante REAL,
+            score          INTEGER,        -- confianza_score del módulo (0-95)
+            confianza      TEXT,           -- 'ALTA'|'MEDIA'|'BAJA'
+            datos_json     TEXT,           -- JSON completo del módulo para agente IA
+            pick_correcto  INTEGER,        -- NULL hasta tener resultado real; 1=ok 0=falla
+            creado_en      TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_modulos_partido ON analisis_modulos(partido_id);
+        CREATE INDEX IF NOT EXISTS idx_modulos_modulo  ON analisis_modulos(modulo);
+        CREATE INDEX IF NOT EXISTS idx_modulos_job     ON analisis_modulos(job_id);
+
+        -- ── v5.1: caché fixture_id para evitar requests repetidos a api-football ─
+        -- TTL: 24h — wfb-006 consulta aquí antes de llamar a la API
+        CREATE TABLE IF NOT EXISTS fixture_id_cache (
+            match_id              TEXT PRIMARY KEY,  -- Eid de Livescore6
+            fecha                 TEXT NOT NULL,     -- YYYY-MM-DD
+            apifootball_fixture_id TEXT,
+            league_id             INTEGER,
+            season                INTEGER,
+            team_home_id          INTEGER,
+            team_away_id          INTEGER,
+            creado_en             TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_fxcache_fecha ON fixture_id_cache(fecha);
+
         -- ── v4: KairosApp ─────────────────────────────────────────────────────
 
         -- Códigos de activación (1 código = 1 usuario, no reutilizable)
@@ -317,34 +356,39 @@ def init_db(conn):
         # v4: campo origen en jobs (app vs telegram)
         ('jobs',                 'device_id_app',    'TEXT'),
     ]
-    for tabla, col, tipo in migraciones:
+    # ── Migraciones seguras: agregar columnas nuevas sin romper BD existente ──
+    # resultado_app se agrega aquí (no estaba en el schema original de jobs)
+    migraciones_extra = [
+        ('jobs', 'resultado_app', 'TEXT'),
+        # v5: módulos del motor multi-modelo en analisis_comparativo
+        ('analisis_comparativo', 'pick_h2h',              'TEXT'),
+        ('analisis_comparativo', 'pick_odds',             'TEXT'),
+        ('analisis_comparativo', 'pick_tabla',            'TEXT'),
+        ('analisis_comparativo', 'score_poisson',         'INTEGER'),
+        ('analisis_comparativo', 'score_forma',           'INTEGER'),
+        ('analisis_comparativo', 'score_h2h',             'INTEGER'),
+        ('analisis_comparativo', 'score_odds',            'INTEGER'),
+        ('analisis_comparativo', 'score_tabla',           'INTEGER'),
+        ('analisis_comparativo', 'consenso_nivel',        'TEXT'),
+        ('analisis_comparativo', 'coinciden_modulos',     'INTEGER'),
+        ('analisis_comparativo', 'total_modulos',         'INTEGER'),
+        ('analisis_comparativo', 'bloque_claude_json',    'TEXT'),
+        # v5: pronóstico externo
+        ('analisis_comparativo', 'pick_externo_score',    'REAL'),
+        ('analisis_comparativo', 'fuente_externo',        'TEXT'),
+        ('analisis_comparativo', 'pick_externo_detalle',  'TEXT'),
+        # v5: correcto por módulo (para stats granulares)
+        ('analisis_comparativo', 'pick_h2h_correcto',     'INTEGER'),
+        ('analisis_comparativo', 'pick_odds_correcto',    'INTEGER'),
+        ('analisis_comparativo', 'pick_tabla_correcto',   'INTEGER'),
+        ('analisis_comparativo', 'pick_externo_correcto', 'INTEGER'),
+    ]
+    todas_migraciones = migraciones + migraciones_extra
+    for tabla, col, tipo in todas_migraciones:
         try:
             conn.execute(f'ALTER TABLE {tabla} ADD COLUMN {col} {tipo}')
-            
-    # ── Migraciones seguras (agregar columnas si no existen) ──
-    try:
-        conn.execute("ALTER TABLE jobs ADD COLUMN resultado_app TEXT")
-        conn.commit()
-    except Exception:
-        pass  # Columna ya existe
-    try:
-        conn.execute("ALTER TABLE jobs ADD COLUMN user_id TEXT")
-        conn.commit()
-    except Exception:
-        pass
-    try:
-        conn.execute("ALTER TABLE jobs ADD COLUMN plan TEXT DEFAULT 'free'")
-        conn.commit()
-    except Exception:
-        pass
-    try:
-        conn.execute("ALTER TABLE jobs ADD COLUMN device_id_app TEXT")
-        conn.commit()
-    except Exception:
-        pass
-conn.commit()
         except Exception:
-            pass  # columna ya existe
+            pass  # columna ya existe — ignorar
 
     conn.commit()
 
@@ -704,8 +748,10 @@ def leer_job_pendiente(args):
     init_db(conn)
     row  = conn.execute(
         """SELECT job_id, match_id, fecha_partido, chat_id,
-                  COALESCE(user_id, '') AS user_id,
-                  COALESCE(plan, 'free') AS plan
+                  COALESCE(user_id, '')         AS user_id,
+                  COALESCE(plan, 'free')        AS plan,
+                  COALESCE(origen, 'telegram')  AS origen,
+                  COALESCE(device_id_app, '')   AS device_id_app
            FROM jobs WHERE status = 'pendiente'
            ORDER BY creado_en ASC LIMIT 1"""
     ).fetchone()
@@ -716,7 +762,9 @@ def leer_job_pendiente(args):
             'fecha_partido': row['fecha_partido'],
             'chat_id':       row['chat_id'],
             'user_id':       row['user_id'],
-            'plan':          row['plan']})
+            'plan':          row['plan'],
+            'origen':        row['origen'],
+            'device_id_app': row['device_id_app']})
     else:
         ok({'job_id': None})
 
@@ -1828,7 +1876,480 @@ def asignar_codigo(args):
             'mensaje': f'Código {codigo} liberado (ahora es genérico)'})
 
 
-# ─── dispatcher ───────────────────────────────────────────────────────────────
+
+# ─── v5.1: caché fixture_id ───────────────────────────────────────────────────
+
+def leer_fixture_cache(args):
+    """
+    Lee el caché de fixture_id para evitar requests repetidos a api-football.
+    Descarta entradas con más de 24h de antigüedad.
+
+    Args: { "match_id": "12345678" }
+    Returns: { "hit": true/false, "data": { ...campos } }
+    """
+    match_id = str(args.get('match_id', '')).strip()
+    if not match_id:
+        ok({'hit': False})
+        return
+
+    conn = conectar()
+    init_db(conn)
+
+    row = conn.execute("""
+        SELECT apifootball_fixture_id, league_id, season,
+               team_home_id, team_away_id, creado_en
+        FROM fixture_id_cache
+        WHERE match_id = ?
+          AND creado_en >= datetime(datetime('now'), '-24 hours')
+    """, (match_id,)).fetchone()
+    conn.close()
+
+    if not row:
+        ok({'hit': False})
+        return
+
+    ok({
+        'hit':                    True,
+        'apifootball_fixture_id': row['apifootball_fixture_id'],
+        'league_id':              row['league_id'],
+        'season':                 row['season'],
+        'team_home_id':           row['team_home_id'],
+        'team_away_id':           row['team_away_id'],
+    })
+
+
+def guardar_fixture_cache(args):
+    """
+    Guarda o actualiza el caché de fixture_id para un match_id.
+    Llamado por wfb-006 tras un lookup exitoso.
+
+    Args: {
+      "match_id": "12345678",
+      "fecha":    "2026-05-29",
+      "apifootball_fixture_id": 987654,
+      "league_id":  39,
+      "season":     2025,
+      "team_home_id": 42,
+      "team_away_id": 33
+    }
+    """
+    match_id  = str(args.get('match_id', '')).strip()
+    fecha     = str(args.get('fecha', datetime.now().strftime('%Y-%m-%d')))
+    fx_id     = args.get('apifootball_fixture_id')
+    league_id = args.get('league_id')
+    season    = args.get('season')
+    home_id   = args.get('team_home_id')
+    away_id   = args.get('team_away_id')
+
+    if not match_id or not fx_id:
+        ok({'guardado': False, 'razon': 'match_id y apifootball_fixture_id son requeridos'})
+        return
+
+    conn = conectar()
+    init_db(conn)
+
+    conn.execute("""
+        INSERT INTO fixture_id_cache
+            (match_id, fecha, apifootball_fixture_id,
+             league_id, season, team_home_id, team_away_id, creado_en)
+        VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+        ON CONFLICT(match_id) DO UPDATE SET
+            apifootball_fixture_id = excluded.apifootball_fixture_id,
+            league_id              = excluded.league_id,
+            season                 = excluded.season,
+            team_home_id           = excluded.team_home_id,
+            team_away_id           = excluded.team_away_id,
+            creado_en              = excluded.creado_en
+    """, (match_id, fecha, fx_id, league_id, season, home_id, away_id))
+
+    conn.commit()
+    conn.close()
+    ok({'guardado': True, 'match_id': match_id, 'fixture_id': fx_id})
+
+
+# ─── v5: motor multi-modelo ───────────────────────────────────────────────────
+
+def guardar_analisis_multimodelo(args):
+    """
+    v5 — Guarda en una sola transacción atómica:
+      1. Una fila en analisis_comparativo con todos los picks y scores por módulo
+      2. Una fila en analisis_modulos por cada módulo que corrió (poisson, forma, h2h, odds, tabla)
+
+    Llamado desde datos.py al final del análisis, después de consenso.py.
+
+    Args esperados:
+      partido_id       TEXT   requerido
+      job_id           TEXT
+      local            TEXT
+      visitante        TEXT
+      liga             TEXT
+      fecha            TEXT   YYYY-MM-DD (default: hoy)
+      hora_kickoff     TEXT
+
+      -- Resultado del consenso (desde consenso.py)
+      pick_final       TEXT   requerido
+      confianza        TEXT
+      score_final      INTEGER
+      consenso_nivel   TEXT
+      coinciden_modulos INTEGER
+      total_modulos     INTEGER
+
+      -- Picks y scores por módulo (todos opcionales)
+      pick_poisson     TEXT      score_poisson   INTEGER
+      pick_forma       TEXT      score_forma     INTEGER
+      pick_h2h         TEXT      score_h2h       INTEGER
+      pick_odds        TEXT      score_odds      INTEGER
+      pick_tabla       TEXT      score_tabla     INTEGER
+
+      -- Probabilidades del módulo Poisson (el más completo)
+      prob_local_py    REAL
+      prob_empate_py   REAL
+      prob_visit_py    REAL
+
+      -- Pick de Claude (si está disponible)
+      pick_claude      TEXT
+
+      -- Pronóstico externo
+      pick_externo          TEXT
+      pick_externo_score    REAL
+      fuente_externo        TEXT
+      pick_externo_detalle  TEXT
+
+      -- bloque_claude completo para el agente IA
+      bloque_claude_json TEXT
+
+      -- Datos de módulos individuales para analisis_modulos
+      modulos_data  LIST de dicts:
+        [{ "modulo": "poisson", "pick": "Local", "prob_local": 0.48,
+           "prob_empate": 0.27, "prob_visitante": 0.25, "score": 72,
+           "confianza": "ALTA", "datos_json": "{...}" }, ...]
+    """
+    partido_id = str(args.get('partido_id', ''))
+    if not partido_id:
+        error('partido_id es obligatorio')
+        return
+
+    job_id    = str(args.get('job_id', ''))
+    local     = str(args.get('local', ''))
+    visitante = str(args.get('visitante', ''))
+    liga      = str(args.get('liga', ''))
+    fecha     = str(args.get('fecha', datetime.now().strftime('%Y-%m-%d')))
+    hora_koff = str(args.get('hora_kickoff', ''))
+
+    pick_final        = str(args.get('pick_final', ''))
+    confianza         = str(args.get('confianza', ''))
+    score_final       = int(args.get('score_final', 0) or 0)
+    consenso_nivel    = str(args.get('consenso_nivel', ''))
+    coinciden_mod     = int(args.get('coinciden_modulos', 0) or 0)
+    total_mod         = int(args.get('total_modulos', 0) or 0)
+
+    # Picks por módulo
+    pick_poisson  = args.get('pick_poisson')  or args.get('pick_python')
+    pick_forma    = args.get('pick_forma')    or args.get('pick_form')
+    pick_h2h      = args.get('pick_h2h')
+    pick_odds     = args.get('pick_odds')
+    pick_tabla    = args.get('pick_tabla')
+    pick_claude   = args.get('pick_claude')
+
+    # Scores por módulo
+    score_poisson = args.get('score_poisson') or args.get('score_py')
+    score_forma   = args.get('score_forma')   or args.get('score_form')
+    score_h2h     = args.get('score_h2h')
+    score_odds    = args.get('score_odds')
+    score_tabla   = args.get('score_tabla')
+
+    # Probabilidades Poisson
+    prob_local_py  = args.get('prob_local_py',  0.0)
+    prob_empate_py = args.get('prob_empate_py', 0.0)
+    prob_visit_py  = args.get('prob_visit_py',  0.0)
+
+    # Externo
+    pick_externo         = args.get('pick_externo')
+    pick_externo_score   = args.get('pick_externo_score')
+    fuente_externo       = str(args.get('fuente_externo', ''))
+    pick_externo_detalle = args.get('pick_externo_detalle')
+    if isinstance(pick_externo_detalle, dict):
+        pick_externo_detalle = json.dumps(pick_externo_detalle, ensure_ascii=False)
+
+    # bloque_claude
+    bloque_claude_json = args.get('bloque_claude_json')
+    if isinstance(bloque_claude_json, dict):
+        bloque_claude_json = json.dumps(bloque_claude_json, ensure_ascii=False)
+
+    # Módulos individuales
+    modulos_data = args.get('modulos_data', [])
+
+    ahora = now()
+    conn  = conectar()
+    init_db(conn)
+
+    try:
+        # 1. Insertar o reemplazar en analisis_comparativo
+        conn.execute("""
+            INSERT INTO analisis_comparativo (
+                partido_id, fecha, local, visitante, liga,
+                pick_python, pick_claude, pick_externo, pick_final,
+                prob_local_py, prob_empate_py, prob_visit_py,
+                score_py, score_final, confianza,
+                pick_form, score_form,
+                pick_h2h, pick_odds, pick_tabla,
+                score_poisson, score_forma, score_h2h, score_odds, score_tabla,
+                consenso_nivel, coinciden_modulos, total_modulos,
+                pick_externo_score, fuente_externo, pick_externo_detalle,
+                bloque_claude_json,
+                hora_kickoff, fuentes_disp,
+                creado_en
+            ) VALUES (
+                ?, ?, ?, ?, ?,
+                ?, ?, ?, ?,
+                ?, ?, ?,
+                ?, ?, ?,
+                ?, ?,
+                ?, ?, ?,
+                ?, ?, ?, ?, ?,
+                ?, ?, ?,
+                ?, ?, ?,
+                ?,
+                ?, ?,
+                ?
+            )""", (
+            partido_id, fecha, local, visitante, liga,
+            pick_poisson, pick_claude, pick_externo, pick_final,
+            prob_local_py, prob_empate_py, prob_visit_py,
+            score_poisson, score_final, confianza,
+            pick_forma, score_forma,
+            pick_h2h, pick_odds, pick_tabla,
+            score_poisson, score_forma, score_h2h, score_odds, score_tabla,
+            consenso_nivel, coinciden_mod, total_mod,
+            pick_externo_score, fuente_externo or None, pick_externo_detalle,
+            bloque_claude_json,
+            hora_koff or None, total_mod,
+            ahora
+        ))
+
+        comp_id = conn.execute(
+            'SELECT last_insert_rowid() AS rid'
+        ).fetchone()['rid']
+
+        # 2. Insertar una fila en analisis_modulos por cada módulo
+        modulos_insertados = 0
+        for m in modulos_data:
+            if not isinstance(m, dict):
+                continue
+            modulo = str(m.get('modulo', ''))
+            if not modulo:
+                continue
+            datos_json_m = m.get('datos_json')
+            if isinstance(datos_json_m, dict):
+                datos_json_m = json.dumps(datos_json_m, ensure_ascii=False)
+            conn.execute("""
+                INSERT INTO analisis_modulos (
+                    partido_id, job_id, modulo,
+                    pick, prob_local, prob_empate, prob_visitante,
+                    score, confianza, datos_json,
+                    creado_en
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", (
+                partido_id, job_id or None, modulo,
+                m.get('pick'),
+                m.get('prob_local'),
+                m.get('prob_empate'),
+                m.get('prob_visitante'),
+                m.get('score'),
+                m.get('confianza'),
+                datos_json_m,
+                ahora
+            ))
+            modulos_insertados += 1
+
+        conn.commit()
+        conn.close()
+        ok({
+            'guardado':           True,
+            'partido_id':         partido_id,
+            'comparativo_id':     comp_id,
+            'modulos_insertados': modulos_insertados,
+        })
+
+    except Exception as e:
+        conn.close()
+        error(f'Error en guardar_analisis_multimodelo: {str(e)}')
+
+
+def guardar_prediccion_externa(args):
+    """
+    v5 — Guarda el pronóstico de API-Football (u otra fuente externa)
+    como una fila en la tabla predicciones con fuente='api_football_predictions'.
+
+    También actualiza pick_externo / pick_externo_score en analisis_comparativo
+    si ya existe una fila para ese partido_id.
+
+    Args:
+      partido_id       TEXT  requerido
+      pick             TEXT  'Local'|'Visitante'|'Empate'
+      confianza_pct    REAL  porcentaje de confianza que da la fuente (ej: 68.5)
+      fuente           TEXT  'api_football'|'forebet' (default: 'api_football')
+      detalle_json     TEXT/dict  respuesta completa de la API
+      job_id           TEXT
+    """
+    partido_id    = str(args.get('partido_id', ''))
+    if not partido_id:
+        error('partido_id es obligatorio')
+        return
+
+    pick          = str(args.get('pick', ''))
+    confianza_pct = float(args.get('confianza_pct', 0.0) or 0.0)
+    fuente        = str(args.get('fuente', 'api_football'))
+    job_id        = str(args.get('job_id', ''))
+    detalle       = args.get('detalle_json', {})
+    if isinstance(detalle, dict):
+        detalle = json.dumps(detalle, ensure_ascii=False)
+
+    # Determinar confianza textual
+    if confianza_pct >= 65:
+        confianza_txt = 'ALTA'
+    elif confianza_pct >= 45:
+        confianza_txt = 'MEDIA'
+    else:
+        confianza_txt = 'BAJA'
+
+    razonamiento = (
+        f"Fuente: {fuente} | Pick: {pick} | Confianza: {confianza_pct}%"
+    )
+
+    ahora = now()
+    conn  = conectar()
+    init_db(conn)
+
+    try:
+        # 1. Guardar en predicciones (tabla genérica de picks por fuente)
+        conn.execute("""
+            INSERT INTO predicciones
+               (partido_id, fuente, pick, confianza, confianza_score,
+                razonamiento, texto_completo, creado_en)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""", (
+            partido_id,
+            f'{fuente}_predictions',
+            pick,
+            confianza_txt,
+            int(confianza_pct),
+            razonamiento,
+            detalle,
+            ahora
+        ))
+
+        # 2. Actualizar pick_externo en analisis_comparativo si existe
+        conn.execute("""
+            UPDATE analisis_comparativo
+            SET pick_externo         = ?,
+                pick_externo_score   = ?,
+                fuente_externo       = ?,
+                pick_externo_detalle = ?
+            WHERE partido_id = ?""", (
+            pick,
+            confianza_pct,
+            fuente,
+            detalle,
+            partido_id
+        ))
+
+        conn.commit()
+        conn.close()
+        ok({
+            'guardado':    True,
+            'partido_id':  partido_id,
+            'pick':        pick,
+            'confianza':   confianza_txt,
+            'fuente':      fuente,
+        })
+
+    except Exception as e:
+        conn.close()
+        error(f'Error en guardar_prediccion_externa: {str(e)}')
+
+
+def leer_stats_modulos(args):
+    """
+    v5 — Winrate desglosado por módulo del motor multi-modelo.
+    Amplía leer_aciertos_por_fuente() con h2h, odds, tabla y externo.
+
+    Args:
+      fecha      TEXT  YYYY-MM-DD (default: hoy)
+      fecha_fin  TEXT  YYYY-MM-DD (default: = fecha)
+      dias       INT   alternativa: últimos N días
+    """
+    dias      = int(args.get('dias', 0) or 0)
+    fecha     = str(args.get('fecha', ''))
+    fecha_fin = str(args.get('fecha_fin', fecha))
+
+    if dias > 0:
+        fecha     = (datetime.now() - timedelta(days=dias)).strftime('%Y-%m-%d')
+        fecha_fin = datetime.now().strftime('%Y-%m-%d')
+    elif not fecha:
+        fecha = fecha_fin = datetime.now().strftime('%Y-%m-%d')
+
+    conn = conectar()
+    init_db(conn)
+
+    # Stats desde analisis_comparativo (nivel partido)
+    row = conn.execute("""
+        SELECT
+          COUNT(*) AS total,
+          -- Global
+          SUM(CASE WHEN pick_correcto         = 1 THEN 1 ELSE 0 END) AS ok_final,
+          -- Módulos individuales
+          SUM(CASE WHEN pick_python_correcto  = 1 THEN 1 ELSE 0 END) AS ok_poisson,
+          SUM(CASE WHEN pick_form_correcto    = 1 THEN 1 ELSE 0 END) AS ok_forma,
+          SUM(CASE WHEN pick_h2h_correcto     = 1 THEN 1 ELSE 0 END) AS ok_h2h,
+          SUM(CASE WHEN pick_odds_correcto    = 1 THEN 1 ELSE 0 END) AS ok_odds,
+          SUM(CASE WHEN pick_tabla_correcto   = 1 THEN 1 ELSE 0 END) AS ok_tabla,
+          SUM(CASE WHEN pick_claude_correcto  = 1 THEN 1 ELSE 0 END) AS ok_claude,
+          SUM(CASE WHEN pick_externo_correcto = 1 THEN 1 ELSE 0 END) AS ok_externo,
+          -- Totales por módulo (cuántos partidos tuvo ese módulo)
+          SUM(CASE WHEN pick_python_correcto  IS NOT NULL THEN 1 ELSE 0 END) AS tot_poisson,
+          SUM(CASE WHEN pick_form_correcto    IS NOT NULL THEN 1 ELSE 0 END) AS tot_forma,
+          SUM(CASE WHEN pick_h2h_correcto     IS NOT NULL THEN 1 ELSE 0 END) AS tot_h2h,
+          SUM(CASE WHEN pick_odds_correcto    IS NOT NULL THEN 1 ELSE 0 END) AS tot_odds,
+          SUM(CASE WHEN pick_tabla_correcto   IS NOT NULL THEN 1 ELSE 0 END) AS tot_tabla,
+          SUM(CASE WHEN pick_claude_correcto  IS NOT NULL THEN 1 ELSE 0 END) AS tot_claude,
+          SUM(CASE WHEN pick_externo_correcto IS NOT NULL THEN 1 ELSE 0 END) AS tot_externo,
+          -- Consenso breakdown
+          SUM(CASE WHEN consenso_nivel = 'FUERTE'   AND pick_correcto = 1 THEN 1 ELSE 0 END) AS ok_fuerte,
+          SUM(CASE WHEN consenso_nivel = 'FUERTE'   THEN 1 ELSE 0 END) AS tot_fuerte,
+          SUM(CASE WHEN consenso_nivel = 'MODERADO' AND pick_correcto = 1 THEN 1 ELSE 0 END) AS ok_moderado,
+          SUM(CASE WHEN consenso_nivel = 'MODERADO' THEN 1 ELSE 0 END) AS tot_moderado,
+          SUM(CASE WHEN consenso_nivel = 'DEBIL'    AND pick_correcto = 1 THEN 1 ELSE 0 END) AS ok_debil,
+          SUM(CASE WHEN consenso_nivel = 'DEBIL'    THEN 1 ELSE 0 END) AS tot_debil
+        FROM analisis_comparativo
+        WHERE fecha BETWEEN ? AND ?
+          AND resultado_real IS NOT NULL
+          AND resultado_real != 'CANC'
+    """, (fecha, fecha_fin)).fetchone()
+
+    conn.close()
+
+    def wr(ok_val, tot):
+        if tot and tot > 0:
+            return round((ok_val or 0) / tot * 100, 1)
+        return None
+
+    total = row['total'] or 0
+
+    ok({
+        'periodo':  {'desde': fecha, 'hasta': fecha_fin, 'total_partidos': total},
+        'final':    {'ok': row['ok_final']   or 0, 'total': total,             'winrate': wr(row['ok_final'],   total)},
+        'poisson':  {'ok': row['ok_poisson'] or 0, 'total': row['tot_poisson'] or 0, 'winrate': wr(row['ok_poisson'], row['tot_poisson'])},
+        'forma':    {'ok': row['ok_forma']   or 0, 'total': row['tot_forma']   or 0, 'winrate': wr(row['ok_forma'],   row['tot_forma'])},
+        'h2h':      {'ok': row['ok_h2h']     or 0, 'total': row['tot_h2h']     or 0, 'winrate': wr(row['ok_h2h'],     row['tot_h2h'])},
+        'odds':     {'ok': row['ok_odds']    or 0, 'total': row['tot_odds']    or 0, 'winrate': wr(row['ok_odds'],    row['tot_odds'])},
+        'tabla':    {'ok': row['ok_tabla']   or 0, 'total': row['tot_tabla']   or 0, 'winrate': wr(row['ok_tabla'],   row['tot_tabla'])},
+        'claude':   {'ok': row['ok_claude']  or 0, 'total': row['tot_claude']  or 0, 'winrate': wr(row['ok_claude'],  row['tot_claude'])},
+        'externo':  {'ok': row['ok_externo'] or 0, 'total': row['tot_externo'] or 0, 'winrate': wr(row['ok_externo'], row['tot_externo'])},
+        'consenso': {
+            'fuerte':   {'ok': row['ok_fuerte']   or 0, 'total': row['tot_fuerte']   or 0, 'winrate': wr(row['ok_fuerte'],   row['tot_fuerte'])},
+            'moderado': {'ok': row['ok_moderado'] or 0, 'total': row['tot_moderado'] or 0, 'winrate': wr(row['ok_moderado'], row['tot_moderado'])},
+            'debil':    {'ok': row['ok_debil']    or 0, 'total': row['tot_debil']    or 0, 'winrate': wr(row['ok_debil'],    row['tot_debil'])},
+        },
+    })
 
 OPERACIONES = {
     # v1/v2
@@ -1844,6 +2365,7 @@ OPERACIONES = {
     'guardar_prediccion':         guardar_prediccion,
     'guardar_cache':              guardar_cache,
     'actualizar_job':             actualizar_job,
+    'actualizar_job_app':         actualizar_job_app,
     'verificar_limite':           verificar_limite,
     'guardar_comparativo':        guardar_comparativo,
     # v3
@@ -1867,6 +2389,13 @@ OPERACIONES = {
     'activar_codigo':             activar_codigo,
     'listar_codigos':             listar_codigos,
     'asignar_codigo':             asignar_codigo,
+    # v5 — motor multi-modelo + externo
+    'guardar_analisis_multimodelo': guardar_analisis_multimodelo,
+    'guardar_prediccion_externa':   guardar_prediccion_externa,
+    'leer_stats_modulos':           leer_stats_modulos,
+    # v5.1 — caché fixture_id
+    'leer_fixture_cache':           leer_fixture_cache,
+    'guardar_fixture_cache':        guardar_fixture_cache,
 }
 
 if __name__ == '__main__':

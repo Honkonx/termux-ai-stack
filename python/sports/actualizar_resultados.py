@@ -192,6 +192,19 @@ def guardar_resultado_db(fixture_id, local, visitante, liga,
             (1 if acierto else 0, row['id'])
         )
 
+    # 4) analisis_modulos — cerrar pick_correcto por módulo (poisson, h2h, odds, tabla, etc.)
+    rows_mod = conn.execute(
+        'SELECT id, pick FROM analisis_modulos WHERE partido_id = ? AND pick_correcto IS NULL',
+        (fixture_id,)
+    ).fetchall()
+
+    for row in rows_mod:
+        acierto_mod = _pick_acerto(row['pick'], ganador, local, visitante)
+        conn.execute(
+            'UPDATE analisis_modulos SET pick_correcto=? WHERE id=?',
+            (1 if acierto_mod else 0, row['id'])
+        )
+
     conn.commit()
     conn.close()
 
@@ -330,11 +343,13 @@ def calcular_resumen(procesados):
     }
 
 def _leer_aciertos_hoy():
-    """Lee winrate del día actual desglosado por fuente."""
+    """Lee winrate del día actual desglosado por fuente legacy y por módulo multi-modelo."""
     try:
         hoy  = datetime.now().strftime('%Y-%m-%d')
         conn = conectar_db()
-        row  = conn.execute(
+
+        # ── Fuentes legacy (analisis_comparativo) ────────────────────────
+        row = conn.execute(
             """SELECT
                  COUNT(*) AS evaluados,
                  SUM(CASE WHEN pick_correcto        = 1 THEN 1 ELSE 0 END) AS aciertos,
@@ -348,10 +363,32 @@ def _leer_aciertos_hoy():
                WHERE fecha=? AND pick_correcto IS NOT NULL""",
             (hoy,)
         ).fetchone()
+
+        # ── Módulos multi-modelo (analisis_modulos) ───────────────────────
+        rows_mod = conn.execute(
+            """SELECT modulo,
+                 COUNT(*) AS total,
+                 SUM(CASE WHEN pick_correcto = 1 THEN 1 ELSE 0 END) AS aciertos
+               FROM analisis_modulos
+               WHERE creado_en >= ? AND pick_correcto IS NOT NULL
+               GROUP BY modulo""",
+            (hoy,)
+        ).fetchall()
+
         conn.close()
+
         def wr(a, t): return round(a / t * 100, 1) if t > 0 else None
         ev = row['evaluados'] or 0
         ac = row['aciertos']  or 0
+
+        modulos = {}
+        for r in rows_mod:
+            modulos[r['modulo']] = {
+                'aciertos': r['aciertos'] or 0,
+                'total':    r['total']    or 0,
+                'winrate':  wr(r['aciertos'] or 0, r['total'] or 0),
+            }
+
         return {
             'evaluados':      ev,
             'aciertos':       ac,
@@ -365,10 +402,11 @@ def _leer_aciertos_hoy():
             'form':    {'aciertos': row['aciertos_form']   or 0,
                         'total':    row['total_form']       or 0,
                         'winrate':  wr(row['aciertos_form']   or 0, row['total_form']   or 0)},
+            'modulos': modulos,
         }
     except Exception:
         return {'evaluados': 0, 'aciertos': 0, 'winrate': None,
-                'python': {}, 'claude': {}, 'form': {}}
+                'python': {}, 'claude': {}, 'form': {}, 'modulos': {}}
 
 def formatear_mensaje_resumen(resumen, fecha):
     """Formatea el mensaje de resumen para Telegram (tu chat personal)."""
@@ -398,7 +436,7 @@ def formatear_mensaje_resumen(resumen, fecha):
     lineas.append(f"━━━━━━━━━━━━━━━━━━━━━━")
     lineas.append(f"🎯 Aciertos hoy:  {a['aciertos']}/{a['evaluados']} ({winrate_str})")
 
-    # Desglose por fuente (si hay datos)
+    # Desglose por fuente legacy (si hay datos)
     detalle_python = fmt_fuente('🐍 Poisson',       a.get('python', {}))
     detalle_claude = fmt_fuente('🤖 Claude',        a.get('claude', {}))
     detalle_form   = fmt_fuente('📈 Forma reciente', a.get('form',   {}))
@@ -406,6 +444,16 @@ def formatear_mensaje_resumen(resumen, fecha):
         lineas.append(f"   ── Desglose por fuente ──")
         for d in [detalle_python, detalle_claude, detalle_form]:
             if d: lineas.append(d)
+
+    # Desglose por módulo multi-modelo (analisis_modulos)
+    EMOJI_MOD = {'poisson': '📐', 'h2h': '🔁', 'odds': '💰',
+                 'tabla': '📊', 'forma': '📈', 'externo': '🔮'}
+    modulos = a.get('modulos', {})
+    if modulos:
+        lineas.append(f"   ── Módulos (multi-modelo) ──")
+        for mod, datos in sorted(modulos.items()):
+            emoji = EMOJI_MOD.get(mod, '•')
+            lineas.append(fmt_fuente(f"{emoji} {mod.capitalize()}", datos) or '')
 
     return '\n'.join(lineas)
 

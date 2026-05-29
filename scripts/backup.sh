@@ -29,7 +29,7 @@
 #    Solo se incluye la CONFIGURACIÓN (sshd_config, authorized_keys, dashboard_server.py)
 #
 #  REPO: https://github.com/Honkonx/termux-ai-stack
-#  VERSIÓN: 2.3.0 | Abril 2026
+#  VERSIÓN: 2.4.0 | Mayo 2026
 # ============================================================
 
 TERMUX_PREFIX="/data/data/com.termux/files/usr"
@@ -91,15 +91,21 @@ should_run() {
 # ── Detectar proot ────────────────────────────────────────────
 DISTRO_NAME=""
 ROOTFS_PATH=""
-if [ -d "$ROOTFS_BASE" ]; then
-  for d in "$ROOTFS_BASE"/*/; do
-    if [ -f "${d}bin/bash" ]; then
-      DISTRO_NAME=$(basename "$d")
-      ROOTFS_PATH="$d"
-      break
-    fi
-  done
-fi
+detect_distro() {
+  DISTRO_NAME=""
+  ROOTFS_PATH=""
+  if [ -d "$ROOTFS_BASE" ]; then
+    for d in "$ROOTFS_BASE"/*/; do
+      d="${d%/}"   # quitar trailing slash
+      if [ -f "${d}/bin/bash" ]; then
+        DISTRO_NAME=$(basename "$d")
+        ROOTFS_PATH="$d"
+        break
+      fi
+    done
+  fi
+}
+detect_distro
 
 # ── Detectar módulos instalados ───────────────────────────────
 HAS_CLAUDE=false
@@ -504,41 +510,36 @@ titulo "PARTE 5 — n8n + cloudflared"
 if ! $HAS_N8N; then
   skip "n8n no encontrado en proot — omitiendo part5"
 else
-  info "Exportando desde proot ($DISTRO_NAME)..."
+  info "Exportando desde proot ($DISTRO_NAME) vía stdout pipe..."
+  # NO usar /tmp del proot — Android 15 tmpfs independiente (ver ARCHITECTURE §3.11)
+  # Estrategia: tar escribe a stdout dentro del proot, se captura en Termux
+  N8N_EXPORT="$TMP_DIR/part5-n8n-data-${VERSION}.tar.xz"
 
-  proot-distro login "$DISTRO_NAME" -- bash << 'PROOT_INNER'
-export HOME=/root
-export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+  proot-distro login "$DISTRO_NAME" -- bash -c \
+    'export HOME=/root
+     export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+     ITEMS=""
+     [ -d /usr/lib/node_modules/n8n ]             && ITEMS="$ITEMS usr/lib/node_modules/n8n"
+     [ -d /usr/lib/node_modules/npm ]             && ITEMS="$ITEMS usr/lib/node_modules/npm"
+     [ -f /usr/bin/n8n ]                          && ITEMS="$ITEMS usr/bin/n8n"
+     [ -f /usr/local/bin/cloudflared ]            && ITEMS="$ITEMS usr/local/bin/cloudflared"
+     [ -d /root/.cache/node-gyp ]                 && ITEMS="$ITEMS root/.cache/node-gyp"
+     [ -f /root/.wget-hsts ]                      && ITEMS="$ITEMS root/.wget-hsts"
+     [ -f /root/.cf_token ]                       && ITEMS="$ITEMS root/.cf_token"
+     [ -f /usr/local/bin/node ]                   && ITEMS="$ITEMS usr/bin/node"
+     [ -d /usr/lib/node_modules/corepack ]        && ITEMS="$ITEMS usr/lib/node_modules/corepack"
+     if [ -z "$ITEMS" ]; then echo "[ERROR] No se encontraron archivos de n8n" >&2; exit 1; fi
+     echo "Empaquetando: $ITEMS" >&2
+     tar -cJf - -C / $ITEMS 2>/dev/null && echo "[DONE]" >&2 || { echo "[FAIL]" >&2; exit 1; }' \
+    > "$N8N_EXPORT"
 
-ITEMS=""
-[ -d /usr/lib/node_modules/n8n ]             && ITEMS="$ITEMS /usr/lib/node_modules/n8n"
-[ -d /usr/lib/node_modules/npm ]             && ITEMS="$ITEMS /usr/lib/node_modules/npm"
-[ -f /usr/bin/n8n ]                          && ITEMS="$ITEMS /usr/bin/n8n"
-[ -f /usr/local/bin/cloudflared ]            && ITEMS="$ITEMS /usr/local/bin/cloudflared"
-[ -d /root/.cache/node-gyp ]                 && ITEMS="$ITEMS /root/.cache/node-gyp"
-[ -f /root/.wget-hsts ]                      && ITEMS="$ITEMS /root/.wget-hsts"
-[ -f /root/.cf_token ]                       && ITEMS="$ITEMS /root/.cf_token"
-[ -f /usr/local/bin/node ]                   && ITEMS="$ITEMS /usr/bin/node"
-[ -d /usr/lib/node_modules/corepack ]        && ITEMS="$ITEMS /usr/lib/node_modules/corepack"
-
-if [ -z "$ITEMS" ]; then
-  echo "[ERROR] No se encontraron archivos de n8n"
-  exit 1
-fi
-
-echo "Empaquetando: $ITEMS"
-tar -cJf /tmp/n8n_backup.tar.xz $ITEMS 2>/dev/null && \
-  echo "[DONE]" || { echo "[FAIL]"; exit 1; }
-PROOT_INNER
-
-  N8N_EXPORT="${ROOTFS_PATH}tmp/n8n_backup.tar.xz"
   if [ -f "$N8N_EXPORT" ] && [ -s "$N8N_EXPORT" ]; then
-    mv "$N8N_EXPORT" "$TMP_DIR/part5-n8n-data-${VERSION}.tar.xz"
-    SIZE=$(du -h "$TMP_DIR/part5-n8n-data-${VERSION}.tar.xz" | cut -f1)
+    SIZE=$(du -h "$N8N_EXPORT" | cut -f1)
     log "part5-n8n-data → $SIZE"
-    GENERATED+=("$TMP_DIR/part5-n8n-data-${VERSION}.tar.xz")
+    GENERATED+=("$N8N_EXPORT")
   else
     warn "No se pudo exportar n8n desde el proot"
+    rm -f "$N8N_EXPORT"
     info "Verifica: proot-distro login $DISTRO_NAME -- n8n --version"
   fi
 fi
@@ -711,42 +712,30 @@ else
   P8_TMP="$TMP_DIR/opencode_pack"
   mkdir -p "$P8_TMP"
 
-  # Exportar archivos de OpenCode desde el proot
-  # Rutas confirmadas en dispositivo:
-  #   root/.opencode/        binario 140MB + datos
-  #   root/.config/          configuración
-  #   root/.local/           datos locales
-  #   root/.cache/opencode/  solo subcarpeta opencode
-  #   tmp/opencode/          directorio trabajo temporal
-  proot-distro login "$DISTRO_NAME" -- bash << 'PROOT_OC'
-export HOME=/root
-export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+  # Exportar archivos de OpenCode desde el proot vía stdout pipe
+  # NO usar /tmp del proot — Android 15 tmpfs independiente (ver ARCHITECTURE §3.11)
+  OC_EXPORT="$TMP_DIR/part8-opencode-${VERSION}.tar.xz"
 
-ITEMS=""
-[ -d /root/.opencode ]         && ITEMS="$ITEMS root/.opencode"
-[ -d /root/.config ]           && ITEMS="$ITEMS root/.config"
-[ -d /root/.local ]            && ITEMS="$ITEMS root/.local"
-[ -d /root/.cache/opencode ]   && ITEMS="$ITEMS root/.cache/opencode"
-[ -d /tmp/opencode ]           && ITEMS="$ITEMS tmp/opencode"
+  proot-distro login "$DISTRO_NAME" -- bash -c \
+    'export HOME=/root
+     export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+     ITEMS=""
+     [ -d /root/.opencode ]         && ITEMS="$ITEMS root/.opencode"
+     [ -d /root/.config ]           && ITEMS="$ITEMS root/.config"
+     [ -d /root/.local ]            && ITEMS="$ITEMS root/.local"
+     [ -d /root/.cache/opencode ]   && ITEMS="$ITEMS root/.cache/opencode"
+     if [ -z "$ITEMS" ]; then echo "[SKIP] No se encontraron archivos de OpenCode" >&2; exit 0; fi
+     echo "Empaquetando OpenCode: $ITEMS" >&2
+     tar -cJf - -C / $ITEMS 2>/dev/null && echo "[DONE]" >&2 || { echo "[FAIL]" >&2; exit 1; }' \
+    > "$OC_EXPORT"
 
-if [ -z "$ITEMS" ]; then
-  echo "[SKIP] No se encontraron archivos de OpenCode"
-  exit 0
-fi
-
-echo "Empaquetando OpenCode: $ITEMS"
-tar -cJf /tmp/opencode_backup.tar.xz -C / $ITEMS 2>/dev/null && \
-  echo "[DONE]" || { echo "[FAIL]"; exit 1; }
-PROOT_OC
-
-  OC_EXPORT="${ROOTFS_PATH}tmp/opencode_backup.tar.xz"
   if [ -f "$OC_EXPORT" ] && [ -s "$OC_EXPORT" ]; then
-    mv "$OC_EXPORT" "$TMP_DIR/part8-opencode-${VERSION}.tar.xz"
-    SIZE=$(du -h "$TMP_DIR/part8-opencode-${VERSION}.tar.xz" | cut -f1)
+    SIZE=$(du -h "$OC_EXPORT" | cut -f1)
     log "part8-opencode → $SIZE"
-    GENERATED+=("$TMP_DIR/part8-opencode-${VERSION}.tar.xz")
+    GENERATED+=("$OC_EXPORT")
   else
     warn "No se pudo exportar OpenCode desde el proot"
+    rm -f "$OC_EXPORT"
   fi
 fi
 fi # end should_run opencode
@@ -760,58 +749,43 @@ titulo "PARTE 9 — OpenClaw (archivos en proot, sin token)"
 if ! $HAS_OPENCLAW; then
   skip "OpenClaw no encontrado en proot — omitiendo part9"
 else
-  # Exportar archivos de OpenClaw desde el proot
-  # Rutas confirmadas en dispositivo:
-  #   root/.npm/                  cache npm
-  #   root/.nvm/                  Node vía NVM
-  #   root/.openclaw/             config (token limpiado)
-  #   root/openclaw-shim.cjs      shim de red Android
-  #   tmp/node-compile-cache/     cache compilación
-  #   tmp/openclaw/               directorio trabajo temporal
-  proot-distro login "$DISTRO_NAME" -- bash << 'PROOT_OCL'
-export HOME=/root
-export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+  # Exportar archivos de OpenClaw desde el proot vía stdout pipe
+  # NO usar /tmp del proot — Android 15 tmpfs independiente (ver ARCHITECTURE §3.11)
+  OCL_EXPORT="$TMP_DIR/part9-openclaw-${VERSION}.tar.xz"
 
-# Limpiar token antes de empaquetar
-if [ -f /root/.openclaw/openclaw.json ]; then
-  python3 -c "
+  proot-distro login "$DISTRO_NAME" -- bash -c \
+    'export HOME=/root
+     export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+     # Limpiar token antes de empaquetar
+     if [ -f /root/.openclaw/openclaw.json ]; then
+       python3 -c "
 import json
 try:
-  d=json.load(open('/root/.openclaw/openclaw.json'))
-  if 'gateway' in d and 'auth' in d['gateway']:
-    d['gateway']['auth']['token']=''
-  d.pop('workspace',None)
-  json.dump(d,open('/root/.openclaw/openclaw.json','w'),indent=2)
+  d=json.load(open(\"/root/.openclaw/openclaw.json\"))
+  if \"gateway\" in d and \"auth\" in d[\"gateway\"]:
+    d[\"gateway\"][\"auth\"][\"token\"]=\"\"
+  d.pop(\"workspace\",None)
+  json.dump(d,open(\"/root/.openclaw/openclaw.json\",\"w\"),indent=2)
 except: pass
 " 2>/dev/null
-fi
+     fi
+     ITEMS=""
+     [ -d /root/.npm ]                  && ITEMS="$ITEMS root/.npm"
+     [ -d /root/.nvm ]                  && ITEMS="$ITEMS root/.nvm"
+     [ -d /root/.openclaw ]             && ITEMS="$ITEMS root/.openclaw"
+     [ -f /root/openclaw-shim.cjs ]     && ITEMS="$ITEMS root/openclaw-shim.cjs"
+     if [ -z "$ITEMS" ]; then echo "[ERROR] No se encontraron archivos de OpenClaw" >&2; exit 1; fi
+     echo "Empaquetando OpenClaw: $ITEMS" >&2
+     tar -cJf - -C / $ITEMS 2>/dev/null && echo "[DONE]" >&2 || { echo "[FAIL]" >&2; exit 1; }' \
+    > "$OCL_EXPORT"
 
-ITEMS=""
-[ -d /root/.npm ]                  && ITEMS="$ITEMS root/.npm"
-[ -d /root/.nvm ]                  && ITEMS="$ITEMS root/.nvm"
-[ -d /root/.openclaw ]             && ITEMS="$ITEMS root/.openclaw"
-[ -f /root/openclaw-shim.cjs ]     && ITEMS="$ITEMS root/openclaw-shim.cjs"
-[ -d /tmp/node-compile-cache ]     && ITEMS="$ITEMS tmp/node-compile-cache"
-[ -d /tmp/openclaw ]               && ITEMS="$ITEMS tmp/openclaw"
-
-if [ -z "$ITEMS" ]; then
-  echo "[ERROR] No se encontraron archivos de OpenClaw"
-  exit 1
-fi
-
-echo "Empaquetando OpenClaw: $ITEMS"
-tar -cJf /tmp/openclaw_backup.tar.xz -C / $ITEMS 2>/dev/null && \
-  echo "[DONE]" || { echo "[FAIL]"; exit 1; }
-PROOT_OCL
-
-  OCL_EXPORT="${ROOTFS_PATH}tmp/openclaw_backup.tar.xz"
   if [ -f "$OCL_EXPORT" ] && [ -s "$OCL_EXPORT" ]; then
-    mv "$OCL_EXPORT" "$TMP_DIR/part9-openclaw-${VERSION}.tar.xz"
-    SIZE=$(du -h "$TMP_DIR/part9-openclaw-${VERSION}.tar.xz" | cut -f1)
+    SIZE=$(du -h "$OCL_EXPORT" | cut -f1)
     log "part9-openclaw → $SIZE"
-    GENERATED+=("$TMP_DIR/part9-openclaw-${VERSION}.tar.xz")
+    GENERATED+=("$OCL_EXPORT")
   else
     warn "No se pudo exportar OpenClaw desde el proot"
+    rm -f "$OCL_EXPORT"
   fi
 fi
 fi # end should_run openclaw
