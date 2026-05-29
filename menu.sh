@@ -821,16 +821,20 @@ while true; do
       echo    "  ║   Actualizando scripts desde GitHub...  ║"
       echo -e "  ╚══════════════════════════════════════════╝${NC}"; echo ""
 
-      # Scripts que van en ~/  (puntos de entrada)
+      # Scripts en raíz del repo → se descargan a ~/
       ROOT_SCRIPTS=(
         "menu.sh"
+        "instalar.sh"
+      )
+      # Scripts en scripts/ del repo → se descargan a ~/
+      INSTALL_SCRIPTS=(
         "install_n8n.sh" "install_claude.sh" "install_ollama.sh"
         "install_expo.sh" "install_python.sh" "install_ssh.sh"
         "install_remote.sh" "install_opencode.sh" "install_openclaw.sh"
         "install_openclaude.sh"
         "backup.sh" "restore.sh"
       )
-      # Scripts que van en ~/scripts/  (módulos de menú)
+      # Scripts en raíz del repo → se descargan a ~/scripts/
       MENU_SCRIPTS=(
         "menu_nativo.sh"
         "menu_proot.sh"
@@ -838,7 +842,7 @@ while true; do
 
       UPDATE_OK=0; UPDATE_FAIL=0
 
-      # Descargar scripts de raíz a ~/
+      # Descargar scripts de raíz del repo a ~/
       for SCRIPT in "${ROOT_SCRIPTS[@]}"; do
         echo -n "  Descargando $SCRIPT... "
         TMP_DL="$HOME/${SCRIPT}.tmp"
@@ -852,8 +856,21 @@ while true; do
         fi
       done
 
-      # Descargar módulos de menú a ~/scripts/
-      # menu_nativo.sh y menu_proot.sh están en raíz del repo
+      # Descargar install_*.sh, backup.sh, restore.sh desde scripts/ del repo a ~/
+      for SCRIPT in "${INSTALL_SCRIPTS[@]}"; do
+        echo -n "  Descargando $SCRIPT... "
+        TMP_DL="$HOME/${SCRIPT}.tmp"
+        curl -fsSL "$REPO_RAW/$SCRIPT" -o "$TMP_DL" 2>/dev/null || \
+          wget -q "$REPO_RAW/$SCRIPT" -O "$TMP_DL" 2>/dev/null
+        if [ -f "$TMP_DL" ] && [ -s "$TMP_DL" ]; then
+          mv "$TMP_DL" "$HOME/$SCRIPT"; chmod +x "$HOME/$SCRIPT"
+          echo -e "${GREEN}✓${NC}"; UPDATE_OK=$((UPDATE_OK + 1))
+        else
+          rm -f "$TMP_DL"; echo -e "${RED}✗${NC}"; UPDATE_FAIL=$((UPDATE_FAIL + 1))
+        fi
+      done
+
+      # Descargar menu_nativo.sh y menu_proot.sh desde raíz del repo a ~/scripts/
       mkdir -p "$SCRIPTS_DIR"
       for SCRIPT in "${MENU_SCRIPTS[@]}"; do
         echo -n "  Descargando $SCRIPT... "
