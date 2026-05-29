@@ -1,6 +1,6 @@
 #!/data/data/com.termux/files/usr/bin/python3
 """
-db_query.py v4.1 — Motor SQL del bot deportivo + KairosApp
+db_query.py v5.2 — Motor SQL del bot deportivo + KairosApp
 # FIXES S31: init_db syntax · actualizar_job_app dispatcher · leer_job_pendiente origen
 Ruta: /data/data/com.termux/files/home/sports/scripts/db_query.py
 
@@ -2351,6 +2351,60 @@ def leer_stats_modulos(args):
         },
     })
 
+
+# ─── v5.2: registro automático Telegram ──────────────────────────────────────
+
+def registrar_usuario_telegram(args):
+    """
+    Registra o actualiza un usuario de Telegram.
+    - Si es nuevo → INSERT con plan='free' y origen='telegram'
+    - Si ya existe → no modifica plan ni datos (solo actualiza last_seen si se agrega)
+    Llamado desde WF-A en /start Y en Verificar Acceso (auto-registro silencioso).
+
+    Args: { "user_id": "123456789", "chat_id": "123456789", "first_name": "Juan" }
+    Returns: { "nuevo": true/false, "plan": "free", "user_id": "..." }
+    """
+    user_id    = str(args.get('user_id', '')).strip()
+    chat_id    = str(args.get('chat_id', user_id)).strip()
+    first_name = str(args.get('first_name', '')).strip()
+
+    if not user_id:
+        error('user_id requerido')
+        return
+
+    conn = conectar()
+    init_db(conn)
+
+    existing = conn.execute(
+        'SELECT plan FROM usuarios WHERE device_id = ?', (user_id,)
+    ).fetchone()
+
+    if existing:
+        conn.close()
+        ok({
+            'nuevo':   False,
+            'plan':    existing['plan'],
+            'user_id': user_id,
+            'mensaje': 'Usuario ya registrado'
+        })
+        return
+
+    # Nuevo usuario — registrar como free
+    conn.execute(
+        """INSERT INTO usuarios (device_id, activo, plan, nickname, origen, creado_en)
+           VALUES (?, 1, 'free', ?, 'telegram', ?)""",
+        (user_id, first_name or None, now())
+    )
+    conn.commit()
+    conn.close()
+
+    ok({
+        'nuevo':   True,
+        'plan':    'free',
+        'user_id': user_id,
+        'mensaje': f'Usuario {user_id} registrado como free'
+    })
+
 OPERACIONES = {
     # v1/v2
     'verificar_acceso':           verificar_acceso,
@@ -2395,6 +2449,8 @@ OPERACIONES = {
     'leer_stats_modulos':           leer_stats_modulos,
     # v5.1 — caché fixture_id
     'leer_fixture_cache':           leer_fixture_cache,
+    # v5.2 — registro automático Telegram
+    'registrar_usuario_telegram':   registrar_usuario_telegram,
     'guardar_fixture_cache':        guardar_fixture_cache,
 }
 
