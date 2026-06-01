@@ -111,6 +111,25 @@ _load_proot_cache() {
 
 
 # ════════════════════════════════════════════
+#  HELPER: proot login con bind mount /sdcard
+#  Agrega --bind /storage/emulated/0:/sdcard
+#  solo cuando la ruta objetivo empieza con /sdcard.
+#  Uso: _proot_sdcard_login "RUTA" -- bash -c "cmd"
+#       El primer argumento es la ruta que se va a usar
+#       dentro del proot. Se detecta si necesita bind.
+# ════════════════════════════════════════════
+_proot_sdcard_login() {
+  local target_path="$1"; shift  # primer arg = ruta a inspeccionar
+  if [[ "$target_path" == /sdcard/* ]]; then
+    proot-distro login "$DISTRO_NAME" \
+      --bind /storage/emulated/0:/sdcard \
+      -- "$@"
+  else
+    proot-distro login "$DISTRO_NAME" -- "$@"
+  fi
+}
+
+# ════════════════════════════════════════════
 #  CHECK COMBINADO PROOT
 #  Una sola invocación proot para opencode + openclaw.
 #  Formato salida interna: "found|VER@@found|" o "not_installed|@@not_installed|"
@@ -852,7 +871,7 @@ submenu_openclaw() {
               echo -e "  Abre: ${CYAN}http://127.0.0.1:18789${NC}"
             echo ""; read -r _ < /dev/tty ;;
           2)
-            proot-distro login "$DISTRO_NAME" -- bash -c \
+            _proot_sdcard_login "$REAL_PATH" bash -c \
               "export NVM_DIR=\"\$HOME/.nvm\"; [ -s \"\$NVM_DIR/nvm.sh\" ] && . \"\$NVM_DIR/nvm.sh\"
                export NODE_OPTIONS=\"--require /root/openclaw-shim.cjs\"
                openclaw tui --cwd '${REAL_PATH}'" < /dev/tty
@@ -1123,7 +1142,7 @@ submenu_opencode() {
         case "$MODO" in
           1)
             echo ""
-            proot-distro login "$DISTRO_NAME" -- bash -c \
+            _proot_sdcard_login "$REAL_PATH" bash -c \
               "source ~/.bashrc 2>/dev/null; cd '$REAL_PATH' && opencode ." < /dev/tty
             echo ""; read -r _ < /dev/tty ;;
           2)
@@ -1131,7 +1150,7 @@ submenu_opencode() {
             echo ""
             echo -e "  ${CYAN}Iniciando servidor en proyecto...${NC}"
             echo -e "  ${DIM}Cuando veas la URL presiona ENTER${NC}"; echo ""
-            proot-distro login "$DISTRO_NAME" -- bash -c \
+            _proot_sdcard_login "$REAL_PATH" bash -c \
               "source ~/.bashrc 2>/dev/null; cd '$REAL_PATH' && BROWSER= opencode web --port 3000 --hostname 127.0.0.1" &
             echo $! > "$HOME/.opencode_web.pid"
             echo ""
