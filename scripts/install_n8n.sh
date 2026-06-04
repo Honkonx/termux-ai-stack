@@ -106,7 +106,7 @@ _detect_rootfs() {
   if [ -d "$ROOTFS_BASE" ]; then
     for _d in "$ROOTFS_BASE"/*/; do
       _d="${_d%/}"   # quitar trailing slash
-      if [ -f "${_d}/bin/bash" ]; then
+      if [ -f "${_d}/bin/bash" ] || [ -f "${_d}/usr/bin/bash" ] || [ -f "${_d}/etc/os-release" ]; then
         DISTRO_NAME=$(basename "$_d")
         ROOTFS_PATH="$_d"
         break

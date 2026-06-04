@@ -107,7 +107,7 @@ _detect_rootfs() {
   if [ -d "$ROOTFS_BASE" ]; then
     for _d in "$ROOTFS_BASE"/*/; do
       _d="${_d%/}"
-      if [ -f "${_d}/bin/bash" ]; then
+      if [ -f "${_d}/bin/bash" ] || [ -f "${_d}/usr/bin/bash" ] || [ -f "${_d}/etc/os-release" ]; then
         DISTRO_NAME=$(basename "$_d")
         ROOTFS_PATH="$_d"
         break
@@ -143,7 +143,8 @@ else
       ;;
     2)
       info "Instalando Debian con proot-distro..."
-      if [ -d "$ROOTFS_BASE/debian" ] && [ -f "$ROOTFS_BASE/debian/bin/bash" ]; then
+      if [ -d "$ROOTFS_BASE/debian" ] && \
+         { [ -f "$ROOTFS_BASE/debian/bin/bash" ] || [ -f "$ROOTFS_BASE/debian/usr/bin/bash" ] || [ -f "$ROOTFS_BASE/debian/etc/os-release" ]; }; then
         log "Rootfs debian ya existe en disco — saltando instalación"
       else
         proot-distro install debian || error "No se pudo instalar Debian en proot."

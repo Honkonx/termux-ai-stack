@@ -58,7 +58,7 @@ detect_distro() {
   if [ -d "$ROOTFS_BASE" ]; then
     for d in "$ROOTFS_BASE"/*/; do
       d="${d%/}"   # quitar trailing slash
-      if [ -f "${d}/bin/bash" ]; then
+      if [ -f "${d}/bin/bash" ] || [ -f "${d}/usr/bin/bash" ] || [ -f "${d}/etc/os-release" ]; then
         DISTRO_NAME=$(basename "$d")
         ROOTFS_PATH="$d"
         return 0
@@ -805,29 +805,34 @@ restore_part5() {
   [ -z "$FILE_SIZE" ] || [ "$FILE_SIZE" -lt 1024 ] && \
     error "Archivo descargado corrupto (${FILE_SIZE:-0} bytes)"
 
-  info "Extrayendo n8n dentro del proot ($DISTRO_NAME) vía stdin..."
-  # NO usamos /tmp del proot: Android 15 monta tmpfs independiente dentro
-  # del contenedor — el archivo copiado a ${ROOTFS_PATH}/tmp/ no aparece
-  # como /tmp/ adentro. Solución: pasar el .tar.xz directo por stdin.
+  # Copiar archivo al rootfs host — accesible como /root/n8n_restore_tmp.tar.xz dentro del proot
+  # NO usamos stdin: proot-distro login consume el stdin antes de que bash -c lo lea
+  # NO usamos /tmp del proot: Android 15 tmpfs independiente (ver ARCHITECTURE §3.11)
+  local N8N_TMP="${ROOTFS_PATH}/root/n8n_restore_tmp.tar.xz"
+  info "Copiando archivo al rootfs para extracción interna..."
+  cp "$DOWNLOADED_FILE" "$N8N_TMP" || error "No se pudo copiar archivo al rootfs"
+
   proot-distro login "$DISTRO_NAME" -- bash -c \
     'export HOME=/root
      export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
      mkdir -p /usr/local/lib/node_modules /usr/local/bin /usr/lib/node_modules /usr/bin /root/.n8n
-     echo "[INFO] Recibiendo y extrayendo en /..."
-     tar -xJf - -C / 2>/dev/null || \
-       tar -xJf - -C / --ignore-failed-read 2>/dev/null || \
-       { echo "[ERROR] Extraccion fallida"; exit 1; }
+     echo "[INFO] Extrayendo n8n desde /root/n8n_restore_tmp.tar.xz..."
+     tar -xJf /root/n8n_restore_tmp.tar.xz -C / 2>/dev/null || \
+       tar -xJf /root/n8n_restore_tmp.tar.xz -C / --ignore-failed-read 2>/dev/null || \
+       { echo "[ERROR] Extraccion fallida"; rm -f /root/n8n_restore_tmp.tar.xz; exit 1; }
+     rm -f /root/n8n_restore_tmp.tar.xz
      [ -f /usr/local/bin/n8n ]         && chmod +x /usr/local/bin/n8n
      [ -f /usr/bin/n8n ]               && chmod +x /usr/bin/n8n
      [ -f /usr/local/bin/cloudflared ] && chmod +x /usr/local/bin/cloudflared
      [ -f /usr/local/bin/node ]        && chmod +x /usr/local/bin/node
      [ -f /usr/bin/node ]              && chmod +x /usr/bin/node
-     [ -f /usr/local/bin/n8n ] || [ -f /usr/bin/n8n ] && \
+     { [ -f /usr/local/bin/n8n ] || [ -f /usr/bin/n8n ]; } && \
        echo "[OK] n8n verificado" || echo "[AVISO] n8n no encontrado en PATH"
-     echo "[DONE]"' \
-    < "$DOWNLOADED_FILE"
+     echo "[DONE]"'
 
-  [ $? -ne 0 ] && error "Fallo la restauración de n8n"
+  local N8N_EXIT=$?
+  rm -f "$N8N_TMP" 2>/dev/null
+  [ $N8N_EXIT -ne 0 ] && error "Fallo la restauración de n8n"
 
   N8N_VER=$(proot-distro login "$DISTRO_NAME" -- bash -c \
     "cat /usr/local/lib/node_modules/n8n/package.json 2>/dev/null" 2>/dev/null | \
@@ -988,21 +993,30 @@ restore_part8() {
 
   download_and_verify "part8-opencode"
   
-  info "Inyectando OpenCode en el rootfs existente ($DISTRO_NAME) vía stdin..."
-  # NO usamos /tmp del proot — Android 15 tmpfs independiente (ver ARCHITECTURE §3.11)
+  # Copiar archivo al rootfs host — accesible como /root/oc_restore_tmp.tar.xz dentro del proot
+  # NO usamos stdin: proot-distro login consume el stdin antes de que bash -c lo lea
+  # NO usamos /tmp del proot: Android 15 tmpfs independiente (ver ARCHITECTURE §3.11)
+  local OC_TMP="${ROOTFS_PATH}/root/oc_restore_tmp.tar.xz"
+  info "Copiando archivo al rootfs para extracción interna..."
+  cp "$DOWNLOADED_FILE" "$OC_TMP" || { warn "No se pudo copiar archivo al rootfs"; return 1; }
+
   proot-distro login "$DISTRO_NAME" -- bash -c \
     'export HOME=/root
      export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-     echo "[INFO] Extrayendo OpenCode en /..."
-     tar -xJf - -C / 2>/dev/null || tar -xJf - -C / --ignore-failed-read 2>/dev/null || {
-       echo "[ERROR] Extracción fallida"
-       exit 1
-     }
+     echo "[INFO] Extrayendo OpenCode desde /root/oc_restore_tmp.tar.xz..."
+     tar -xJf /root/oc_restore_tmp.tar.xz -C / 2>/dev/null || \
+       tar -xJf /root/oc_restore_tmp.tar.xz -C / --ignore-failed-read 2>/dev/null || {
+         echo "[ERROR] Extracción fallida"
+         rm -f /root/oc_restore_tmp.tar.xz
+         exit 1
+       }
+     rm -f /root/oc_restore_tmp.tar.xz
      command -v opencode >/dev/null 2>&1 && echo "[OK] opencode verificado" || echo "[AVISO] opencode no encontrado en PATH"
-     echo "[DONE]"' \
-    < "$DOWNLOADED_FILE"
+     echo "[DONE]"'
 
-  [ $? -ne 0 ] && { warn "Fallo restaurando OpenCode"; return 1; }
+  local OC_EXIT=$?
+  rm -f "$OC_TMP" 2>/dev/null
+  [ $OC_EXIT -ne 0 ] && { warn "Fallo restaurando OpenCode"; return 1; }
 
   OC_VER=$(proot-distro login "$DISTRO_NAME" -- bash -c \
     'source ~/.bashrc 2>/dev/null; opencode --version 2>/dev/null | head -1' 2>/dev/null | \
@@ -1038,15 +1052,21 @@ restore_part9() {
 
   download_and_verify "part9-openclaw"
   
-  info "Inyectando OpenClaw en el rootfs existente ($DISTRO_NAME) vía stdin..."
-  # NO usamos /tmp del proot — Android 15 tmpfs independiente (ver ARCHITECTURE §3.11)
+  # Copiar archivo al rootfs host — accesible como /root/ocl_restore_tmp.tar.xz dentro del proot
+  # NO usamos stdin: proot-distro login consume el stdin antes de que bash -c lo lea
+  # NO usamos /tmp del proot: Android 15 tmpfs independiente (ver ARCHITECTURE §3.11)
+  local OCL_TMP="${ROOTFS_PATH}/root/ocl_restore_tmp.tar.xz"
+  info "Copiando archivo al rootfs para extracción interna..."
+  cp "$DOWNLOADED_FILE" "$OCL_TMP" || { warn "No se pudo copiar archivo al rootfs"; return 1; }
+
   proot-distro login "$DISTRO_NAME" -- bash -c \
     'export HOME=/root
      export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-     echo "[INFO] Extrayendo OpenClaw en /..."
-     tar -xJf - -C / 2>/dev/null || \
-       tar -xJf - -C / --ignore-failed-read 2>/dev/null || \
-       { echo "[ERROR] Extracción fallida"; exit 1; }
+     echo "[INFO] Extrayendo OpenClaw desde /root/ocl_restore_tmp.tar.xz..."
+     tar -xJf /root/ocl_restore_tmp.tar.xz -C / 2>/dev/null || \
+       tar -xJf /root/ocl_restore_tmp.tar.xz -C / --ignore-failed-read 2>/dev/null || \
+       { echo "[ERROR] Extracción fallida"; rm -f /root/ocl_restore_tmp.tar.xz; exit 1; }
+     rm -f /root/ocl_restore_tmp.tar.xz
      export NVM_DIR="$HOME/.nvm"
      [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
      if ! grep -q "NVM_DIR" /root/.bashrc 2>/dev/null; then
@@ -1056,10 +1076,11 @@ restore_part9() {
        echo "[INFO] NVM agregado a .bashrc"
      fi
      command -v openclaw &>/dev/null && echo "[OK] openclaw verificado" || echo "[AVISO] openclaw no en PATH — puede necesitar reiniciar sesión proot"
-     echo "[DONE]"' \
-    < "$DOWNLOADED_FILE"
+     echo "[DONE]"'
 
-  [ $? -ne 0 ] && { warn "Fallo restaurando OpenClaw"; return 1; }
+  local OCL_EXIT=$?
+  rm -f "$OCL_TMP" 2>/dev/null
+  [ $OCL_EXIT -ne 0 ] && { warn "Fallo restaurando OpenClaw"; return 1; }
 
   OCL_VER=$(grep "^openclaw\.version=" "$REGISTRY" 2>/dev/null | cut -d'=' -f2)
   [ -z "$OCL_VER" ] && OCL_VER="restored"

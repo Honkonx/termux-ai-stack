@@ -69,7 +69,8 @@ _load_proot_cache() {
   # ── Guard crítico: si no hay rootfs, el caché nunca es válido ──
   # Evita falsos positivos cuando proot fue desinstalado pero el
   # caché en disco aún tiene "stopped|..." del estado anterior
-  if [ -z "$DISTRO_NAME" ] || [ ! -f "${ROOTFS_PATH}/bin/bash" ]; then
+  if [ -z "$DISTRO_NAME" ] || \
+     { [ ! -f "${ROOTFS_PATH}/bin/bash" ] && [ ! -f "${ROOTFS_PATH}/usr/bin/bash" ] && [ ! -f "${ROOTFS_PATH}/etc/os-release" ]; }; then
     rm -f "$PROOT_CACHE_FILE" 2>/dev/null || true
     return 1
   fi
@@ -137,7 +138,8 @@ _proot_sdcard_login() {
 # ════════════════════════════════════════════
 _check_proot_combined() {
   # ── Guard: sin rootfs → not_installed inmediato, sin llamar a proot ──
-  if [ -z "$DISTRO_NAME" ] || [ ! -f "${ROOTFS_PATH}/bin/bash" ]; then
+  if [ -z "$DISTRO_NAME" ] || \
+     { [ ! -f "${ROOTFS_PATH}/bin/bash" ] && [ ! -f "${ROOTFS_PATH}/usr/bin/bash" ] && [ ! -f "${ROOTFS_PATH}/etc/os-release" ]; }; then
     _OC_CACHE="not_installed||"
     _CLAW_CACHE="not_installed||"
     local now=$SECONDS
@@ -210,7 +212,7 @@ _check_proot_combined() {
 
 # ── Checks directos (sin caché) — para submenús internos ─────
 check_opencode() {
-  [ -z "$DISTRO_NAME" ] || [ ! -f "${ROOTFS_PATH}/bin/bash" ] && {
+  { [ -z "$DISTRO_NAME" ] || { [ ! -f "${ROOTFS_PATH}/bin/bash" ] && [ ! -f "${ROOTFS_PATH}/usr/bin/bash" ] && [ ! -f "${ROOTFS_PATH}/etc/os-release" ]; }; } && {
     echo "not_installed||"; return
   }
   if proot-distro login "$DISTRO_NAME" -- bash -c \
@@ -229,7 +231,7 @@ check_opencode() {
 }
 
 check_openclaw() {
-  [ -z "$DISTRO_NAME" ] || [ ! -f "${ROOTFS_PATH}/bin/bash" ] && {
+  { [ -z "$DISTRO_NAME" ] || { [ ! -f "${ROOTFS_PATH}/bin/bash" ] && [ ! -f "${ROOTFS_PATH}/usr/bin/bash" ] && [ ! -f "${ROOTFS_PATH}/etc/os-release" ]; }; } && {
     echo "not_installed||"; return
   }
   if proot-distro login "$DISTRO_NAME" -- bash -c \
