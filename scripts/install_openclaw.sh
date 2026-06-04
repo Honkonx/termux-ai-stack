@@ -26,7 +26,7 @@
 #  VERSIÓN: 1.1.0 | Mayo 2026
 # ============================================================
 
-TERMUX_PREFIX="/data/data/com.termux/files/usr"
+TERMUX_PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
 export PATH="$TERMUX_PREFIX/bin:$TERMUX_PREFIX/sbin:$PATH"
 
 # ── Colores ──────────────────────────────────────────────────
@@ -191,7 +191,14 @@ if [ -z "$DISTRO_NAME" ]; then
          { [ -f "$ROOTFS_BASE/debian/bin/bash" ] || [ -f "$ROOTFS_BASE/debian/usr/bin/bash" ] || [ -f "$ROOTFS_BASE/debian/etc/os-release" ]; }; then
         log "Rootfs debian ya existe en disco — saltando instalación"
       else
-        proot-distro install debian || error "No se pudo instalar Debian en proot."
+        _INSTALL_OUT=$(proot-distro install debian 2>&1)
+        _INSTALL_RC=$?
+        if echo "$_INSTALL_OUT" | grep -q "already exists"; then
+          log "Debian ya registrado en proot-distro — continuando"
+        elif [ $_INSTALL_RC -ne 0 ]; then
+          echo "$_INSTALL_OUT"
+          error "No se pudo instalar Debian en proot."
+        fi
       fi
       ;;
     b|B|"")

@@ -31,7 +31,7 @@
 #  VERSIÓN: 5.0.0 | Mayo 2026
 # ============================================================
 
-TERMUX_PREFIX="/data/data/com.termux/files/usr"
+TERMUX_PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
 export PATH="$TERMUX_PREFIX/bin:$TERMUX_PREFIX/sbin:$PATH"
 
 REPO_RAW="https://raw.githubusercontent.com/Honkonx/termux-ai-stack/main/scripts"
