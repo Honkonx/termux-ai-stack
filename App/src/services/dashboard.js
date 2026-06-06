@@ -66,3 +66,22 @@ export const pullOllamaModel = (model) =>
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ model }),
   }, 300000); // 5 min para descarga
+
+// ── OpenCode ─────────────────────────────────────────────────
+export const getOpenCodeInfo = () =>
+  apiFetch('/api/opencode/info');
+
+// ── OpenClaw ─────────────────────────────────────────────────
+export const getOpenClawInfo = () =>
+  apiFetch('/api/openclaw/info');
+
+// ── OpenClaude ───────────────────────────────────────────────
+export const getOpenClaudeInfo = () =>
+  apiFetch('/api/openclaude/info');
+
+export const postOpenClaudeProvider = (provider, model, base_url, api_key) =>
+  apiFetch('/api/openclaude/provider', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ provider, model, base_url, api_key }),
+  });

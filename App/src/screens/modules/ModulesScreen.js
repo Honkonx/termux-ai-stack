@@ -21,6 +21,8 @@ function getModuleStatus(mod) {
   return 'ready';
 }
 
+const HAS_MENU = ['n8n', 'ollama', 'claude', 'ssh', 'python', 'opencode', 'openclaw', 'openclaude'];
+
 function formatRam(ram) {
   if (!ram) return '…';
   const mb = ram.available_mb;
@@ -33,8 +35,7 @@ function formatRam(ram) {
 function ModuleRow({ mod, onSubMenu, onToggle, actionState, theme }) {
   const s      = rowStyles(theme);
   const status = getModuleStatus(mod);
-  const hasMenu = mod.installed &&
-    ['n8n', 'ollama', 'claude', 'ssh', 'python'].includes(mod.id);
+  const hasMenu = mod.installed && HAS_MENU.includes(mod.id);
   const isService = mod.running !== undefined;
 
   return (
@@ -97,21 +98,30 @@ function rowStyles(t) {
 
 // ─── ModulesScreen ───────────────────────────────────────────
 
-const ORDER = ['n8n', 'claude', 'ollama', 'ssh', 'eas', 'python'];
+const ORDER = ['n8n', 'claude', 'ollama', 'opencode', 'openclaw', 'openclaude', 'ssh', 'eas', 'python'];
 
 export function ModulesScreen({ navigate }) {
   const { theme }             = useTheme();
   const { status, connErr }   = useStatus();
-  const n8nA    = useAction('n8n');
-  const ollamaA = useAction('ollama');
-  const sshA    = useAction('ssh');
-  const s       = createStyles(theme);
+  const n8nA       = useAction('n8n');
+  const ollamaA    = useAction('ollama');
+  const sshA       = useAction('ssh');
+  const opencodeA  = useAction('opencode');
+  const openclawA  = useAction('openclaw');
+  const openclaudeA= useAction('openclaude');
+  const s          = createStyles(theme);
 
-  const actionFor = (id) => ({ n8n: n8nA, ollama: ollamaA, ssh: sshA }[id]
-    || { actionState:'idle', trigger:()=>{} });
+  const actionFor = (id) => ({
+    n8n: n8nA, ollama: ollamaA, ssh: sshA,
+    opencode: opencodeA, openclaw: openclawA, openclaude: openclaudeA,
+  }[id] || { actionState:'idle', trigger:()=>{} });
 
   const handleSubMenu = useCallback((id) => {
-    const r = { n8n:ROUTES.N8N, ollama:ROUTES.OLLAMA, claude:ROUTES.CLAUDE, ssh:ROUTES.SSH, python:ROUTES.PYTHON }[id];
+    const r = {
+      n8n:ROUTES.N8N, ollama:ROUTES.OLLAMA, claude:ROUTES.CLAUDE,
+      ssh:ROUTES.SSH, python:ROUTES.PYTHON,
+      opencode:ROUTES.OPENCODE, openclaw:ROUTES.OPENCLAW, openclaude:ROUTES.OPENCLAUDE,
+    }[id];
     if (r) navigate(r);
   }, [navigate]);
 

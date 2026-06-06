@@ -17,18 +17,24 @@ import { ChatScreen }     from '../screens/chat/ChatScreen';
 import { SystemScreen }   from '../screens/system/SystemScreen';
 import { SettingsScreen } from '../screens/settings/SettingsScreen';
 
-import { N8nScreen }      from '../screens/modules/n8n/N8nScreen';
-import { OllamaScreen }   from '../screens/modules/ollama/OllamaScreen';
-import { ClaudeScreen }   from '../screens/modules/claude/ClaudeScreen';
-import { SshScreen }      from '../screens/modules/ssh/SshScreen';
-import { PythonScreen }   from '../screens/modules/python/PythonScreen';
+import { N8nScreen }       from '../screens/modules/n8n/N8nScreen';
+import { OllamaScreen }    from '../screens/modules/ollama/OllamaScreen';
+import { ClaudeScreen }    from '../screens/modules/claude/ClaudeScreen';
+import { SshScreen }       from '../screens/modules/ssh/SshScreen';
+import { PythonScreen }    from '../screens/modules/python/PythonScreen';
+import { OpenCodeScreen }  from '../screens/modules/opencode/OpenCodeScreen';
+import { OpenClawScreen }  from '../screens/modules/openclaw/OpenClawScreen';
+import { OpenClaudeScreen }from '../screens/modules/openclaude/OpenClaudeScreen';
 
 const MODULE_SCREENS = {
-  [ROUTES.N8N]:    N8nScreen,
-  [ROUTES.OLLAMA]: OllamaScreen,
-  [ROUTES.CLAUDE]: ClaudeScreen,
-  [ROUTES.SSH]:    SshScreen,
-  [ROUTES.PYTHON]: PythonScreen,
+  [ROUTES.N8N]:       N8nScreen,
+  [ROUTES.OLLAMA]:    OllamaScreen,
+  [ROUTES.CLAUDE]:    ClaudeScreen,
+  [ROUTES.SSH]:       SshScreen,
+  [ROUTES.PYTHON]:    PythonScreen,
+  [ROUTES.OPENCODE]:  OpenCodeScreen,
+  [ROUTES.OPENCLAW]:  OpenClawScreen,
+  [ROUTES.OPENCLAUDE]:OpenClaudeScreen,
 };
 
 const TABS = [ROUTES.MODULES, ROUTES.CHAT, ROUTES.SYSTEM, ROUTES.SETTINGS];

@@ -9,11 +9,14 @@ export const ROUTES = {
   SETTINGS: 'settings',
 
   // Pantallas de módulo (se apilan sobre el tab MODULES)
-  N8N:    'n8n',
-  OLLAMA: 'ollama',
-  CLAUDE: 'claude',
-  SSH:    'ssh',
-  PYTHON: 'python',
+  N8N:       'n8n',
+  OLLAMA:    'ollama',
+  CLAUDE:    'claude',
+  SSH:       'ssh',
+  PYTHON:    'python',
+  OPENCODE:  'opencode',
+  OPENCLAW:  'openclaw',
+  OPENCLAUDE:'openclaude',
 };
 
 export const TAB_LABELS = {
