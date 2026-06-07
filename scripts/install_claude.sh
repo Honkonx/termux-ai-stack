@@ -23,7 +23,7 @@
 #  VERSIÓN: 3.0.0 | Mayo 2026
 # ============================================================
 
-TERMUX_PREFIX="/data/data/com.termux/files/usr"
+TERMUX_PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
 export PATH="$HOME/.local/bin:$TERMUX_PREFIX/bin:$TERMUX_PREFIX/sbin:$PATH"
 
 RED='\033[0;31m'
@@ -49,6 +49,7 @@ NATIVE_BINARY="$HOME/.local/share/claude-code/claude"
 NATIVE_WRAPPER="$HOME/.local/bin/claude"
 LEGACY_WRAPPER="$TERMUX_PREFIX/bin/claude"
 GLIBC_LD="$TERMUX_PREFIX/glibc/lib/ld-linux-aarch64.so.1"
+PATCHELF="$TERMUX_PREFIX/glibc/bin/patchelf"
 RELEASE_API="https://api.github.com/repos/Honkonx/termux-ai-stack/releases/latest"
 
 check_done() { grep -q "^$1$" "$CHECKPOINT" 2>/dev/null; }
@@ -301,7 +302,12 @@ _ensure_nodejs() {
 _ensure_glibc() {
   check_done "glibc_deps" && { log "glibc-runner ya instalado [checkpoint]"; return; }
   info "Verificando glibc-runner..."
-  if [ ! -f "$GLIBC_LD" ]; then
+
+  local NEED_INSTALL=false
+  [ ! -f "$GLIBC_LD" ]  && NEED_INSTALL=true
+  [ ! -f "$PATCHELF" ]  && NEED_INSTALL=true
+
+  if $NEED_INSTALL; then
     info "Instalando glibc-runner + patchelf-glibc + jq..."
     pkg install -y glibc-repo 2>/dev/null || true
     pkg update -y \
@@ -311,7 +317,10 @@ _ensure_glibc() {
       -o Dpkg::Options::="--force-confdef" \
       -o Dpkg::Options::="--force-confold" || error "No se pudo instalar glibc-runner"
   fi
-  [ -f "$GLIBC_LD" ] || error "glibc-runner instalado pero ld.so no encontrado en $GLIBC_LD"
+
+  [ -f "$GLIBC_LD" ]  || error "ld.so no encontrado en $GLIBC_LD — reinstala glibc-runner"
+  [ -f "$PATCHELF" ]  || error "patchelf no encontrado en $PATCHELF — reinstala patchelf-glibc"
+
   # Agregar ~/.local/bin al PATH si no está
   if ! grep -q '\.local/bin' "$HOME/.bashrc" 2>/dev/null; then
     echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.bashrc"
@@ -319,6 +328,7 @@ _ensure_glibc() {
     log "~/.local/bin agregado a PATH"
   fi
   log "glibc-runner listo: $GLIBC_LD"
+  log "patchelf listo:     $PATCHELF"
   mark_done "glibc_deps"
 }
 
@@ -378,9 +388,11 @@ _install_native_clean() {
   # Patchear intérprete ELF
   chmod +x "$NATIVE_BINARY"
   info "Parcheando intérprete ELF..."
+  # Usar ruta absoluta: patchelf-glibc instala en $TERMUX_PREFIX/glibc/bin/patchelf
+  # NO en $PREFIX/bin — no está en PATH por defecto
   # LD_PRELOAD= evita que termux-exec crashee patchelf (libc.so incompatible con glibc)
-  LD_PRELOAD= patchelf --set-interpreter "$GLIBC_LD" "$NATIVE_BINARY" || \
-    error "patchelf falló — verifica que patchelf-glibc está instalado"
+  LD_PRELOAD= "$PATCHELF" --set-interpreter "$GLIBC_LD" "$NATIVE_BINARY" || \
+    error "patchelf falló — ruta: $PATCHELF"
   log "Intérprete ELF parcheado ✓"
 
   _create_native_wrapper "$VERSION"

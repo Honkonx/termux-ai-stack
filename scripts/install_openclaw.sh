@@ -83,8 +83,9 @@ echo -e "${NC}"
 
 # ============================================================
 # DETECCIÓN TEMPRANA DEL ROOTFS
-# Canónica por directorio — antes de cualquier otra operación.
-# Ref: ARCHITECTURE.md §3.11 — proot-distro list produce falsos negativos
+# FUENTE PRIMARIA: proot-distro list (fiable con permisos 700 del rootfs)
+# FALLBACK: enumeración de directorios en installed-rootfs/
+# Fix S22: permisos 0700 en debian/ bloqueaban [ -f dir/bin/bash ]
 # ============================================================
 
 # Instalar proot-distro si no está disponible
@@ -96,24 +97,40 @@ if ! command -v proot-distro &>/dev/null; then
     error "No se pudo instalar proot-distro."
 fi
 
-# Detección canónica: buscar cualquier distro con /bin/bash
-# NO usar proot-distro list ni login debian hardcodeado
 ROOTFS_BASE="${TERMUX_PREFIX}/var/lib/proot-distro/installed-rootfs"
 DISTRO_NAME=""
 ROOTFS_PATH=""
 _detect_rootfs() {
   DISTRO_NAME=""
   ROOTFS_PATH=""
-  if [ -d "$ROOTFS_BASE" ]; then
-    for _d in "$ROOTFS_BASE"/*/; do
-      _d="${_d%/}"   # quitar trailing slash
-      if [ -f "${_d}/bin/bash" ] || [ -f "${_d}/usr/bin/bash" ] || [ -f "${_d}/etc/os-release" ]; then
-        DISTRO_NAME=$(basename "$_d")
-        ROOTFS_PATH="$_d"
-        break
+  # Método 1: proot-distro list (no requiere entrar al directorio)
+  if command -v proot-distro &>/dev/null; then
+    local _pd_out
+    _pd_out=$(proot-distro list 2>/dev/null)
+    local _d
+    for _d in debian ubuntu fedora archlinux; do
+      if echo "$_pd_out" | grep -qE "^\s*\*?\s*${_d}\b"; then
+        if [ -d "$ROOTFS_BASE/$_d" ]; then
+          DISTRO_NAME="$_d"
+          ROOTFS_PATH="$ROOTFS_BASE/$_d"
+          return 0
+        fi
       fi
     done
   fi
+  # Método 2: fallback por directorio (solo verificar que el dir existe)
+  if [ -d "$ROOTFS_BASE" ]; then
+    local _rd
+    for _rd in "$ROOTFS_BASE"/*/; do
+      _rd="${_rd%/}"
+      if [ -d "$_rd" ]; then
+        DISTRO_NAME=$(basename "$_rd")
+        ROOTFS_PATH="$_rd"
+        return 0
+      fi
+    done
+  fi
+  return 1
 }
 _detect_rootfs
 
@@ -121,10 +138,13 @@ _detect_rootfs
 # Este check se hace DESPUÉS de tener DISTRO_NAME
 if [ -n "$DISTRO_NAME" ]; then
   if proot-distro login "$DISTRO_NAME" -- bash -c \
-    'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"; command -v openclaw' \
+    'export HOME=/root; export NVM_DIR="/root/.nvm"
+     [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+     command -v openclaw' \
     &>/dev/null 2>&1; then
     CL_VER=$(proot-distro login "$DISTRO_NAME" -- bash -c \
-      'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+      'export HOME=/root; export NVM_DIR="/root/.nvm"
+       [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
        openclaw --version 2>/dev/null | head -1' 2>/dev/null \
       | grep -oE '[0-9]+\.[0-9.]+' | head -1)
     echo -e "${GREEN}  ✓ OpenClaw ya está instalado${NC}"
@@ -186,10 +206,9 @@ if [ -z "$DISTRO_NAME" ]; then
       ;;
     2)
       info "Instalando Debian con proot-distro..."
-      # Verificar que no exista ya (evita "already exists")
-      if [ -d "$ROOTFS_BASE/debian" ] && \
-         { [ -f "$ROOTFS_BASE/debian/bin/bash" ] || [ -f "$ROOTFS_BASE/debian/usr/bin/bash" ] || [ -f "$ROOTFS_BASE/debian/etc/os-release" ]; }; then
-        log "Rootfs debian ya existe en disco — saltando instalación"
+      # Verificar por proot-distro list (no accede al interior del directorio)
+      if proot-distro list 2>/dev/null | grep -qE "^\s*\*?\s*debian\b"; then
+        log "Rootfs debian ya registrado en proot-distro — saltando instalación"
       else
         _INSTALL_OUT=$(proot-distro install debian 2>&1)
         _INSTALL_RC=$?
@@ -231,21 +250,24 @@ if check_done "openclaw_nvm"; then
 else
   # Verificar si NVM ya existe en proot
   NVM_EXISTS=$(proot-distro login "$DISTRO_NAME" -- bash -c \
-    '[ -s "$HOME/.nvm/nvm.sh" ] && echo "yes" || echo "no"' 2>/dev/null)
+    'export HOME=/root; [ -s "/root/.nvm/nvm.sh" ] && echo "yes" || echo "no"' 2>/dev/null)
 
   if [ "$NVM_EXISTS" = "yes" ]; then
     log "NVM ya existe en proot"
   else
     info "Instalando NVM en proot Debian..."
     proot-distro login "$DISTRO_NAME" -- bash -c \
-      'curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash' || \
+      'export HOME=/root
+       curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash' || \
       error "No se pudo instalar NVM."
     log "NVM instalado"
   fi
 
   # Verificar si Node 22 ya está disponible via NVM
   NODE22_EXISTS=$(proot-distro login "$DISTRO_NAME" -- bash -c \
-    'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+    'export HOME=/root
+     export NVM_DIR="/root/.nvm"
+     [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
      node --version 2>/dev/null | grep -c "^v22"' 2>/dev/null)
 
   if [ "$NODE22_EXISTS" = "1" ]; then
@@ -253,11 +275,15 @@ else
   else
     info "Instalando Node 22 via NVM..."
     proot-distro login "$DISTRO_NAME" -- bash -c \
-      'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+      'export HOME=/root
+       export NVM_DIR="/root/.nvm"
+       [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" || { echo "[ERROR] nvm.sh no encontrado en $NVM_DIR"; exit 1; }
        nvm install 22 && nvm use 22 && nvm alias default 22' || \
       error "No se pudo instalar Node 22."
     NODE_VER=$(proot-distro login "$DISTRO_NAME" -- bash -c \
-      'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+      'export HOME=/root
+       export NVM_DIR="/root/.nvm"
+       [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
        node --version 2>/dev/null' 2>/dev/null)
     log "Node ${NODE_VER:-22} instalado"
   fi
@@ -303,20 +329,23 @@ if check_done "openclaw_install"; then
 else
   info "Instalando openclaw via npm (Node 22 + shim)..."
   proot-distro login "$DISTRO_NAME" -- bash -c \
-    'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+    'export HOME=/root; export NVM_DIR="/root/.nvm"
+     [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
      export NODE_OPTIONS="--require /root/openclaw-shim.cjs"
      npm install -g openclaw@latest 2>&1 | tail -5' || \
     error "No se pudo instalar OpenClaw."
 
   # Verificar instalación
   CL_OK=$(proot-distro login "$DISTRO_NAME" -- bash -c \
-    'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+    'export HOME=/root; export NVM_DIR="/root/.nvm"
+     [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
      command -v openclaw && echo "ok" || echo "fail"' 2>/dev/null | tail -1)
 
   [ "$CL_OK" != "ok" ] && error "OpenClaw no quedó accesible. Revisa la instalación."
 
   CL_VER=$(proot-distro login "$DISTRO_NAME" -- bash -c \
-    'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+    'export HOME=/root; export NVM_DIR="/root/.nvm"
+     [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
      openclaw --version 2>/dev/null | head -1' 2>/dev/null \
     | grep -oE '[0-9]+\.[0-9.]+' | head -1)
   [ -z "$CL_VER" ] && CL_VER="unknown"
@@ -351,7 +380,8 @@ else
     info "Lanzando wizard — puede tardar, ten paciencia..."
     echo ""
     proot-distro login "$DISTRO_NAME" -- bash -c \
-      'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+      'export HOME=/root; export NVM_DIR="/root/.nvm"
+       [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
        export NODE_OPTIONS="--require /root/openclaw-shim.cjs"
        openclaw setup --wizard' < /dev/tty
 
@@ -449,7 +479,8 @@ echo ""
 
 # Lanzar en background desde Termux nativo
 proot-distro login "\$DISTRO_NAME" -- bash -c \
-  'export NVM_DIR="\$HOME/.nvm"; [ -s "\$NVM_DIR/nvm.sh" ] && . "\$NVM_DIR/nvm.sh"
+  'export HOME=/root; export NVM_DIR="/root/.nvm"
+   [ -s "\$NVM_DIR/nvm.sh" ] && . "\$NVM_DIR/nvm.sh"
    export NODE_OPTIONS="--require /root/openclaw-shim.cjs"
    openclaw gateway --bind loopback' > "\$HOME/.openclaw_gateway.log" 2>&1 &
 
@@ -608,7 +639,8 @@ fi
 titulo "PASO 9 — Actualizando registry"
 
 CL_VER_FINAL=$(proot-distro login "$DISTRO_NAME" -- bash -c \
-  'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+  'export HOME=/root; export NVM_DIR="/root/.nvm"
+   [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
    openclaw --version 2>/dev/null | head -1' 2>/dev/null \
   | grep -oE '[0-9]+\.[0-9.]+' | head -1)
 [ -z "$CL_VER_FINAL" ] && CL_VER_FINAL="unknown"

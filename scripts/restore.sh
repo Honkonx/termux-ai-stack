@@ -50,17 +50,37 @@ TARGET_MODULE=""
 SOURCE=""
 
 # ── Detectar proot ────────────────────────────────────────────
+# FUENTE PRIMARIA: proot-distro list (fiable con permisos 700 del rootfs)
+# FALLBACK: enumeración de directorios
+# Fix S22: permisos 0700 en debian/ bloqueaban [ -f dir/bin/bash ]
 DISTRO_NAME=""
 ROOTFS_PATH=""
 detect_distro() {
   DISTRO_NAME=""
   ROOTFS_PATH=""
+  # Método 1: proot-distro list (no requiere entrar al directorio)
+  if command -v proot-distro &>/dev/null; then
+    local _pd_out
+    _pd_out=$(proot-distro list 2>/dev/null)
+    local _d
+    for _d in debian ubuntu fedora archlinux; do
+      if echo "$_pd_out" | grep -qE "^\s*\*?\s*${_d}\b"; then
+        if [ -d "$ROOTFS_BASE/$_d" ]; then
+          DISTRO_NAME="$_d"
+          ROOTFS_PATH="$ROOTFS_BASE/$_d"
+          return 0
+        fi
+      fi
+    done
+  fi
+  # Método 2: fallback por directorio (solo verificar que el dir existe)
   if [ -d "$ROOTFS_BASE" ]; then
-    for d in "$ROOTFS_BASE"/*/; do
-      d="${d%/}"   # quitar trailing slash
-      if [ -f "${d}/bin/bash" ] || [ -f "${d}/usr/bin/bash" ] || [ -f "${d}/etc/os-release" ]; then
-        DISTRO_NAME=$(basename "$d")
-        ROOTFS_PATH="$d"
+    local _rd
+    for _rd in "$ROOTFS_BASE"/*/; do
+      _rd="${_rd%/}"
+      if [ -d "$_rd" ]; then
+        DISTRO_NAME=$(basename "$_rd")
+        ROOTFS_PATH="$_rd"
         return 0
       fi
     done

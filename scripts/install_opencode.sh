@@ -82,8 +82,9 @@ echo -e "${NC}"
 
 # ============================================================
 # PASO 1 — Verificar proot-distro y rootfs Debian
-# Método canónico: detección por directorio (no proot-distro list)
-# Ref: ARCHITECTURE.md §3.11 — proot-distro list produce falsos negativos
+# FUENTE PRIMARIA: proot-distro list (fiable con permisos 700 del rootfs)
+# FALLBACK: enumeración de directorios en installed-rootfs/
+# Fix S22: permisos 0700 en debian/ bloqueaban [ -f dir/bin/bash ]
 # ============================================================
 titulo "PASO 1 — Verificando entorno proot"
 
@@ -96,24 +97,40 @@ if ! command -v proot-distro &>/dev/null; then
     error "No se pudo instalar proot-distro."
 fi
 
-# ── Detección canónica del rootfs por directorio ─────────────
-# NO usar proot-distro list (produce falsos negativos documentados)
 ROOTFS_BASE="${TERMUX_PREFIX}/var/lib/proot-distro/installed-rootfs"
 DISTRO_NAME=""
 ROOTFS_PATH=""
 _detect_rootfs() {
   DISTRO_NAME=""
   ROOTFS_PATH=""
-  if [ -d "$ROOTFS_BASE" ]; then
-    for _d in "$ROOTFS_BASE"/*/; do
-      _d="${_d%/}"
-      if [ -f "${_d}/bin/bash" ] || [ -f "${_d}/usr/bin/bash" ] || [ -f "${_d}/etc/os-release" ]; then
-        DISTRO_NAME=$(basename "$_d")
-        ROOTFS_PATH="$_d"
-        break
+  # Método 1: proot-distro list (no requiere entrar al directorio)
+  if command -v proot-distro &>/dev/null; then
+    local _pd_out
+    _pd_out=$(proot-distro list 2>/dev/null)
+    local _d
+    for _d in debian ubuntu fedora archlinux; do
+      if echo "$_pd_out" | grep -qE "^\s*\*?\s*${_d}\b"; then
+        if [ -d "$ROOTFS_BASE/$_d" ]; then
+          DISTRO_NAME="$_d"
+          ROOTFS_PATH="$ROOTFS_BASE/$_d"
+          return 0
+        fi
       fi
     done
   fi
+  # Método 2: fallback por directorio (solo verificar que el dir existe)
+  if [ -d "$ROOTFS_BASE" ]; then
+    local _rd
+    for _rd in "$ROOTFS_BASE"/*/; do
+      _rd="${_rd%/}"
+      if [ -d "$_rd" ]; then
+        DISTRO_NAME=$(basename "$_rd")
+        ROOTFS_PATH="$ROOTFS_BASE/$DISTRO_NAME"
+        return 0
+      fi
+    done
+  fi
+  return 1
 }
 _detect_rootfs
 
@@ -143,9 +160,8 @@ else
       ;;
     2)
       info "Instalando Debian con proot-distro..."
-      if [ -d "$ROOTFS_BASE/debian" ] && \
-         { [ -f "$ROOTFS_BASE/debian/bin/bash" ] || [ -f "$ROOTFS_BASE/debian/usr/bin/bash" ] || [ -f "$ROOTFS_BASE/debian/etc/os-release" ]; }; then
-        log "Rootfs debian ya existe en disco — saltando instalación"
+      if proot-distro list 2>/dev/null | grep -qE "^\s*\*?\s*debian\b"; then
+        log "Rootfs debian ya registrado en proot-distro — saltando instalación"
       else
         _INSTALL_OUT=$(proot-distro install debian 2>&1)
         _INSTALL_RC=$?
@@ -215,7 +231,9 @@ if check_done "debian_deps"; then
 else
   info "Actualizando apt e instalando dependencias..."
   proot-distro login "$DISTRO_NAME" -- bash -c \
-    'apt update -qq && apt install -y curl ripgrep tmux nodejs npm 2>&1 | tail -5' || \
+    'export HOME=/root
+     apt-get update -qq -o Acquire::Check-Valid-Until=false 2>/dev/null || true
+     apt-get install -y --no-install-recommends curl ripgrep tmux nodejs npm 2>&1 | tail -5' || \
     warn "Algunas dependencias pueden no haberse instalado — continuando..."
 
   log "Dependencias instaladas"
@@ -233,20 +251,24 @@ else
   # Estrategia 1: instalador oficial
   info "Intentando instalador oficial (curl | bash)..."
   proot-distro login "$DISTRO_NAME" -- bash -c \
-    'curl -fsSL https://opencode.ai/install | bash 2>&1' && \
+    'export HOME=/root
+     curl -fsSL https://opencode.ai/install | bash 2>&1' && \
     OC_OK=true || OC_OK=false
 
-  # Verificar que realmente funciona
+  # Verificar que realmente funciona — PATH explícito, sin source bashrc
   if $OC_OK; then
     proot-distro login "$DISTRO_NAME" -- bash -c \
-      'source ~/.bashrc && command -v opencode' &>/dev/null 2>&1 || OC_OK=false
+      'export HOME=/root
+       export PATH="/root/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+       command -v opencode' &>/dev/null 2>&1 || OC_OK=false
   fi
 
   # Estrategia 2: npm
   if ! $OC_OK; then
     warn "Instalador oficial falló — intentando vía npm..."
     proot-distro login "$DISTRO_NAME" -- bash -c \
-      'npm install -g opencode-ai 2>&1 | tail -5' && \
+      'export HOME=/root
+       npm install -g opencode-ai 2>&1 | tail -5' && \
       OC_OK=true || OC_OK=false
   fi
 
@@ -254,11 +276,19 @@ else
     error "No se pudo instalar OpenCode. Verifica tu conexión e intenta de nuevo."
   fi
 
-  # Obtener versión instalada
+  # Obtener versión — PATH explícito, sin source bashrc
   OC_VER=$(proot-distro login "$DISTRO_NAME" -- bash -c \
-    'source ~/.bashrc 2>/dev/null; opencode --version 2>/dev/null | head -1' 2>/dev/null \
+    'export HOME=/root
+     export PATH="/root/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+     opencode --version 2>/dev/null | head -1' 2>/dev/null \
     | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
   [ -z "$OC_VER" ] && OC_VER="unknown"
+
+  # Asegurar que ~/.local/bin esté en PATH del proot para futuras sesiones
+  proot-distro login "$DISTRO_NAME" -- bash -c \
+    'export HOME=/root
+     grep -q "\.local/bin" /root/.bashrc 2>/dev/null || \
+       echo "export PATH=\"\$HOME/.local/bin:\$PATH\"" >> /root/.bashrc' 2>/dev/null || true
 
   log "OpenCode instalado: v${OC_VER}"
   mark_done "opencode_install"

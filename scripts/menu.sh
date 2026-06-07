@@ -84,24 +84,47 @@ REMOTE_SCRIPTS="$SCRIPTS_DIR/remote"
 EXPO_SCRIPTS="$SCRIPTS_DIR/expo"
 
 # ════════════════════════════════════════════
-#  DETECCIÓN ROOTFS PROOT — canónica por directorio
-#  NO usar proot-distro list (falsos negativos — ARCHITECTURE.md §3.11)
+#  DETECCIÓN ROOTFS PROOT — Fix S22
+#  PRIMARIO: proot-distro list (funciona con permisos 0700)
+#  FALLBACK:  enumeración de directorios (solo [ -d ], no [ -f ] interno)
 #  Variable global — heredada por menu_proot.sh via source
 # ════════════════════════════════════════════
 DISTRO_NAME=""
 ROOTFS_PATH=""
 _ROOTFS_BASE="${TERMUX_PREFIX}/var/lib/proot-distro/installed-rootfs"
-if [ -d "$_ROOTFS_BASE" ]; then
-  for _d in "$_ROOTFS_BASE"/*/; do
-    _d="${_d%/}"   # quitar trailing slash
-    if [ -f "${_d}/bin/bash" ] || [ -f "${_d}/usr/bin/bash" ] || [ -f "${_d}/etc/os-release" ]; then
-      DISTRO_NAME=$(basename "$_d")
-      ROOTFS_PATH="$_d"
-      break
-    fi
-  done
-fi
-unset _d
+
+_refresh_distro() {
+  DISTRO_NAME=""
+  ROOTFS_PATH=""
+  # Método 1: proot-distro list (no requiere entrar al dir 0700)
+  if command -v proot-distro &>/dev/null; then
+    local _pd_out _d
+    _pd_out=$(proot-distro list 2>/dev/null)
+    for _d in debian ubuntu fedora archlinux; do
+      if echo "$_pd_out" | grep -qE "^\s*\*?\s*${_d}\b"; then
+        if [ -d "$_ROOTFS_BASE/$_d" ]; then
+          DISTRO_NAME="$_d"
+          ROOTFS_PATH="$_ROOTFS_BASE/$_d"
+          return 0
+        fi
+      fi
+    done
+  fi
+  # Método 2: fallback — solo verificar existencia del dir, no su interior
+  if [ -d "$_ROOTFS_BASE" ]; then
+    local _rd
+    for _rd in "$_ROOTFS_BASE"/*/; do
+      _rd="${_rd%/}"
+      if [ -d "$_rd" ]; then
+        DISTRO_NAME=$(basename "$_rd")
+        ROOTFS_PATH="$_rd"
+        return 0
+      fi
+    done
+  fi
+  return 1
+}
+_refresh_distro
 
 # ════════════════════════════════════════════
 #  CREAR ESTRUCTURA DE CARPETAS
@@ -394,23 +417,23 @@ check_openclaude()      { _run_check_nativo check_openclaude      "$@"; }
 #     devolverían not_installed aunque ya instaló
 # ════════════════════════════════════════════
 _post_install_cleanup() {
-  # 1. Forzar reload de módulos en la próxima iteración
-  #    Las funciones en memoria quedan del source anterior —
-  #    tras instalar n8n/openclaw/opencode el proot cambió
+  # 1. Re-detectar DISTRO_NAME — puede haberse instalado durante este paso
+  _refresh_distro
+
+  # 2. Forzar reload de módulos en la próxima iteración
   _PROOT_LOADED=0
   _NATIVO_LOADED=0
 
-  # 2. Limpiar caché de estado — el módulo acaba de instalarse
+  # 3. Limpiar caché de estado — el módulo acaba de instalarse
   _invalidate_cache
 
-  # 3. Drenar stdin residual — proot/npm/wget pueden dejar
+  # 4. Drenar stdin residual — proot/npm/wget pueden dejar
   #    bytes en el buffer de /dev/tty que el siguiente
   #    read -r OPT < /dev/tty consumiría como opción
-  #    Timeout 0 = no bloquea si no hay nada que leer
   local _drain
   while IFS= read -r -t 0 _drain < /dev/tty 2>/dev/null; do :; done
 
-  # 4. Mensaje orientativo — el usuario sabe que el estado se refresca
+  # 5. Mensaje orientativo
   echo -e "\n  ${CYAN}[INFO]${NC} Recargando stack..."
 }
 

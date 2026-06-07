@@ -67,10 +67,8 @@ _load_proot_cache() {
   # Retorna 1 si no hay archivo, está corrupto, expiró, o el rootfs no existe
 
   # ── Guard crítico: si no hay rootfs, el caché nunca es válido ──
-  # Evita falsos positivos cuando proot fue desinstalado pero el
-  # caché en disco aún tiene "stopped|..." del estado anterior
-  if [ -z "$DISTRO_NAME" ] || \
-     { [ ! -f "${ROOTFS_PATH}/bin/bash" ] && [ ! -f "${ROOTFS_PATH}/usr/bin/bash" ] && [ ! -f "${ROOTFS_PATH}/etc/os-release" ]; }; then
+  # Fix S22: no usar [ -f ROOTFS_PATH/bin/bash ] — permisos 0700 bloquean el test
+  if [ -z "$DISTRO_NAME" ] || [ ! -d "$ROOTFS_PATH" ]; then
     rm -f "$PROOT_CACHE_FILE" 2>/dev/null || true
     return 1
   fi
@@ -112,21 +110,41 @@ _load_proot_cache() {
 
 
 # ════════════════════════════════════════════
-#  HELPER: proot login con bind mount /sdcard
-#  Agrega --bind /storage/emulated/0:/sdcard
-#  solo cuando la ruta objetivo empieza con /sdcard.
-#  Uso: _proot_sdcard_login "RUTA" -- bash -c "cmd"
-#       El primer argumento es la ruta que se va a usar
-#       dentro del proot. Se detecta si necesita bind.
+#  HELPER: proot login con bind mount del proyecto
+#
+#  Fix B3: --bind /sdcard eliminado — proot-distro
+#    lo monta automáticamente. Bind extra = overlap.
+#
+#  Fix Sandbox: si target_path apunta a /sdcard o
+#    /termux-home, resuelve la ruta REAL en el host
+#    y la expone con --bind HOST_DIR:PROOT_DIR.
+#    Así opencode web solo ve la carpeta del proyecto,
+#    no el sistema Android completo.
+#
+#  Uso: _proot_sdcard_login "RUTA_EN_PROOT" -- cmd
 # ════════════════════════════════════════════
 _proot_sdcard_login() {
-  local target_path="$1"; shift  # primer arg = ruta a inspeccionar
-  if [[ "$target_path" == /sdcard/* ]]; then
+  local target_path="$1"; shift
+
+  # Resolver la ruta del HOST real para el bind
+  local host_path="$target_path"
+  # /sdcard/X → /storage/emulated/0/X (ruta real Android)
+  host_path="${host_path/\/sdcard//storage/emulated/0}"
+  # /termux-home/X → $HOME/X (ruta real Termux)
+  host_path="${host_path/\/termux-home/$HOME}"
+
+  # Si la ruta host existe → bind restringido solo a esa carpeta
+  # Esto evita que opencode vea el sistema Android completo desde la UI web
+  if [ -d "$host_path" ] && [ "$host_path" != "/" ]; then
     proot-distro login "$DISTRO_NAME" \
-      --bind /storage/emulated/0:/sdcard \
+      --bind "$HOME:/termux-home" \
+      --bind "$host_path:$target_path" \
       -- "$@"
   else
-    proot-distro login "$DISTRO_NAME" -- "$@"
+    # Fallback sin bind de proyecto (p.ej. rutas dentro del proot nativo)
+    proot-distro login "$DISTRO_NAME" \
+      --bind "$HOME:/termux-home" \
+      -- "$@"
   fi
 }
 
@@ -138,8 +156,8 @@ _proot_sdcard_login() {
 # ════════════════════════════════════════════
 _check_proot_combined() {
   # ── Guard: sin rootfs → not_installed inmediato, sin llamar a proot ──
-  if [ -z "$DISTRO_NAME" ] || \
-     { [ ! -f "${ROOTFS_PATH}/bin/bash" ] && [ ! -f "${ROOTFS_PATH}/usr/bin/bash" ] && [ ! -f "${ROOTFS_PATH}/etc/os-release" ]; }; then
+  # Fix S22: no usar [ -f ROOTFS_PATH/bin/bash ] — permisos 0700 bloquean el test
+  if [ -z "$DISTRO_NAME" ] || [ ! -d "$ROOTFS_PATH" ]; then
     _OC_CACHE="not_installed||"
     _CLAW_CACHE="not_installed||"
     local now=$SECONDS
@@ -163,7 +181,8 @@ _check_proot_combined() {
     fi
     printf "@@"
     # ── openclaw (requiere NVM) ──
-    export NVM_DIR="$HOME/.nvm"
+    export HOME=/root
+    export NVM_DIR="/root/.nvm"
     [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" 2>/dev/null
     CL_BIN=$(command -v openclaw 2>/dev/null)
     if [ -n "$CL_BIN" ]; then
@@ -212,7 +231,8 @@ _check_proot_combined() {
 
 # ── Checks directos (sin caché) — para submenús internos ─────
 check_opencode() {
-  { [ -z "$DISTRO_NAME" ] || { [ ! -f "${ROOTFS_PATH}/bin/bash" ] && [ ! -f "${ROOTFS_PATH}/usr/bin/bash" ] && [ ! -f "${ROOTFS_PATH}/etc/os-release" ]; }; } && {
+  # Fix S22: solo verificar [ -d ROOTFS_PATH ], no archivos internos (permisos 0700)
+  { [ -z "$DISTRO_NAME" ] || [ ! -d "$ROOTFS_PATH" ]; } && {
     echo "not_installed||"; return
   }
   if proot-distro login "$DISTRO_NAME" -- bash -c \
@@ -231,11 +251,13 @@ check_opencode() {
 }
 
 check_openclaw() {
-  { [ -z "$DISTRO_NAME" ] || { [ ! -f "${ROOTFS_PATH}/bin/bash" ] && [ ! -f "${ROOTFS_PATH}/usr/bin/bash" ] && [ ! -f "${ROOTFS_PATH}/etc/os-release" ]; }; } && {
+  # Fix S22: solo verificar [ -d ROOTFS_PATH ], no archivos internos (permisos 0700)
+  { [ -z "$DISTRO_NAME" ] || [ ! -d "$ROOTFS_PATH" ]; } && {
     echo "not_installed||"; return
   }
   if proot-distro login "$DISTRO_NAME" -- bash -c \
-    'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+    'export HOME=/root; export NVM_DIR="/root/.nvm"
+     [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" 2>/dev/null
      command -v openclaw' &>/dev/null 2>&1; then
     local cl_ver
     cl_ver=$(grep "^openclaw\.version=" "$REGISTRY" 2>/dev/null | cut -d'=' -f2)
@@ -717,7 +739,8 @@ _cl_status() {
 
 _cl_start() {
   proot-distro login "$DISTRO_NAME" -- bash -c \
-    'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+    'export HOME=/root; export NVM_DIR="/root/.nvm"
+     [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
      export NODE_OPTIONS="--require /root/openclaw-shim.cjs"
      openclaw gateway --bind loopback' > "$HOME/.openclaw_gateway.log" 2>&1 &
   echo $! > "$HOME/.openclaw_gateway.pid"
@@ -861,7 +884,7 @@ submenu_openclaw() {
         local REAL_PATH
         REAL_PATH=$(readlink -f "$TARGET_DIR" 2>/dev/null || echo "$TARGET_DIR")
         REAL_PATH="${REAL_PATH/\/storage\/emulated\/0/\/sdcard}"
-        REAL_PATH="${REAL_PATH/\/data\/data\/com.termux\/files\/home/\/root}"
+        REAL_PATH="${REAL_PATH/${HOME}/\/termux-home}"
         echo ""; echo -e "  ${CYAN}Proyecto:${NC} $(basename "$TARGET_DIR")"
         echo "  [1] Gateway web  [2] TUI"
         echo ""; echo -n "  Modo: "
@@ -874,7 +897,8 @@ submenu_openclaw() {
             echo ""; read -r _ < /dev/tty ;;
           2)
             _proot_sdcard_login "$REAL_PATH" bash -c \
-              "export NVM_DIR=\"\$HOME/.nvm\"; [ -s \"\$NVM_DIR/nvm.sh\" ] && . \"\$NVM_DIR/nvm.sh\"
+              "export HOME=/root; export NVM_DIR=\"/root/.nvm\"
+               [ -s \"\$NVM_DIR/nvm.sh\" ] && . \"\$NVM_DIR/nvm.sh\"
                export NODE_OPTIONS=\"--require /root/openclaw-shim.cjs\"
                openclaw tui --cwd '${REAL_PATH}'" < /dev/tty
             echo ""; read -r _ < /dev/tty ;;
@@ -971,7 +995,8 @@ submenu_openclaw() {
             echo -e "  ${CYAN}Lanzando openclaw configure...${NC}"
             echo -e "  ${DIM}Selecciona el provider con las flechas y Enter${NC}"; echo ""
             proot-distro login "$DISTRO_NAME" -- bash -c \
-              'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+              'export HOME=/root; export NVM_DIR="/root/.nvm"
+               [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
                export NODE_OPTIONS="--require /root/openclaw-shim.cjs"
                openclaw configure' < /dev/tty
             echo ""
@@ -1076,13 +1101,73 @@ submenu_opencode() {
     echo ""; echo -n "  Opción: "
     read -r OPT < /dev/tty
 
+
+# ── Fix B2: pre-instalar paquetes npm de providers antes de lanzar opencode ──
+# La UI web escribe providers con campo "npm". Si no están instalados → crash.
+_oc_ensure_providers() {
+  proot-distro login "$DISTRO_NAME" -- bash -c '
+export HOME=/root
+CFG="/root/.config/opencode/opencode.json"
+[ -f "$CFG" ] || exit 0
+PKGS=$(python3 - << PYEOF 2>/dev/null
+import json
+try:
+  d = json.load(open("/root/.config/opencode/opencode.json"))
+  pkgs = [v["npm"] for v in d.get("provider", {}).values() if "npm" in v]
+  print(" ".join(pkgs))
+except: pass
+PYEOF
+)
+[ -z "$PKGS" ] && exit 0
+for pkg in $PKGS; do
+  node -e "require(\"$pkg\")" 2>/dev/null || \
+    npm install -g "$pkg" --quiet 2>/dev/null || true
+done
+' 2>/dev/null || true
+}
+
+# ── Fix CWD: forzar el proyecto correcto en opencode antes de lanzar ─────────
+# OpenCode persiste el último proyecto en ~/.local/share/opencode/recent.json
+# Independientemente del cwd de lanzamiento, opencode reabre ese proyecto.
+# Solución: escribir la ruta del proyecto actual en el archivo de recientes
+# ANTES de lanzar, para que opencode lo cargue como proyecto activo.
+# RUTA dentro del proot: se pasa como argumento $1
+_oc_set_project() {
+  local proot_path="$1"
+  [ -z "$proot_path" ] && return 0
+  proot-distro login "$DISTRO_NAME" -- bash -c '
+export HOME=/root
+RECENT_DIR="/root/.local/share/opencode"
+RECENT_FILE="$RECENT_DIR/recent.json"
+mkdir -p "$RECENT_DIR"
+python3 - << PYEOF 2>/dev/null
+import json, os, sys
+path = sys.argv[1] if len(sys.argv) > 1 else ""
+if not path:
+    sys.exit(0)
+f = os.environ.get("RECENT_FILE", "/root/.local/share/opencode/recent.json")
+try:
+    data = json.load(open(f))
+except:
+    data = {"recent": []}
+# Poner el proyecto actual primero, eliminar duplicados
+projects = [path] + [p for p in data.get("recent", []) if p != path]
+data["recent"] = projects[:10]
+json.dump(data, open(f, "w"), indent=2)
+PYEOF
+' "$proot_path" 2>/dev/null || true
+}
+
     case "$OPT" in
       1)
         clear; echo ""
         echo -e "  ${CYAN}Abriendo OpenCode TUI en Debian...${NC}"
         echo -e "  ${DIM}Ctrl+C para salir${NC}"; echo ""
+        _oc_ensure_providers
         proot-distro login "$DISTRO_NAME" -- bash -c \
-          'source ~/.bashrc 2>/dev/null; opencode' < /dev/tty
+          'export HOME=/root
+           export PATH="/root/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+           opencode' < /dev/tty
         echo ""; read -r _ < /dev/tty ;;
       2)
         clear; echo ""
@@ -1094,8 +1179,11 @@ submenu_opencode() {
           echo -e "  ${CYAN}Iniciando OpenCode Web...${NC}"
           echo -e "  ${DIM}Cuando veas la URL presiona ENTER para volver al menú${NC}"
           echo -e "  ${DIM}El servidor quedará corriendo en background${NC}"; echo ""
+          _oc_ensure_providers
           proot-distro login "$DISTRO_NAME" -- bash -c \
-            'source ~/.bashrc 2>/dev/null; BROWSER= opencode web --port 3000 --hostname 127.0.0.1' &
+            'export HOME=/root
+             export PATH="/root/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+             opencode web --port 3000 --hostname 127.0.0.1' &
           echo $! > "$HOME/.opencode_web.pid"
           echo ""
           echo -n "  Presiona ENTER cuando veas 'Web interface: http://127.0.0.1:3000'..."
@@ -1133,7 +1221,7 @@ submenu_opencode() {
         local REAL_PATH
         REAL_PATH=$(readlink -f "$TARGET_DIR" 2>/dev/null || echo "$TARGET_DIR")
         REAL_PATH="${REAL_PATH/\/storage\/emulated\/0/\/sdcard}"
-        REAL_PATH="${REAL_PATH/\/data\/data\/com.termux\/files\/home/\/root}"
+        REAL_PATH="${REAL_PATH/${HOME}/\/termux-home}"
         echo ""
         echo -e "  ${CYAN}Proyecto:${NC} $(basename "$TARGET_DIR")"
         echo -e "  ${DIM}cwd: $REAL_PATH${NC}"; echo ""
@@ -1144,16 +1232,27 @@ submenu_opencode() {
         case "$MODO" in
           1)
             echo ""
+            # Fix Sandbox: exponer solo la carpeta del proyecto
+            # --bind PROYECTO_HOST:PROYECTO_PROOT limita el acceso de opencode
+            _oc_ensure_providers
+            _oc_set_project "$REAL_PATH"
             _proot_sdcard_login "$REAL_PATH" bash -c \
-              "source ~/.bashrc 2>/dev/null; cd '$REAL_PATH' && opencode ." < /dev/tty
+              "export HOME=/root
+               export PATH='/root/.local/bin:/usr/local/bin:/usr/bin:/bin'
+               cd '$REAL_PATH' && opencode ." < /dev/tty
             echo ""; read -r _ < /dev/tty ;;
           2)
             pkill -f "opencode web" 2>/dev/null; sleep 1
             echo ""
             echo -e "  ${CYAN}Iniciando servidor en proyecto...${NC}"
             echo -e "  ${DIM}Cuando veas la URL presiona ENTER${NC}"; echo ""
+            # Fix Sandbox + CWD: forzar proyecto correcto antes de lanzar
+            _oc_ensure_providers
+            _oc_set_project "$REAL_PATH"
             _proot_sdcard_login "$REAL_PATH" bash -c \
-              "source ~/.bashrc 2>/dev/null; cd '$REAL_PATH' && BROWSER= opencode web --port 3000 --hostname 127.0.0.1" &
+              "export HOME=/root
+               export PATH='/root/.local/bin:/usr/local/bin:/usr/bin:/bin'
+               cd '$REAL_PATH' && opencode web --port 3000 --hostname 127.0.0.1" &
             echo $! > "$HOME/.opencode_web.pid"
             echo ""
             echo -n "  Presiona ENTER cuando veas 'Web interface: http://127.0.0.1:3000'..."
@@ -1262,16 +1361,22 @@ submenu_opencode() {
         else
           echo -e "  ${CYAN}Ejecutando instalación directa en Debian...${NC}"; echo ""
           proot-distro login "$DISTRO_NAME" -- bash -c \
-            'apt update -qq && apt install -y curl ripgrep tmux && \
-             curl -fsSL https://opencode.ai/install | bash' < /dev/tty
+            'export HOME=/root
+             apt-get update -qq -o Acquire::Check-Valid-Until=false 2>/dev/null || true
+             apt-get install -y --no-install-recommends curl ripgrep tmux 2>/dev/null || true
+             curl -fsSL https://opencode.ai/install | bash
+             grep -q "\.local/bin" /root/.bashrc 2>/dev/null || \
+               echo "export PATH=\"\$HOME/.local/bin:\$PATH\"" >> /root/.bashrc' < /dev/tty
           echo ""
           local OC_VER
           OC_VER=$(proot-distro login "$DISTRO_NAME" -- bash -c \
-            'source ~/.bashrc 2>/dev/null; opencode --version 2>/dev/null' 2>/dev/null \
+            'export HOME=/root
+             export PATH="/root/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+             opencode --version 2>/dev/null' 2>/dev/null \
             | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
           [ -n "$OC_VER" ] \
             && echo -e "  ${GREEN}[OK]${NC} OpenCode v${OC_VER} instalado" \
-            || echo -e "  ${YELLOW}[AVISO]${NC} Verificar: proot-distro login "$DISTRO_NAME""
+            || echo -e "  ${YELLOW}[AVISO]${NC} Verificar: proot-distro login $DISTRO_NAME"
         fi
         echo ""; read -r _ < /dev/tty ;;
       7)

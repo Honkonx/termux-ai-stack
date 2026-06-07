@@ -95,24 +95,43 @@ HEADER
 echo -e "${NC}"
 
 # ── Detección canónica del rootfs ────────────────────────────
-# Función reutilizable — NO usar proot-distro list (falsos negativos)
-# Ref: ARCHITECTURE.md §3.11
+# FUENTE PRIMARIA: proot-distro list (fiable con permisos 700 del rootfs)
+# FALLBACK: enumeración de directorios en installed-rootfs/
+# Fix: permisos 0700 en debian/ impiden [ -f dir/bin/bash ] desde scripts
 ROOTFS_BASE="$TERMUX_PREFIX/var/lib/proot-distro/installed-rootfs"
 DISTRO_NAME=""
 ROOTFS_PATH=""
 _detect_rootfs() {
   DISTRO_NAME=""
   ROOTFS_PATH=""
-  if [ -d "$ROOTFS_BASE" ]; then
-    for _d in "$ROOTFS_BASE"/*/; do
-      _d="${_d%/}"   # quitar trailing slash
-      if [ -f "${_d}/bin/bash" ] || [ -f "${_d}/usr/bin/bash" ] || [ -f "${_d}/etc/os-release" ]; then
-        DISTRO_NAME=$(basename "$_d")
-        ROOTFS_PATH="$_d"
-        break
+  # Método 1: proot-distro list (no requiere entrar al directorio)
+  if command -v proot-distro &>/dev/null; then
+    local _pd_out
+    _pd_out=$(proot-distro list 2>/dev/null)
+    local _d
+    for _d in debian ubuntu fedora archlinux; do
+      if echo "$_pd_out" | grep -qE "^\s*\*?\s*${_d}\b"; then
+        if [ -d "$ROOTFS_BASE/$_d" ]; then
+          DISTRO_NAME="$_d"
+          ROOTFS_PATH="$ROOTFS_BASE/$_d"
+          return 0
+        fi
       fi
     done
   fi
+  # Método 2: fallback por directorio (si proot-distro no está o no lista)
+  if [ -d "$ROOTFS_BASE" ]; then
+    local _rd
+    for _rd in "$ROOTFS_BASE"/*/; do
+      _rd="${_rd%/}"
+      if [ -d "$_rd" ]; then
+        DISTRO_NAME=$(basename "$_rd")
+        ROOTFS_PATH="$_rd"
+        return 0
+      fi
+    done
+  fi
+  return 1
 }
 _detect_rootfs
 
@@ -375,12 +394,12 @@ fi
 
 # ============================================================
 # PASO 3 — Instalar Debian Bookworm (proot)
-# Detección canónica: por directorio, no por nombre hardcodeado.
-# Ref: ARCHITECTURE.md §3.11 — proot-distro list produce falsos negativos
+# Detección canónica: proot-distro list + fallback por directorio.
+# Fix S22: permisos 0700 en debian/ bloqueaban [ -f dir/bin/bash ]
 # ============================================================
 titulo "PASO 3 — Instalando Debian Bookworm"
 
-# ── Detección canónica PASO 3 (re-usar función) ──────────────
+# ── Re-detección en PASO 3 ────────────────────────────────────
 _detect_rootfs
 
 if [ "${CLEAN_ROOTFS:-true}" = "false" ]; then
@@ -442,7 +461,12 @@ else
   info "Instalando software en Debian (15-25 min)..."
   info "No cierres Termux durante este paso..."
 
-  proot-distro login "$DISTRO_NAME" -- bash << 'INNER'
+  # IMPORTANTE: proot-distro login consume stdin antes de lanzar bash.
+  # bash << 'HEREDOC' nunca recibe los comandos → exit 0 sin instalar nada.
+  # Solución: escribir script a archivo dentro del rootfs, ejecutar con bash /ruta
+  _N8N_SETUP_SCRIPT="${ROOTFS_PATH}/root/n8n_setup_inner.sh"
+  cat > "$_N8N_SETUP_SCRIPT" << 'INNERSCRIPT'
+#!/bin/bash
 set -e
 export HOME=/root
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
@@ -450,8 +474,10 @@ export DEBIAN_FRONTEND=noninteractive
 DPKG_OPTS='-o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold'
 
 echo "[1/6] Actualizando sistema Debian..."
-apt-get update -qq
-apt-get upgrade -y -qq $DPKG_OPTS 2>/dev/null
+apt-get update -qq -o Acquire::Check-Valid-Until=false 2>/dev/null || \
+  apt-get update -qq --allow-insecure-repositories 2>/dev/null || \
+  echo "[AVISO] apt update tuvo errores — continuando de todos modos"
+apt-get upgrade -y -qq $DPKG_OPTS 2>/dev/null || true
 apt-get install -y -qq $DPKG_OPTS \
   curl wget git nano build-essential \
   python3 python3-pip python3-setuptools python3-dev \
@@ -470,7 +496,7 @@ NODE_MAJOR=$(node --version | sed 's/v//' | cut -d'.' -f1)
 echo "[3/6] Configurando Python/node-gyp..."
 export npm_config_python=$(which python3)
 export PYTHON=$(which python3)
-cat >> /root/.bashrc << 'PROFILE'
+grep -q "npm_config_python" /root/.bashrc 2>/dev/null || cat >> /root/.bashrc << 'PROFILE'
 export npm_config_python=$(which python3)
 export PYTHON=$(which python3)
 export N8N_HOST=0.0.0.0
@@ -497,9 +523,14 @@ echo "  Node.js:     $(node --version)"
 echo "  n8n:         $(n8n --version 2>/dev/null)"
 echo "  cloudflared: $(cloudflared --version 2>/dev/null | head -1)"
 echo "[COMPLETADO] Debian setup listo"
-INNER
+INNERSCRIPT
+  chmod +x "$_N8N_SETUP_SCRIPT"
 
-  [ $? -eq 0 ] || error "El setup de Debian falló. Re-ejecuta el script para reintentar."
+  proot-distro login "$DISTRO_NAME" -- bash /root/n8n_setup_inner.sh
+  _N8N_RC=$?
+  rm -f "$_N8N_SETUP_SCRIPT" 2>/dev/null
+
+  [ $_N8N_RC -eq 0 ] || error "El setup de Debian falló. Re-ejecuta el script para reintentar."
   mark_done "n8n_install"
   log "n8n + cloudflared instalados"
 fi
