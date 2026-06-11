@@ -124,6 +124,85 @@ check_openclaude() {
 }
 
 # ════════════════════════════════════════════
+#  CHECK HERMES AGENT
+#  Nativo Termux — Python venv en ~/.hermes/
+#  Binario: $PREFIX/bin/hermes (symlink)
+#  Config:  ~/.hermes/config.yaml
+#  Gateway: proceso tmux "hermes-gw" (opcional)
+# ════════════════════════════════════════════
+check_hermes() {
+  command -v hermes &>/dev/null || { echo "not_installed||"; return; }
+  local ver; ver=$(get_reg hermes version)
+  [ -z "$ver" ] && \
+    ver=$(hermes version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+  [ -z "$ver" ] && ver="?"
+  # Gateway corriendo = sesión tmux "hermes-gw" activa
+  tmux has-session -t "hermes-gw" 2>/dev/null \
+    && echo "running|${ver}|gw" \
+    || echo "stopped|${ver}|"
+}
+
+# ════════════════════════════════════════════
+#  CHECK OPENCODE NATIVO
+#  Verifica opencode en PATH nativo Termux.
+#  Prioridad sobre proot — instantáneo (~10ms).
+# ════════════════════════════════════════════
+check_opencode_native() {
+  # Buscar binario en PREFIX/bin (instalación nativa) o PATH
+  local _bin=""
+  if [ -f "${TERMUX_PREFIX}/bin/opencode" ]; then
+    _bin="${TERMUX_PREFIX}/bin/opencode"
+  elif command -v opencode &>/dev/null; then
+    _bin="$(command -v opencode)"
+  fi
+
+  [ -z "$_bin" ] && { echo "not_installed||native"; return; }
+
+  local ver; ver=$(get_reg opencode version)
+  # Si el registry dice proot, forzar re-lectura del binario
+  local loc; loc=$(get_reg opencode location)
+  if [ -z "$ver" ] || [ "$loc" = "proot_debian" ]; then
+    ver=$("$_bin" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+  fi
+  [ -z "$ver" ] && ver="?"
+  echo "ready|${ver}|native"
+}
+
+# ════════════════════════════════════════════
+#  CHECK OPENCLAW NATIVO
+#  Verifica openclaw en PATH nativo Termux.
+#  Prioridad sobre proot — instantáneo (~10ms).
+#  Rutas: $HOME/.npm-global/bin/openclaw
+#          o cualquier openclaw en PATH
+# ════════════════════════════════════════════
+check_openclaw_native() {
+  local _bin=""
+  # 1. npm-global (ruta estándar de install_openclaw.sh v2)
+  if [ -f "$HOME/.npm-global/bin/openclaw" ]; then
+    _bin="$HOME/.npm-global/bin/openclaw"
+  # 2. PREFIX/bin (instalación global al sistema)
+  elif [ -f "${TERMUX_PREFIX}/bin/openclaw" ]; then
+    _bin="${TERMUX_PREFIX}/bin/openclaw"
+  # 3. PATH genérico
+  elif command -v openclaw &>/dev/null; then
+    _bin="$(command -v openclaw)"
+  fi
+
+  [ -z "$_bin" ] && { echo "not_installed||native"; return; }
+
+  local ver; ver=$(get_reg openclaw version)
+  local loc; loc=$(get_reg openclaw location)
+  # Si registry dice proot_debian → leer versión directo del binario
+  if [ -z "$ver" ] || [ "$loc" = "proot_debian" ]; then
+    ver=$("$_bin" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9.]+' | head -1)
+  fi
+  [ -z "$ver" ] && ver="?"
+
+  # Estado: running si gateway responde en :18789, stopped si binario existe
+  curl -sf --max-time 1 http://127.0.0.1:18789 &>/dev/null     && echo "running|${ver}|native"     || echo "stopped|${ver}|native"
+}
+
+# ════════════════════════════════════════════
 #  VARIABLES GLOBALES OLLAMA
 # ════════════════════════════════════════════
 OLLAMA_CFG="$HOME/.ollama_chat_config"
@@ -1397,23 +1476,36 @@ submenu_code_tools() {
     local CC_S CC_V CC_E OC_S OC_V OC_E OCL_S OCL_V OCL_E
 
     if [ "$_FIRST_RENDER" = "1" ] && [ -n "$_CC_INIT" ] && [ -n "$_OC_INIT" ]; then
-      # Primer render: usar estados ya calculados — sin check adicional
+      # Primer render: estados pre-calculados — sin check adicional
       CC_S="$_CC_INIT"
       CC_V=$(get_reg claude_code version); [ -z "$CC_V" ] && CC_V="?"
       CC_E=""
-      OC_S="$_OC_INIT"
-      OC_V=$(echo "$_OC_CACHE" | cut -d'|' -f2); [ -z "$OC_V" ] && OC_V="?"
-      OC_E=""
+      # OpenCode: nativo tiene prioridad — check nativo es instantáneo
+      IFS='|' read -r _OCN_S _OCN_V _OCN_E <<< "$(check_opencode_native)"
+      if [ "$_OCN_S" = "ready" ]; then
+        OC_S="$_OCN_S"; OC_V="$_OCN_V"; OC_E="$_OCN_E"
+      else
+        OC_S="$_OC_INIT"
+        OC_V=$(echo "$_OC_CACHE" | cut -d'|' -f2); [ -z "$OC_V" ] && OC_V="?"
+        OC_E="proot"
+      fi
       IFS='|' read -r OCL_S OCL_V OCL_E <<< "$(check_openclaude)"
       _FIRST_RENDER=0
     else
-      # Renders siguientes: chequeo real
+      # Renders siguientes: chequeo real — nativo primero
       IFS='|' read -r CC_S CC_V CC_E   <<< "$(check_claude)"
-      IFS='|' read -r OC_S OC_V OC_E   <<< "$(check_opencode_cached)"
+      IFS='|' read -r _OCN_S _OCN_V _OCN_E <<< "$(check_opencode_native)"
+      if [ "$_OCN_S" = "ready" ]; then
+        OC_S="$_OCN_S"; OC_V="$_OCN_V"; OC_E="$_OCN_E"
+      else
+        IFS='|' read -r OC_S OC_V OC_E <<< "$(check_opencode_cached)"
+        [ "$OC_S" != "not_installed" ] && OC_E="proot"
+      fi
       IFS='|' read -r OCL_S OCL_V OCL_E <<< "$(check_openclaude)"
     fi
 
-    local CC_PILL OC_PILL OCL_PILL CC_METHOD_LABEL OCL_PROV_LABEL
+    # ── Pills y labels ────────────────────────────────────────
+    local CC_PILL OC_PILL OCL_PILL CC_METHOD_LABEL OC_MODE_LABEL OCL_PROV_LABEL
     case "$CC_S" in
       ready)
         case "$CC_E" in
@@ -1428,12 +1520,21 @@ submenu_code_tools() {
       *)
         CC_PILL="${YELLOW}● ${CC_S}${NC}"; CC_METHOD_LABEL="" ;;
     esac
+
+    # OpenCode: pill + badge de origen (native vs proot)
     case "$OC_S" in
-      running)       OC_PILL="${GREEN}● activo  ${NC}" ;;
-      stopped)       OC_PILL="${GREEN}● listo   ${NC}" ;;
-      not_installed) OC_PILL="${YELLOW}○ no instal${NC}"; OC_V="──────────" ;;
-      *)             OC_PILL="${YELLOW}● ${OC_S}${NC}" ;;
+      running)
+        OC_PILL="${GREEN}● activo  ${NC}"
+        [ "$OC_E" = "native" ] && OC_MODE_LABEL="${DIM}native · glibc${NC}" || OC_MODE_LABEL="${DIM}proot debian${NC}" ;;
+      ready|stopped)
+        OC_PILL="${GREEN}● listo   ${NC}"
+        [ "$OC_E" = "native" ] && OC_MODE_LABEL="${DIM}native · glibc${NC}" || OC_MODE_LABEL="${DIM}proot debian${NC}" ;;
+      not_installed)
+        OC_PILL="${YELLOW}○ no instal${NC}"; OC_V="──────────"; OC_MODE_LABEL="" ;;
+      *)
+        OC_PILL="${YELLOW}● ${OC_S}${NC}"; OC_MODE_LABEL="" ;;
     esac
+
     case "$OCL_S" in
       ready)         OCL_PILL="${GREEN}● listo   ${NC}" ;;
       not_installed) OCL_PILL="${YELLOW}○ no instal${NC}"; OCL_V="──────────" ;;
@@ -1461,7 +1562,7 @@ submenu_code_tools() {
     fi
     echo -e "  ║  ${DIM}──────────────────────────────────────${NC}${CYAN}${BOLD}║"
     printf  "  ║  ${NC}[2] OpenCode     %b  %b${CYAN}${BOLD}║\n" "$OC_PILL" "${NC}→ submenú${CYAN}${BOLD}"
-    printf  "  ║      ${NC}${DIM}%s${NC}${CYAN}${BOLD}%-$((28-${#OC_V}))s║\n" "$OC_V" ""
+    printf  "  ║      ${NC}v%-6s  %b${CYAN}${BOLD}%-16s║\n" "$OC_V" "$OC_MODE_LABEL" ""
     echo -e "  ║  ${DIM}──────────────────────────────────────${NC}${CYAN}${BOLD}║"
     printf  "  ║  ${NC}[3] OpenClaude   %b  %b${CYAN}${BOLD}║\n" "$OCL_PILL" "${NC}→ submenú${CYAN}${BOLD}"
     printf  "  ║      ${NC}v%-6s  %b${CYAN}${BOLD}%-16s║\n" "$OCL_V" "$OCL_PROV_LABEL" ""
@@ -1491,7 +1592,11 @@ submenu_code_tools() {
       2)
         if [ "$OC_S" = "not_installed" ]; then
           install_module "OpenCode" "opencode"
+        elif [ "$OC_E" = "native" ]; then
+          # Nativo instalado → submenú nativo (sin proot)
+          submenu_opencode_native
         else
+          # Proot instalado → submenú proot existente
           submenu_opencode
         fi ;;
       3)
@@ -1502,6 +1607,593 @@ submenu_code_tools() {
         else
           submenu_openclaude
         fi ;;
+      b|B|"") break ;;
+    esac
+  done
+}
+
+# ════════════════════════════════════════════
+#  SUBMENÚ OPENCODE NATIVO
+#  Para instalaciones con location=termux_native
+#  (sin proot — acceso directo a $HOME Termux)
+# ════════════════════════════════════════════
+submenu_opencode_native() {
+  local OC_PROJ_DIR="$HOME/proyectos"
+
+  # ════════════════════════════════════════════
+  #  HELPERS INTERNOS
+  # ════════════════════════════════════════════
+
+  # Navegar por /storage/emulated/0 y seleccionar carpeta.
+  # Resultado en $_STORAGE_SEL; retorna 0=ok 1=cancelado.
+  _storage_browser() {
+    local cur_dir="${1:-/storage/emulated/0}"
+    _STORAGE_SEL=""
+    while true; do
+      clear; echo ""
+      echo -e "  ${CYAN}${BOLD}Seleccionar carpeta del almacenamiento${NC}"
+      echo -e "  ${DIM}${cur_dir}${NC}"; echo ""
+      local -a DIRS=()
+      while IFS= read -r d; do
+        DIRS+=("$d")
+      done < <(find "$cur_dir" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | sort)
+      if [ ${#DIRS[@]} -eq 0 ]; then
+        echo -e "  ${DIM}(sin subcarpetas)${NC}"; echo ""
+      else
+        for i in "${!DIRS[@]}"; do
+          printf "  ${BOLD}[%d]${NC} %s\n" "$((i+1))" "$(basename "${DIRS[$i]}")"
+        done; echo ""
+      fi
+      echo -e "  ${GREEN}[s]${NC} Seleccionar esta carpeta"
+      [ "$cur_dir" != "/storage/emulated/0" ] && \
+        echo -e "  ${YELLOW}[u]${NC} Subir un nivel"
+      echo -e "  ${RED}[b]${NC} Cancelar"
+      echo ""; echo -n "  Opción: "
+      read -r NAV < /dev/tty
+      case "$NAV" in
+        s|S) _STORAGE_SEL="$cur_dir"; return 0 ;;
+        u|U) [ "$cur_dir" != "/storage/emulated/0" ] && \
+               cur_dir="$(dirname "$cur_dir")" ;;
+        b|B|"") return 1 ;;
+        *)
+          if [[ "$NAV" =~ ^[0-9]+$ ]] && \
+             [ "$NAV" -ge 1 ] && [ "$NAV" -le "${#DIRS[@]}" ]; then
+            cur_dir="${DIRS[$((NAV-1))]}"
+          fi ;;
+      esac
+    done
+  }
+
+  # Iniciar servidor web — capturar URL con token del log de tmux.
+  # Uso: _oc_start_web PORT  →  imprime URL o vacío
+  _oc_start_web() {
+    local port="${1:-3000}" session="opencode"
+    pkill -f "opencode web" 2>/dev/null
+    tmux kill-session -t "$session" 2>/dev/null || true
+    sleep 1
+    rm -f "$HOME/.opencode_web.log"
+    # Sin --cwd: opencode web muestra todo el FS de Termux desde la UI
+    tmux new-session -d -s "$session" \
+      "opencode web --port $port --hostname 127.0.0.1 2>&1 | tee $HOME/.opencode_web.log"
+    # Esperar URL en log (máx 8s)
+    local url="" i=0
+    while [ $i -lt 16 ]; do
+      sleep 0.5; i=$((i+1))
+      url=$(grep -o 'http://127\.0\.0\.1:[0-9]*/[^ ]*' \
+        "$HOME/.opencode_web.log" 2>/dev/null | head -1)
+      [ -n "$url" ] && break
+    done
+    echo "$url"
+  }
+
+  # Leer origen registrado de un proyecto.
+  # Uso: _proj_origin "nombre"  →  ruta o vacío
+  _proj_origin() {
+    grep "^opencode_proj\.${1}=" "$REGISTRY" 2>/dev/null | cut -d'=' -f2-
+  }
+
+  # Registrar/actualizar origen de un proyecto.
+  _proj_set_origin() {
+    local name="$1" origin="$2"
+    grep -v "^opencode_proj\.${name}=" "$REGISTRY" > "$REGISTRY.tmp" 2>/dev/null \
+      || touch "$REGISTRY.tmp"
+    echo "opencode_proj.${name}=${origin}" >> "$REGISTRY.tmp"
+    mv "$REGISTRY.tmp" "$REGISTRY"
+  }
+
+  # Borrar registro de origen de un proyecto.
+  _proj_del_origin() {
+    grep -v "^opencode_proj\.${1}=" "$REGISTRY" > "$REGISTRY.tmp" 2>/dev/null \
+      || touch "$REGISTRY.tmp"
+    mv "$REGISTRY.tmp" "$REGISTRY"
+  }
+
+  # Leer URL activa del servidor (del log).
+  _oc_live_url() {
+    grep -o 'http://127\.0\.0\.1:[0-9]*/[^ ]*' \
+      "$HOME/.opencode_web.log" 2>/dev/null | head -1
+  }
+
+  # ════════════════════════════════════════════
+  #  MENÚ PRINCIPAL
+  # ════════════════════════════════════════════
+  while true; do
+    clear; echo ""
+    local _OC_VER; _OC_VER=$(get_reg opencode version)
+    [ -z "$_OC_VER" ] && \
+      _OC_VER=$(opencode --version 2>/dev/null \
+        | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+    [ -z "$_OC_VER" ] && _OC_VER="?"
+
+    local _WEB_STATUS="${YELLOW}○ detenido${NC}" _WEB_URL=""
+    if tmux has-session -t "opencode" 2>/dev/null; then
+      _WEB_STATUS="${GREEN}● activo${NC}"
+      _WEB_URL="$(_oc_live_url)"
+    fi
+
+    echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
+    echo    "  ║  ◆ OPENCODE  (nativo · glibc)           ║"
+    echo    "  ╠══════════════════════════════════════════╣"
+    printf  "  ║  ${NC}v%-6s  ${DIM}native · termux ARM64${NC}${CYAN}${BOLD}      ║\n" \
+            "$_OC_VER"
+    printf  "  ║  ${NC}Web: %-35b${CYAN}${BOLD}║\n" "$_WEB_STATUS"
+    [ -n "$_WEB_URL" ] && \
+      printf "  ║  ${GREEN}${DIM}%-40s${NC}${CYAN}${BOLD}║\n" "${_WEB_URL:0:40}"
+    echo    "  ╠══════════════════════════════════════════╣"
+    echo -e "  ║  ${NC}[1] TUI en terminal                    ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[2] Servidor web  (:3000)              ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[3] Servidor web  (:4096)              ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[4] Importar / Sincronizar proyectos   ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[5] Gestionar proyectos locales        ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[6] Detener servidor web               ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[7] Configurar Ollama local            ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[8] Instalar / actualizar              ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[b] Volver                             ${CYAN}${BOLD}║"
+    echo -e "  ╚══════════════════════════════════════════╝${NC}"
+    echo ""; echo -n "  Opción: "
+    read -r OPT < /dev/tty
+
+    case "$OPT" in
+
+      # ── TUI ──────────────────────────────────────────────────
+      1)
+        clear; echo ""
+        mkdir -p "$OC_PROJ_DIR"
+        mapfile -t PROJS < <(ls -1 "$OC_PROJ_DIR/" 2>/dev/null)
+        local TUI_DIR="$HOME"
+        if [ ${#PROJS[@]} -gt 0 ]; then
+          echo -e "  ${CYAN}Abrir TUI en:${NC}"; echo ""
+          echo -e "    ${BOLD}[0]${NC} Directorio raíz (~/)"
+          local IDX=1
+          for p in "${PROJS[@]}"; do
+            printf "    ${BOLD}[%d]${NC} %s\n" "$IDX" "$p"; IDX=$((IDX+1))
+          done
+          echo ""; echo -n "  Elige [0-$((${#PROJS[@]}))]: "
+          read -r TCHOICE < /dev/tty
+          if [[ "$TCHOICE" =~ ^[1-9][0-9]*$ ]] && \
+             [ "$TCHOICE" -ge 1 ] && \
+             [ "$TCHOICE" -le "${#PROJS[@]}" ]; then
+            TUI_DIR="$OC_PROJ_DIR/${PROJS[$((TCHOICE-1))]}"
+          fi
+        fi
+        clear; echo ""
+        echo -e "  ${CYAN}OpenCode TUI → ${TUI_DIR/$HOME/~}${NC}"
+        echo -e "  ${DIM}Ctrl+C para salir${NC}"; echo ""
+        (cd "$TUI_DIR" && opencode .) < /dev/tty
+        echo ""; read -r _ < /dev/tty ;;
+
+      # ── Servidor web :3000 / :4096 ───────────────────────────
+      2|3)
+        clear; echo ""
+        local _PORT=3000; [ "$OPT" = "3" ] && _PORT=4096
+        if tmux has-session -t "opencode" 2>/dev/null; then
+          echo -e "  ${GREEN}[OK]${NC} Servidor ya corriendo"
+          local _cu; _cu="$(_oc_live_url)"
+          if [ -n "$_cu" ]; then
+            echo ""
+            echo -e "  ${BOLD}  URL para copiar y pegar:${NC}"
+            echo ""
+            echo -e "  ${GREEN}  ${_cu}${NC}"
+            echo ""
+            echo -e "  ${DIM}  Copia → Brave o Chrome → pegar${NC}"
+          else
+            echo -e "  ${DIM}  URL: tmux attach -t opencode${NC}"
+          fi
+        else
+          echo -e "  ${CYAN}Iniciando servidor en :${_PORT}...${NC}"; echo ""
+          local _url; _url="$(_oc_start_web "$_PORT")"
+          if tmux has-session -t "opencode" 2>/dev/null; then
+            echo -e "  ${GREEN}[OK]${NC} Servidor iniciado en :${_PORT}"
+            if [ -n "$_url" ]; then
+              echo ""
+              echo -e "  ${BOLD}  URL para copiar y pegar:${NC}"
+              echo ""
+              echo -e "  ${GREEN}  ${_url}${NC}"
+              echo ""
+              echo -e "  ${DIM}  Copia → Brave o Chrome → pegar${NC}"
+            else
+              echo ""
+              echo -e "  ${YELLOW}[AVISO]${NC} URL aún generándose..."
+              echo -e "  ${DIM}  Vuelve al menú en unos segundos${NC}"
+            fi
+          else
+            echo -e "  ${RED}[ERROR]${NC} No se pudo iniciar"
+            echo -e "  ${DIM}  Verifica: opencode --version${NC}"
+          fi
+        fi
+        echo ""; read -r _ < /dev/tty ;;
+
+      # ── Importar / Sincronizar ───────────────────────────────
+      4)
+        while true; do
+          clear; echo ""
+          echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
+          echo    "  ║  ◆ Importar / Sincronizar proyectos    ║"
+          echo    "  ╠══════════════════════════════════════════╣"
+          echo -e "  ║  ${NC}[1] Importar nuevo desde storage       ${CYAN}${BOLD}║"
+          echo -e "  ║  ${NC}[2] Sincronizar uno → storage          ${CYAN}${BOLD}║"
+          echo -e "  ║  ${NC}[3] Sincronizar todos → storage        ${CYAN}${BOLD}║"
+          echo -e "  ║  ${NC}[4] Ver orígenes registrados           ${CYAN}${BOLD}║"
+          echo -e "  ║  ${NC}[b] Volver                             ${CYAN}${BOLD}║"
+          echo -e "  ╚══════════════════════════════════════════╝${NC}"
+          echo ""; echo -n "  Opción: "
+          read -r SOPT < /dev/tty
+
+          case "$SOPT" in
+
+            # Importar nuevo
+            1)
+              clear; echo ""
+              echo -e "  ${DIM}Navega hasta la carpeta del proyecto y pulsa [s]${NC}"
+              echo ""; echo -n "  Presiona ENTER para continuar... "
+              read -r _ < /dev/tty
+              if _storage_browser "/storage/emulated/0"; then
+                local SRC="$_STORAGE_SEL"
+                local PNAME; PNAME="$(basename "$SRC")"
+                local DST="$OC_PROJ_DIR/$PNAME"
+                clear; echo ""
+                echo -e "  ${CYAN}Origen:${NC}  $SRC"
+                echo -e "  ${CYAN}Destino:${NC} ~/proyectos/$PNAME"; echo ""
+                echo -n "  ¿Confirmar importar? (s/n): "
+                read -r CONF < /dev/tty
+                if [ "$CONF" = "s" ] || [ "$CONF" = "S" ]; then
+                  mkdir -p "$OC_PROJ_DIR"
+                  echo -e "  ${DIM}Copiando...${NC}"
+                  if cp -r "$SRC" "$DST" 2>/dev/null; then
+                    _proj_set_origin "$PNAME" "$SRC"
+                    echo -e "  ${GREEN}[OK]${NC} Importado: ~/proyectos/$PNAME"
+                    echo -e "  ${DIM}Origen registrado para sincronización${NC}"
+                  else
+                    echo -e "  ${RED}[ERROR]${NC} Fallo al copiar"
+                    echo -e "  ${DIM}Verifica permisos de almacenamiento${NC}"
+                  fi
+                else
+                  echo -e "  ${YELLOW}Cancelado${NC}"
+                fi
+              else
+                echo -e "  ${YELLOW}Cancelado${NC}"
+              fi
+              echo ""; read -r _ < /dev/tty ;;
+
+            # Sincronizar uno → su origen en storage
+            2)
+              clear; echo ""
+              mkdir -p "$OC_PROJ_DIR"
+              mapfile -t PROJS < <(ls -1 "$OC_PROJ_DIR/" 2>/dev/null)
+              [ ${#PROJS[@]} -eq 0 ] && {
+                echo -e "  ${YELLOW}[AVISO]${NC} Sin proyectos en ~/proyectos/"
+                echo ""; read -r _ < /dev/tty; continue
+              }
+              echo -e "  ${CYAN}Proyectos disponibles:${NC}"; echo ""
+              for i in "${!PROJS[@]}"; do
+                local _orig; _orig="$(_proj_origin "${PROJS[$i]}")"
+                local _tag=""
+                [ -n "$_orig" ] && _tag="${DIM} → $(basename "$_orig")${NC}" \
+                                || _tag="${RED} (sin origen)${NC}"
+                printf "  ${BOLD}[%d]${NC} %s%b\n" \
+                  "$((i+1))" "${PROJS[$i]}" "$_tag"
+              done
+              echo ""; echo -n "  Elige proyecto: "
+              read -r SIDX < /dev/tty
+              if [[ "$SIDX" =~ ^[0-9]+$ ]] && \
+                 [ "$SIDX" -ge 1 ] && [ "$SIDX" -le "${#PROJS[@]}" ]; then
+                local SNAME="${PROJS[$((SIDX-1))]}"
+                local SORIG; SORIG="$(_proj_origin "$SNAME")"
+                clear; echo ""
+                if [ -z "$SORIG" ]; then
+                  echo -e "  ${YELLOW}[AVISO]${NC} $SNAME no tiene origen registrado"
+                  echo -e "  ${DIM}Solo se pueden sincronizar proyectos importados con [1]${NC}"
+                  echo -e "  ${DIM}o puedes registrar el origen manualmente.${NC}"
+                  echo ""
+                  echo -n "  ¿Registrar origen ahora? (s/n): "
+                  read -r RCONF < /dev/tty
+                  if [ "$RCONF" = "s" ] || [ "$RCONF" = "S" ]; then
+                    echo -n "  Presiona ENTER para navegar al origen... "
+                    read -r _ < /dev/tty
+                    if _storage_browser "/storage/emulated/0"; then
+                      _proj_set_origin "$SNAME" "$_STORAGE_SEL"
+                      SORIG="$_STORAGE_SEL"
+                      echo -e "  ${GREEN}[OK]${NC} Origen registrado: $SORIG"
+                    else
+                      echo ""; read -r _ < /dev/tty; continue
+                    fi
+                  else
+                    echo ""; read -r _ < /dev/tty; continue
+                  fi
+                fi
+                echo -e "  ${CYAN}Sincronizando:${NC}"
+                echo -e "  ${DIM}  Origen (Termux):${NC} ~/proyectos/$SNAME"
+                echo -e "  ${DIM}  Destino (storage):${NC} $SORIG"; echo ""
+                echo -e "  ${YELLOW}⚠  Esto sobreescribe archivos en storage${NC}"
+                echo -n "  ¿Confirmar? (s/n): "
+                read -r SYCONF < /dev/tty
+                if [ "$SYCONF" = "s" ] || [ "$SYCONF" = "S" ]; then
+                  echo -e "  ${DIM}Sincronizando...${NC}"
+                  # cp -r copia contenido de la carpeta al destino
+                  if cp -r "$OC_PROJ_DIR/$SNAME/." "$SORIG/" 2>/dev/null; then
+                    echo -e "  ${GREEN}[OK]${NC} Sincronizado → $SORIG"
+                  else
+                    echo -e "  ${RED}[ERROR]${NC} Fallo al escribir en storage"
+                    echo -e "  ${DIM}Verifica permisos de almacenamiento${NC}"
+                  fi
+                else
+                  echo -e "  ${YELLOW}Cancelado${NC}"
+                fi
+              else
+                echo -e "  ${RED}[ERROR]${NC} Selección inválida"
+              fi
+              echo ""; read -r _ < /dev/tty ;;
+
+            # Sincronizar todos los que tienen origen registrado
+            3)
+              clear; echo ""
+              mkdir -p "$OC_PROJ_DIR"
+              mapfile -t PROJS < <(ls -1 "$OC_PROJ_DIR/" 2>/dev/null)
+              # Filtrar solo los que tienen origen
+              local -a SYNC_LIST=()
+              for p in "${PROJS[@]}"; do
+                [ -n "$(_proj_origin "$p")" ] && SYNC_LIST+=("$p")
+              done
+              if [ ${#SYNC_LIST[@]} -eq 0 ]; then
+                echo -e "  ${YELLOW}[AVISO]${NC} Sin proyectos con origen registrado"
+                echo -e "  ${DIM}Usa [1] para importar y registrar origen${NC}"
+                echo ""; read -r _ < /dev/tty; continue
+              fi
+              echo -e "  ${CYAN}Se sincronizarán ${#SYNC_LIST[@]} proyecto(s):${NC}"; echo ""
+              for p in "${SYNC_LIST[@]}"; do
+                printf "  • %s → %s\n" "$p" "$(_proj_origin "$p")"
+              done
+              echo ""
+              echo -e "  ${YELLOW}⚠  Esto sobreescribe archivos en storage${NC}"
+              echo -n "  ¿Confirmar sincronizar todos? (s/n): "
+              read -r ACONF < /dev/tty
+              if [ "$ACONF" = "s" ] || [ "$ACONF" = "S" ]; then
+                echo ""
+                local OK=0 FAIL=0
+                for p in "${SYNC_LIST[@]}"; do
+                  local orig; orig="$(_proj_origin "$p")"
+                  echo -n "  Sincronizando $p... "
+                  if cp -r "$OC_PROJ_DIR/$p/." "$orig/" 2>/dev/null; then
+                    echo -e "${GREEN}✓${NC}"; OK=$((OK+1))
+                  else
+                    echo -e "${RED}✗${NC}"; FAIL=$((FAIL+1))
+                  fi
+                done
+                echo ""
+                echo -e "  ${GREEN}[OK]${NC} $OK sincronizados  ${RED}[FAIL]${NC} $FAIL fallidos"
+              else
+                echo -e "  ${YELLOW}Cancelado${NC}"
+              fi
+              echo ""; read -r _ < /dev/tty ;;
+
+            # Ver orígenes registrados
+            4)
+              clear; echo ""
+              echo -e "  ${CYAN}${BOLD}Orígenes registrados:${NC}"; echo ""
+              local _found=0
+              while IFS='=' read -r key val; do
+                local pname="${key#opencode_proj.}"
+                printf "  ${BOLD}%-20s${NC} %s\n" "$pname" "$val"
+                _found=1
+              done < <(grep "^opencode_proj\." "$REGISTRY" 2>/dev/null)
+              [ "$_found" = "0" ] && \
+                echo -e "  ${DIM}(ninguno registrado)${NC}"
+              echo ""; read -r _ < /dev/tty ;;
+
+            b|B|"") break ;;
+          esac
+        done ;;
+
+      # ── Gestionar proyectos locales ──────────────────────────
+      5)
+        while true; do
+          clear; echo ""
+          echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
+          echo    "  ║  ◆ Gestionar proyectos locales          ║"
+          echo    "  ╠══════════════════════════════════════════╣"
+          echo -e "  ║  ${NC}[1] Listar   [2] Crear   [3] Borrar    ${CYAN}${BOLD}║"
+          echo -e "  ║  ${NC}[b] Volver${CYAN}${BOLD}                             ║"
+          echo -e "  ╚══════════════════════════════════════════╝${NC}"
+          echo ""; echo -n "  Opción: "
+          read -r GOPT < /dev/tty
+          case "$GOPT" in
+            1)
+              clear; echo ""
+              echo -e "  ${BOLD}~/proyectos/:${NC}"; echo ""
+              mkdir -p "$OC_PROJ_DIR"
+              if ls "$OC_PROJ_DIR/" 2>/dev/null | grep -q .; then
+                for entry in "$OC_PROJ_DIR"/*/; do
+                  [ -d "$entry" ] || continue
+                  local pn; pn="$(basename "$entry")"
+                  local po; po="$(_proj_origin "$pn")"
+                  if [ -n "$po" ]; then
+                    printf "  %-22s ${DIM}← %s${NC}\n" "$pn" "$po"
+                  else
+                    printf "  %s\n" "$pn"
+                  fi
+                done
+              else
+                echo -e "  ${DIM}(vacío)${NC}"
+              fi
+              echo ""; read -r _ < /dev/tty ;;
+            2)
+              clear; echo ""
+              echo -n "  Nombre del proyecto: "; read -r PNAME < /dev/tty
+              [ -z "$PNAME" ] && continue
+              mkdir -p "$OC_PROJ_DIR/$PNAME"
+              echo -e "  ${GREEN}[OK]${NC} Proyecto creado: ~/proyectos/$PNAME"
+              echo ""; read -r _ < /dev/tty ;;
+            3)
+              clear; echo ""
+              mapfile -t DEL_PROJS < <(ls -1 "$OC_PROJ_DIR/" 2>/dev/null)
+              [ ${#DEL_PROJS[@]} -eq 0 ] && {
+                echo -e "  ${DIM}(vacío)${NC}"; read -r _ < /dev/tty; continue
+              }
+              for i in "${!DEL_PROJS[@]}"; do
+                printf "  [%d] %s\n" "$((i+1))" "${DEL_PROJS[$i]}"
+              done
+              echo ""; echo -n "  Número a borrar: "; read -r DI < /dev/tty
+              [[ "$DI" =~ ^[0-9]+$ ]] && [ "$DI" -ge 1 ] && \
+              [ "$DI" -le "${#DEL_PROJS[@]}" ] && {
+                local DNAME="${DEL_PROJS[$((DI-1))]}"
+                rm -rf "$OC_PROJ_DIR/$DNAME"
+                _proj_del_origin "$DNAME"
+                echo -e "  ${GREEN}[OK]${NC} Eliminado: $DNAME"
+              }
+              echo ""; read -r _ < /dev/tty ;;
+            b|B|"") break ;;
+          esac
+        done ;;
+
+      # ── Detener servidor ─────────────────────────────────────
+      6)
+        clear; echo ""
+        if tmux has-session -t "opencode" 2>/dev/null; then
+          tmux kill-session -t "opencode" 2>/dev/null
+          pkill -f "opencode web" 2>/dev/null || true
+          rm -f "$HOME/.opencode_web.log" 2>/dev/null
+          echo -e "  ${GREEN}[OK]${NC} Servidor detenido"
+        else
+          echo -e "  ${YELLOW}[AVISO]${NC} Servidor no estaba corriendo"
+        fi
+        echo ""; read -r _ < /dev/tty ;;
+
+      # ── Configurar Ollama local ──────────────────────────────
+      7)
+        clear; echo ""
+        echo -e "  ${CYAN}${BOLD}Configurar Ollama en OpenCode${NC}"; echo ""
+        echo -e "  ${YELLOW}[AVISO]${NC} Modelos locales en ARM64 sin GPU son lentos"
+        echo -e "  ${DIM}  (~30-60s/resp). Para uso real considera un provider externo.${NC}"
+        echo ""
+        echo -e "  ${DIM}[r] Quitar config Ollama (volver al provider por defecto)${NC}"
+        echo ""
+
+        # Verificar que Ollama está corriendo
+        if ! curl -sf http://127.0.0.1:11434 &>/dev/null; then
+          echo -e "  ${YELLOW}[AVISO]${NC} Ollama no está corriendo en :11434"
+          echo -e "  ${DIM}Inícialo desde el menú [3] Ollama → [1] Iniciar${NC}"; echo ""
+          echo -n "  ¿Continuar de todas formas? (s/n): "
+          read -r _OL_ANS < /dev/tty
+          [ "$_OL_ANS" != "s" ] && [ "$_OL_ANS" != "S" ] && {
+            echo ""; read -r _ < /dev/tty; continue
+          }
+        fi
+
+        # Listar modelos instalados via API de Ollama
+        mapfile -t OL_MODELS < <(
+          curl -sf http://127.0.0.1:11434/api/tags 2>/dev/null | \
+          python3 -c "
+import sys, json
+try:
+  d=json.load(sys.stdin)
+  [print(m['name']) for m in d.get('models',[])]
+except: pass
+" 2>/dev/null)
+
+        echo -e "  ${CYAN}Modelos instalados en Ollama:${NC}"; echo ""
+        if [ ${#OL_MODELS[@]} -eq 0 ]; then
+          echo -e "  ${YELLOW}(ninguno — instala con: ollama pull nombre)${NC}"
+        else
+          for i in "${!OL_MODELS[@]}"; do
+            printf "    ${BOLD}[%d]${NC} %s\n" "$((i+1))" "${OL_MODELS[$i]}"
+          done
+        fi
+        echo ""
+        echo -n "  Número o nombre del modelo ([r] quitar, ENTER cancela): "
+        read -r OL_INPUT < /dev/tty
+
+        # Quitar config Ollama
+        if [ "$OL_INPUT" = "r" ] || [ "$OL_INPUT" = "R" ]; then
+          rm -f "$HOME/.config/opencode/opencode.json" 2>/dev/null
+          echo -e "  ${GREEN}[OK]${NC} Config eliminado — OpenCode usará provider por defecto"
+          echo -e "  ${DIM}Reinicia el servidor para aplicar${NC}"
+          echo ""; read -r _ < /dev/tty; continue
+        fi
+        [ -z "$OL_INPUT" ] && {
+          echo -e "  ${YELLOW}Cancelado${NC}"; echo ""; read -r _ < /dev/tty; continue
+        }
+
+        # Resolver nombre del modelo
+        local OL_MODEL=""
+        if [[ "$OL_INPUT" =~ ^[0-9]+$ ]] && [ "$OL_INPUT" -ge 1 ] && \
+           [ "$OL_INPUT" -le "${#OL_MODELS[@]}" ]; then
+          OL_MODEL="${OL_MODELS[$((OL_INPUT-1))]}"
+        else
+          OL_MODEL="$OL_INPUT"
+        fi
+
+        echo -e "  Configurando: ${CYAN}${OL_MODEL}${NC}"; echo ""
+
+        # Escribir opencode.json en config nativo de Termux
+        # Ruta nativa: ~/.config/opencode/opencode.json
+        # apiKey="ollama" requerido — sin él el provider no aparece en la UI
+        local OC_CFG_DIR="$HOME/.config/opencode"
+        mkdir -p "$OC_CFG_DIR"
+
+        python3 -c "
+import json, sys
+model = sys.argv[1]
+cfg = {
+  '\$schema': 'https://opencode.ai/config.json',
+  'model': 'ollama/' + model,
+  'provider': {
+    'ollama': {
+      'npm': '@ai-sdk/openai-compatible',
+      'name': 'Ollama (local)',
+      'options': {
+        'baseURL': 'http://127.0.0.1:11434/v1',
+        'apiKey': 'ollama'
+      },
+      'models': {
+        model: {'name': model}
+      }
+    }
+  }
+}
+with open('$OC_CFG_DIR/opencode.json', 'w') as f:
+  json.dump(cfg, f, indent=2)
+  f.write('\n')
+print('ok')
+" "$OL_MODEL" 2>/dev/null && OC_CFG_OK=true || OC_CFG_OK=false
+
+        if $OC_CFG_OK; then
+          echo -e "  ${GREEN}[OK]${NC} Ollama configurado: ${CYAN}${OL_MODEL}${NC}"
+          echo ""
+          echo -e "  ${DIM}Config: ~/.config/opencode/opencode.json${NC}"
+          echo -e "  ${DIM}Reinicia el servidor: [6] detener → [2] o [3] iniciar${NC}"
+        else
+          echo -e "  ${RED}[ERROR]${NC} No se pudo escribir config"
+          echo -e "  ${DIM}Verifica: ls ~/.config/opencode/${NC}"
+        fi
+        echo ""; read -r _ < /dev/tty ;;
+
+      # ── Instalar / actualizar ────────────────────────────────
+      8)
+        clear; echo ""
+        _ensure_install_script "install_opencode.sh" && \
+          bash "$HOME/install_opencode.sh" < /dev/tty
+        echo ""; read -r _ < /dev/tty ;;
+
       b|B|"") break ;;
     esac
   done
@@ -3661,12 +4353,42 @@ uninstall_module() {
         fi
       fi ;;
     ollama)
+      # ── 1. Detener proceso ────────────────────────────────
       tmux kill-session -t "ollama-server" 2>/dev/null || true
-      pkg uninstall ollama -y 2>/dev/null || true
-      rm -f "$OLLAMA_SCRIPTS/ollama_start.sh" "$OLLAMA_SCRIPTS/ollama_stop.sh" 2>/dev/null
+      pkill -f "ollama serve" 2>/dev/null || true
+
+      # ── 2. Desinstalar binario según método de instalación ─
+      # Versión Termux (npm) — @mmmbuto/ollama-termux
+      if npm list -g @mmmbuto/ollama-termux &>/dev/null 2>&1; then
+        npm uninstall -g @mmmbuto/ollama-termux 2>/dev/null || true
+        echo -e "  ${GREEN}[OK]${NC} Ollama Termux (npm) desinstalado"
+      fi
+      # Versión estándar (pkg)
+      if pkg show ollama &>/dev/null 2>&1; then
+        pkg remove ollama -y 2>/dev/null || true
+        echo -e "  ${GREEN}[OK]${NC} Ollama pkg desinstalado"
+      fi
+      # Limpieza residual del binario por si quedó huérfano
+      rm -f "${TERMUX_PREFIX}/bin/ollama" 2>/dev/null || true
+
+      # ── 3. Eliminar scripts del stack ─────────────────────
+      rm -rf "$OLLAMA_SCRIPTS" 2>/dev/null || true
+      rm -f "$HOME/scripts/ollama-start.sh" 2>/dev/null || true
+
+      # ── 4. Limpiar aliases en .bashrc ─────────────────────
+      if [ -f "$HOME/.bashrc" ]; then
+        grep -v "ollama-start\|ollama-stop\|ollama-list\|ollama-run\|ollama-pull\|ollama-status\|OLLAMA_HOST\|OLLAMA_VULKAN" \
+          "$HOME/.bashrc" > "$HOME/.bashrc.tmp" 2>/dev/null && mv "$HOME/.bashrc.tmp" "$HOME/.bashrc"
+      fi
+
+      # ── 5. Limpiar checkpoint y registry ──────────────────
+      rm -f "$HOME/.install_ollama_checkpoint" 2>/dev/null || true
       grep -v "^ollama\." "$REGISTRY" > "$REGISTRY.tmp" 2>/dev/null && mv "$REGISTRY.tmp" "$REGISTRY"
+
+      echo ""
       echo -e "  ${GREEN}[OK]${NC} Ollama desinstalado"
-      echo -e "  ${YELLOW}⚠${NC}  ~/.ollama no eliminado — bórralo para liberar espacio" ;;
+      echo -e "  ${YELLOW}⚠${NC}  ~/.ollama no eliminado — contiene modelos descargados"
+      echo -e "  ${DIM}  Para liberar espacio: rm -rf ~/.ollama${NC}" ;;
     n8n)
       tmux kill-session -t "n8n-server" 2>/dev/null || true
       if [ -n "$DISTRO_NAME" ] && proot-distro login "$DISTRO_NAME" -- bash -c 'true' &>/dev/null 2>&1; then
@@ -3704,33 +4426,85 @@ uninstall_module() {
       echo -e "  ${GREEN}[OK]${NC} Remote desinstalado"
       echo -e "  ${DIM}(~/.ssh/authorized_keys conservado)${NC}" ;;
     opencode)
+      # ── Detener proceso web si corre ──────────────────────
       [ -f "$HOME/.opencode_web.pid" ] && {
         kill "$(cat "$HOME/.opencode_web.pid")" 2>/dev/null || true
         rm -f "$HOME/.opencode_web.pid"
       }
       pkill -f "opencode web" 2>/dev/null || true
-      if [ -n "$DISTRO_NAME" ] && proot-distro login "$DISTRO_NAME" -- bash -c 'true' &>/dev/null 2>&1; then
+      tmux kill-session -t "opencode" 2>/dev/null || true
+
+      local _OC_LOC; _OC_LOC=$(get_reg opencode location)
+
+      # ── Desinstalar binario nativo (si aplica) ────────────
+      if [ "$_OC_LOC" = "termux_native" ] || \
+         [ -f "${TERMUX_PREFIX}/bin/opencode" ]; then
+        rm -f  "${TERMUX_PREFIX}/bin/opencode"             2>/dev/null || true
+        rm -rf "${TERMUX_PREFIX}/lib/opencode"             2>/dev/null || true
+        rm -rf "${TERMUX_PREFIX}/share/opencode"           2>/dev/null || true
+        rm -rf "$HOME/.opencode_install_tmp"               2>/dev/null || true
+        rm -f  "$HOME/.install_opencode_checkpoint"        2>/dev/null || true
+        rm -f  "$HOME/.install_opencode_checkpoint.data"   2>/dev/null || true
+        echo -e "  ${GREEN}[OK]${NC} Binario nativo eliminado"
+        echo -e "  ${DIM}(glibc conservado — puede usarlo Claude Code)${NC}"
+      fi
+
+      # ── Desinstalar proot (si aplica) ─────────────────────
+      if [ "$_OC_LOC" = "proot_debian" ] || \
+         { [ -n "$DISTRO_NAME" ] && \
+           proot-distro login "$DISTRO_NAME" -- bash -c 'true' &>/dev/null 2>&1; }; then
         proot-distro login "$DISTRO_NAME" -- bash -c '
-          rm -rf /root/.opencode /root/.config/opencode /root/.local/share/opencode /root/.cache/opencode 2>/dev/null
-          echo "[OK] Archivos OpenCode eliminados"
+          rm -rf /root/.opencode /root/.config/opencode \
+                 /root/.local/share/opencode /root/.cache/opencode \
+                 /root/.local/bin/opencode 2>/dev/null
+          echo "[OK] Archivos OpenCode proot eliminados"
         ' 2>/dev/null
       fi
+
+      # ── Limpiar scripts, aliases y registry ───────────────
+      rm -f "$OPENCODE_SCRIPTS/opencode_start.sh" \
+            "$OPENCODE_SCRIPTS/opencode_stop.sh"  2>/dev/null || true
+      grep -v "opencode-web\|opencode-stop\|opencode-status\|opencode-tui\|# OpenCode · aliases" \
+        "$HOME/.bashrc" > "$HOME/.bashrc.tmp" 2>/dev/null && mv "$HOME/.bashrc.tmp" "$HOME/.bashrc"
       grep -v "^opencode\." "$REGISTRY" > "$REGISTRY.tmp" 2>/dev/null && mv "$REGISTRY.tmp" "$REGISTRY"
       echo -e "  ${GREEN}[OK]${NC} OpenCode desinstalado" ;;
     openclaw)
-      pkill -f "openclaw\|node.*openclaw" 2>/dev/null || true
+      # Detener gateway (nativo y proot)
+      pkill -9 -f "openclaw" 2>/dev/null || true
+      tmux kill-session -t openclaw 2>/dev/null || true
       [ -f "$HOME/.openclaw_gateway.pid" ] && {
         kill "$(cat "$HOME/.openclaw_gateway.pid")" 2>/dev/null || true
         rm -f "$HOME/.openclaw_gateway.pid"
       }
+
+      # ── Desinstalar instalación NATIVA (npm-global) ───────────
+      local _CL_LOC; _CL_LOC=$(get_reg openclaw location)
+      if [ "$_CL_LOC" = "nativo_termux" ] ||          [ -f "$HOME/.npm-global/bin/openclaw" ]; then
+        npm uninstall -g openclaw 2>/dev/null || true
+        # Limpiar npm-global/bin si quedan archivos huérfanos
+        rm -f  "$HOME/.npm-global/bin/openclaw" 2>/dev/null || true
+        rm -rf "$HOME/.npm-global/lib/node_modules/openclaw" 2>/dev/null || true
+        # Limpiar parches y compat
+        rm -f  "$HOME/.openclaw/glibc-compat.js" 2>/dev/null || true
+        rm -rf "$HOME/openclaw-logs" 2>/dev/null || true
+        rm -f  "$HOME/.openclaw_gateway.log" 2>/dev/null || true
+        # Limpiar bloque OpenClaw en .bashrc (aliases ocr/oclog/ockill)
+        sed -i '/# --- OpenClaw Start ---/,/# --- OpenClaw End ---/d' "$HOME/.bashrc" 2>/dev/null || true
+        grep -v "openclaw-start\|openclaw-stop\|openclaw-status\|openclaw-token\|openclaw-tui\|# OpenClaw"           "$HOME/.bashrc" > "$HOME/.bashrc.tmp" 2>/dev/null && mv "$HOME/.bashrc.tmp" "$HOME/.bashrc"
+        echo -e "  ${GREEN}[OK]${NC} OpenClaw nativo desinstalado"
+        echo -e "  ${DIM}(glibc-runner conservado — puede usarlo Claude Code y OpenCode)${NC}"
+      fi
+
+      # ── Desinstalar instalación PROOT (NVM) ───────────────────
       if [ -n "$DISTRO_NAME" ] && proot-distro login "$DISTRO_NAME" -- bash -c 'true' &>/dev/null 2>&1; then
         proot-distro login "$DISTRO_NAME" -- bash -c '
           rm -rf /root/.nvm /root/.openclaw /root/openclaw-shim.cjs /root/.npm 2>/dev/null
-          echo "[OK] Archivos OpenClaw eliminados"
+          echo "[OK] Archivos OpenClaw proot eliminados"
         ' 2>/dev/null
       fi
-      rm -f "$OPENCLAW_SCRIPTS/openclaw_start.sh" "$OPENCLAW_SCRIPTS/openclaw_stop.sh" "$OPENCLAW_SCRIPTS/openclaw_token.sh" 2>/dev/null
-      rm -f "$HOME/.openclaw_gateway.log" 2>/dev/null
+
+      # ── Limpiar scripts auxiliares y registry ─────────────────
+      rm -f "$OPENCLAW_SCRIPTS/openclaw_start.sh"             "$OPENCLAW_SCRIPTS/openclaw_stop.sh"              "$OPENCLAW_SCRIPTS/openclaw_token.sh" 2>/dev/null || true
       grep -v "^openclaw\." "$REGISTRY" > "$REGISTRY.tmp" 2>/dev/null && mv "$REGISTRY.tmp" "$REGISTRY"
       echo -e "  ${GREEN}[OK]${NC} OpenClaw desinstalado" ;;
     openclaude)
@@ -3743,6 +4517,19 @@ uninstall_module() {
         && mv "$REGISTRY.tmp" "$REGISTRY"
       echo -e "  ${GREEN}[OK]${NC} OpenClaude desinstalado"
       echo -e "  ${DIM}(Ollama conservado)${NC}" ;;
+    hermes)
+      # Detener gateway si corre
+      tmux kill-session -t "hermes-gw" 2>/dev/null || true
+      pkill -f "hermes gateway" 2>/dev/null || true
+      # Eliminar venv y código (conservar config ~/.hermes/config.yaml por si reinstala)
+      rm -rf "$HOME/.hermes/hermes-agent" 2>/dev/null || true
+      rm -rf "$HOME/.hermes/venv"          2>/dev/null || true
+      rm -f  "${TERMUX_PREFIX}/bin/hermes" 2>/dev/null || true
+      rm -f  "$HOME/.local/bin/hermes"     2>/dev/null || true
+      grep -v "^hermes\." "$REGISTRY" > "$REGISTRY.tmp" 2>/dev/null \
+        && mv "$REGISTRY.tmp" "$REGISTRY"
+      echo -e "  ${GREEN}[OK]${NC} Hermes Agent desinstalado"
+      echo -e "  ${DIM}(~/.hermes/config.yaml conservado — claves y config)${NC}" ;;
     proot)
       # Detener todos los servicios proot antes de eliminar
       tmux kill-session -t "n8n-server"  2>/dev/null || true
@@ -3770,6 +4557,890 @@ uninstall_module() {
   echo ""; read -r _ < /dev/tty
 }
 
+
+# ════════════════════════════════════════════
+#  HELPERS HERMES
+# ════════════════════════════════════════════
+_hermes_gw_stop() {
+  tmux kill-session -t "hermes-gw" 2>/dev/null || true
+  pkill -f "hermes gateway" 2>/dev/null || true
+  echo -e "  ${GREEN}[OK]${NC} Gateway detenido"
+}
+
+_hermes_gw_status() {
+  tmux has-session -t "hermes-gw" 2>/dev/null && echo "running" || echo "stopped"
+}
+
+_hermes_list_models() {
+  # Listar modelos Ollama locales para configuración rápida
+  curl -sf http://127.0.0.1:11434/api/tags 2>/dev/null | \
+    python3 -c "
+import sys, json
+try:
+  d=json.load(sys.stdin)
+  [print(m['name']) for m in d.get('models',[])]
+except: pass
+" 2>/dev/null
+}
+
+# ════════════════════════════════════════════
+#  HELPERS OPENCLAW NATIVO
+# ════════════════════════════════════════════
+_cl_native_stop() {
+  pkill -9 -f 'openclaw' 2>/dev/null || true
+  tmux kill-session -t openclaw 2>/dev/null || true
+}
+
+_cl_native_start() {
+  local port="${1:-18789}"
+  local log_dir="$HOME/openclaw-logs"
+  local tmp_dir="$HOME/tmp"
+  mkdir -p "$log_dir" "$tmp_dir"
+  _cl_native_stop
+  sleep 1
+  tmux new -d -s openclaw 2>/dev/null
+  sleep 1
+  tmux send-keys -t openclaw     "export TMPDIR=$tmp_dir; openclaw gateway --bind loopback --port $port 2>&1 | tee $log_dir/runtime.log"     C-m
+  sleep 3
+  tmux has-session -t openclaw 2>/dev/null && return 0 || return 1
+}
+
+_cl_native_get_token() {
+  python3 -c "
+import json, os
+try:
+    d = json.load(open(os.path.expanduser('~/.openclaw/openclaw.json')))
+    print(d.get('gateway',{}).get('auth',{}).get('token',''))
+except Exception:
+    print('')
+" 2>/dev/null | tr -d '[:space:]'
+}
+
+# ════════════════════════════════════════════
+#  HELPERS — openclaw.json backup + escritura
+# ════════════════════════════════════════════
+
+_CL_CFG_PATH="$HOME/.openclaw/openclaw.json"
+
+_cl_cfg_backup() {
+  local tag="${1:-change}"
+  local date_str
+  date_str=$(python3 -c "from datetime import datetime; print(datetime.now().strftime('%Y%m%d_%H%M%S'))")
+  local cfg="$HOME/.openclaw/openclaw.json"
+  [ -f "$cfg" ] || return 1
+  cp "$cfg" "${cfg}.bak" 2>/dev/null
+  cp "$cfg" "${cfg}.pre-${tag}-${date_str}" 2>/dev/null
+}
+
+_cl_cfg_get_primary() {
+  python3 -c "
+import json,os
+try:
+  d=json.load(open(os.path.expanduser('~/.openclaw/openclaw.json')))
+  print(d.get('agents',{}).get('defaults',{}).get('model',{}).get('primary','no configurado'))
+except: print('error')
+" 2>/dev/null
+}
+
+_cl_cfg_get_providers() {
+  python3 -c "
+import json,os
+try:
+  d=json.load(open(os.path.expanduser('~/.openclaw/openclaw.json')))
+  provs=list(d.get('models',{}).get('providers',{}).keys())
+  print(', '.join(provs) if provs else 'ninguno')
+except: print('?')
+" 2>/dev/null
+}
+
+# ════════════════════════════════════════════
+#  SUBMENÚ PROVEEDOR IA / MODELO
+# ════════════════════════════════════════════
+_submenu_cl_proveedor() {
+  local _CL_CFG="$HOME/.openclaw/openclaw.json"
+
+  while true; do
+    clear; echo ""
+    local _PRI _PROV
+    _PRI=$(_cl_cfg_get_primary)
+    _PROV=$(_cl_cfg_get_providers)
+
+    echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
+    echo    "  ║  ⬡ PROVEEDOR IA / MODELO               ║"
+    echo    "  ╠══════════════════════════════════════════╣"
+    printf  "  ║  ${NC}${DIM}Modelo activo : %-25s${CYAN}${BOLD}║\n" "$_PRI"
+    printf  "  ║  ${NC}${DIM}Providers     : %-25s${CYAN}${BOLD}║\n" "$_PROV"
+    echo    "  ╠══════════════════════════════════════════╣"
+    echo -e "  ║  ${NC}[1] Ver configuración completa         ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[2] Configurar Ollama local            ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[3] Proveedor personalizado            ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[4] Restaurar backup                  ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[5] Abrir wizard                      ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[b] Volver                            ${CYAN}${BOLD}║"
+    echo -e "  ╚══════════════════════════════════════════╝${NC}"
+    echo ""; echo -n "  Opción: "
+    read -r _POPT < /dev/tty
+
+    case "$_POPT" in
+
+      1)
+        clear; echo ""
+        echo -e "  ${CYAN}${BOLD}═══ Configuración actual openclaw.json ═══${NC}"; echo ""
+        python3 - "$_CL_CFG" << 'PYEOF'
+import json, os, sys
+cfg_path = sys.argv[1]
+try:
+    cfg = json.load(open(cfg_path))
+except Exception as e:
+    print(f'  [ERROR] {e}'); exit(1)
+pri = cfg.get('agents',{}).get('defaults',{}).get('model',{}).get('primary','no configurado')
+models_wl = list(cfg.get('agents',{}).get('defaults',{}).get('models',{}).keys())
+providers = cfg.get('models',{}).get('providers',{})
+cfg_dir = os.path.dirname(cfg_path)
+backups = sorted([f for f in os.listdir(cfg_dir)
+    if f.startswith('openclaw.json.pre-') or f == 'openclaw.json.bak'], reverse=True)
+print(f'  Modelo principal  : {pri}')
+print(f'  Whitelist agente  : {", ".join(models_wl) if models_wl else "(vacía)"}')
+print()
+print(f'  Providers configurados ({len(providers)}):')
+for pname, pdata in providers.items():
+    url = pdata.get('baseUrl','?')
+    api = pdata.get('api','?')
+    mods = [m.get('id','?') for m in pdata.get('models',[])]
+    print(f'    {pname} [{api}]')
+    print(f'      URL: {url}')
+    for m in mods:
+        print(f'      · {m}')
+print()
+if backups:
+    print(f'  Backups disponibles ({min(len(backups),5)}):')
+    for b in backups[:5]:
+        sz = os.path.getsize(os.path.join(cfg_dir, b))
+        print(f'    {b}  ({sz}B)')
+else:
+    print('  Sin backups aún')
+PYEOF
+        echo ""; read -r _ < /dev/tty ;;
+
+      2)
+        clear; echo ""
+        echo -e "  ${CYAN}${BOLD}═══ Configurar Ollama local ═══${NC}"; echo ""
+        if ! curl -sf --max-time 2 http://127.0.0.1:11434 &>/dev/null; then
+          echo -e "  ${RED}[ERROR]${NC} Ollama no responde en :11434"
+          echo -e "  ${DIM}Inícialo primero desde el menú Servicios → Ollama${NC}"
+          echo ""; read -r _ < /dev/tty; continue
+        fi
+        echo -e "  ${GREEN}[OK]${NC} Ollama activo"; echo ""
+
+        mapfile -t _OL_MODS < <(
+          curl -sf http://127.0.0.1:11434/api/tags 2>/dev/null |
+          python3 -c "
+import sys,json
+try:
+  d=json.load(sys.stdin)
+  [print(m['name']) for m in d.get('models',[])]
+except: pass
+" 2>/dev/null)
+
+        if [ ${#_OL_MODS[@]} -eq 0 ]; then
+          echo -e "  ${YELLOW}[AVISO]${NC} Ningún modelo instalado"
+          echo -e "  ${DIM}Descarga uno: ollama pull qwen3:8b${NC}"
+          echo ""; read -r _ < /dev/tty; continue
+        fi
+
+        echo -e "  Modelos instalados:"; echo ""
+        for i in "${!_OL_MODS[@]}"; do
+          printf "    ${BOLD}[%d]${NC} %s\n" "$((i+1))" "${_OL_MODS[$i]}"
+        done
+        echo ""
+        echo -n "  Número o nombre exacto (ENTER cancela): "
+        read -r _OL_IN < /dev/tty
+        [ -z "$_OL_IN" ] && { echo "  Cancelado."; echo ""; read -r _ < /dev/tty; continue; }
+
+        local _OL_MOD=""
+        if [[ "$_OL_IN" =~ ^[0-9]+$ ]] && \
+           [ "$_OL_IN" -ge 1 ] && [ "$_OL_IN" -le "${#_OL_MODS[@]}" ]; then
+          _OL_MOD="${_OL_MODS[$((_OL_IN-1))]}"
+        else
+          _OL_MOD="$_OL_IN"
+        fi
+
+        local _CTX=32768
+        case "$_OL_MOD" in
+          qwen3*|qwen2.5*|llama3*|gemma3*|phi*) _CTX=131072 ;;
+          deepseek*) _CTX=65536 ;;
+        esac
+
+        echo ""
+        echo -e "  Modelo: ${BOLD}${_OL_MOD}${NC}  (ctx: ${_CTX})"; echo ""
+        echo -e "  ¿Cómo usar este modelo?"; echo ""
+        echo -e "  ${BOLD}[1]${NC} Principal  — agente lo usa por defecto"
+        echo -e "  ${BOLD}[2]${NC} Secundario — disponible, sin cambiar el actual"
+        echo -e "  ${BOLD}[b]${NC} Cancelar"
+        echo ""; echo -n "  Opción: "
+        read -r _PRIO < /dev/tty
+        local _OL_PRIMARIO=false
+        case "$_PRIO" in
+          1) _OL_PRIMARIO=true ;;
+          2) _OL_PRIMARIO=false ;;
+          *) echo "  Cancelado."; echo ""; read -r _ < /dev/tty; continue ;;
+        esac
+
+        echo ""
+        echo -e "  ${BOLD}Resumen de cambios:${NC}"
+        echo -e "  · Provider ollama → http://127.0.0.1:11434/v1"
+        echo -e "  · Modelo: ollama/${_OL_MOD}"
+        $_OL_PRIMARIO \
+          && echo -e "  · ${GREEN}Será el modelo PRINCIPAL${NC}" \
+          || echo -e "  · Secundario — modelo actual sin cambios"
+        echo ""; echo -n "  ¿Confirmar? (s/n): "
+        read -r _CONF < /dev/tty
+        [ "$_CONF" != "s" ] && [ "$_CONF" != "S" ] && {
+          echo "  Cancelado."; echo ""; read -r _ < /dev/tty; continue; }
+
+        echo ""
+        _cl_cfg_backup "ollama"
+        local _PRIM_PY="False"
+        $_OL_PRIMARIO && _PRIM_PY="True"
+        python3 - "$_CL_CFG" "$_OL_MOD" "$_CTX" "$_PRIM_PY" << 'PYEOF'
+import json, os, sys
+from datetime import datetime
+cfg_path, model_id, ctx, primario = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4]=='True'
+model_full = f'ollama/{model_id}'
+with open(cfg_path) as f: cfg = json.load(f)
+cfg.setdefault('models',{}).setdefault('providers',{})['ollama'] = {
+    'baseUrl':'http://127.0.0.1:11434/v1','api':'openai-completions','apiKey':'ollama-local',
+    'models':[{'id':model_id,'name':model_id,'reasoning':False,'input':['text'],
+               'cost':{'input':0,'output':0,'cacheRead':0,'cacheWrite':0},
+               'contextWindow':ctx,'maxTokens':8192}]}
+cfg.setdefault('agents',{}).setdefault('defaults',{}).setdefault('models',{})[model_full] = {}
+if primario:
+    cfg['agents']['defaults'].setdefault('model',{})['primary'] = model_full
+cfg.setdefault('meta',{})['lastTouchedAt'] = datetime.now().strftime('%Y-%m-%dT%H:%M:%S.000Z')
+tmp = cfg_path + '.tmp'
+with open(tmp,'w') as f: json.dump(cfg, f, indent=2)
+os.replace(tmp, cfg_path)
+print('ok')
+PYEOF
+        if [ $? -eq 0 ]; then
+          echo -e "  ${GREEN}[OK]${NC} Ollama/${_OL_MOD} configurado"
+          $_OL_PRIMARIO && echo -e "  ${GREEN}[OK]${NC} Modelo principal → ollama/${_OL_MOD}"
+          echo -e "  ${DIM}Reinicia el gateway con [1] para aplicar${NC}"
+        else
+          echo -e "  ${RED}[ERROR]${NC} Escritura fallida — backup en ${_CL_CFG}.bak"
+        fi
+        echo ""; read -r _ < /dev/tty ;;
+
+      3)
+        clear; echo ""
+        echo -e "  ${CYAN}${BOLD}═══ Proveedor personalizado ═══${NC}"; echo ""
+        echo -e "  ${DIM}Para APIs OpenAI-compatible: DeepSeek, LM Studio, etc.${NC}"
+        echo -e "  ${DIM}Para Gemini/Anthropic usa [5] wizard — requieren OAuth.${NC}"; echo ""
+        echo -n "  Nombre del provider (ej: deepseek): "
+        read -r _PROV_NAME < /dev/tty
+        [ -z "$_PROV_NAME" ] && { echo "  Cancelado."; echo ""; read -r _ < /dev/tty; continue; }
+        echo -n "  Base URL (ej: https://api.deepseek.com/v1): "
+        read -r _PROV_URL < /dev/tty
+        [ -z "$_PROV_URL" ] && { echo "  Cancelado."; echo ""; read -r _ < /dev/tty; continue; }
+        echo -n "  API Key: "
+        read -r _PROV_KEY < /dev/tty
+        [ -z "$_PROV_KEY" ] && { echo "  Cancelado."; echo ""; read -r _ < /dev/tty; continue; }
+        echo -n "  ID del modelo (ej: deepseek-coder-v2): "
+        read -r _PROV_MOD < /dev/tty
+        [ -z "$_PROV_MOD" ] && { echo "  Cancelado."; echo ""; read -r _ < /dev/tty; continue; }
+        echo -n "  Context window (ENTER = 32768): "
+        read -r _PROV_CTX < /dev/tty
+        [[ "$_PROV_CTX" =~ ^[0-9]+$ ]] || _PROV_CTX=32768
+        echo ""
+        echo -e "  ¿Cómo usar este modelo?"
+        echo -e "  ${BOLD}[1]${NC} Principal   ${BOLD}[2]${NC} Secundario   ${BOLD}[b]${NC} Cancelar"
+        echo -n "  Opción: "
+        read -r _PPRIO < /dev/tty
+        local _PPRIM=false
+        case "$_PPRIO" in
+          1) _PPRIM=true ;;
+          2) _PPRIM=false ;;
+          *) echo "  Cancelado."; echo ""; read -r _ < /dev/tty; continue ;;
+        esac
+        echo ""
+        echo -e "  ${BOLD}Resumen:${NC}"
+        echo -e "  · Provider: ${_PROV_NAME}  URL: ${_PROV_URL}"
+        echo -e "  · Modelo: ${_PROV_MOD}  ctx: ${_PROV_CTX}"
+        $_PPRIM \
+          && echo -e "  · ${GREEN}Será el modelo PRINCIPAL${NC}" \
+          || echo -e "  · Secundario"
+        echo ""; echo -n "  ¿Confirmar? (s/n): "
+        read -r _PCONF < /dev/tty
+        [ "$_PCONF" != "s" ] && [ "$_PCONF" != "S" ] && {
+          echo "  Cancelado."; echo ""; read -r _ < /dev/tty; continue; }
+        echo ""
+        _cl_cfg_backup "custom-${_PROV_NAME}"
+        local _PP="False"; $_PPRIM && _PP="True"
+        python3 - "$_CL_CFG" "$_PROV_NAME" "$_PROV_URL" "$_PROV_KEY" \
+                   "$_PROV_MOD" "$_PROV_CTX" "$_PP" << 'PYEOF'
+import json, os, sys
+from datetime import datetime
+cfg_path,pname,purl,pkey,mid,ctx,primario = sys.argv[1:]
+ctx=int(ctx); primario=(primario=='True'); mfull=f'{pname}/{mid}'
+with open(cfg_path) as f: cfg=json.load(f)
+cfg.setdefault('models',{}).setdefault('providers',{})[pname]={
+    'baseUrl':purl,'api':'openai-completions','apiKey':pkey,
+    'models':[{'id':mid,'name':mid,'reasoning':False,'input':['text'],
+               'cost':{'input':0,'output':0,'cacheRead':0,'cacheWrite':0},
+               'contextWindow':ctx,'maxTokens':8192}]}
+cfg.setdefault('agents',{}).setdefault('defaults',{}).setdefault('models',{})[mfull]={}
+if primario: cfg['agents']['defaults'].setdefault('model',{})['primary']=mfull
+cfg.setdefault('meta',{})['lastTouchedAt']=datetime.now().strftime('%Y-%m-%dT%H:%M:%S.000Z')
+tmp=cfg_path+'.tmp'
+with open(tmp,'w') as f: json.dump(cfg,f,indent=2)
+os.replace(tmp,cfg_path); print('ok')
+PYEOF
+        [ $? -eq 0 ] \
+          && { echo -e "  ${GREEN}[OK]${NC} Provider '${_PROV_NAME}' configurado"
+               $_PPRIM && echo -e "  ${GREEN}[OK]${NC} Modelo principal → ${_PROV_NAME}/${_PROV_MOD}"
+               echo -e "  ${DIM}Reinicia el gateway para aplicar${NC}"; } \
+          || echo -e "  ${RED}[ERROR]${NC} Escritura fallida — backup en ${_CL_CFG}.bak"
+        echo ""; read -r _ < /dev/tty ;;
+
+      4)
+        clear; echo ""
+        echo -e "  ${CYAN}${BOLD}═══ Restaurar backup ═══${NC}"; echo ""
+        local _CFG_DIR; _CFG_DIR=$(dirname "$_CL_CFG")
+        mapfile -t _BAKS < <(
+          ls -t "$_CFG_DIR"/openclaw.json.pre-* \
+                "$_CFG_DIR/openclaw.json.bak" 2>/dev/null | head -10)
+        if [ ${#_BAKS[@]} -eq 0 ]; then
+          echo -e "  ${YELLOW}[AVISO]${NC} No hay backups disponibles"
+          echo -e "  ${DIM}Se crean automáticamente al modificar el config${NC}"
+          echo ""; read -r _ < /dev/tty; continue
+        fi
+        echo -e "  Backups disponibles:"; echo ""
+        for i in "${!_BAKS[@]}"; do
+          local _BSZ; _BSZ=$(wc -c < "${_BAKS[$i]}" 2>/dev/null)
+          printf "    ${BOLD}[%d]${NC} %s  ${DIM}(%s bytes)${NC}\n" \
+            "$((i+1))" "$(basename "${_BAKS[$i]}")" "$_BSZ"
+        done
+        echo ""; echo -n "  Número a restaurar (ENTER cancela): "
+        read -r _BAK_IN < /dev/tty
+        [ -z "$_BAK_IN" ] && { echo "  Cancelado."; echo ""; read -r _ < /dev/tty; continue; }
+        if ! [[ "$_BAK_IN" =~ ^[0-9]+$ ]] || \
+           [ "$_BAK_IN" -lt 1 ] || [ "$_BAK_IN" -gt "${#_BAKS[@]}" ]; then
+          echo -e "  ${RED}[ERROR]${NC} Número inválido"
+          echo ""; read -r _ < /dev/tty; continue
+        fi
+        local _BAK_FILE="${_BAKS[$((_BAK_IN-1))]}"
+        echo ""
+        echo -e "  ${YELLOW}[AVISO]${NC} Se restaurará: $(basename $_BAK_FILE)"
+        echo -e "  ${YELLOW}[AVISO]${NC} Config actual → .bak antes de restaurar"
+        python3 -c "import json,sys; json.load(open(sys.argv[1]))" \
+          "$_BAK_FILE" 2>/dev/null || {
+          echo -e "  ${RED}[ERROR]${NC} Backup inválido (JSON roto) — no se restaura"
+          echo ""; read -r _ < /dev/tty; continue; }
+        echo ""; echo -n "  ¿Confirmar restauración? (s/n): "
+        read -r _RCONF < /dev/tty
+        [ "$_RCONF" != "s" ] && [ "$_RCONF" != "S" ] && {
+          echo "  Cancelado."; echo ""; read -r _ < /dev/tty; continue; }
+        cp "$_CL_CFG" "${_CL_CFG}.bak" 2>/dev/null
+        cp "$_BAK_FILE" "$_CL_CFG" \
+          && { echo -e "  ${GREEN}[OK]${NC} Config restaurada"
+               echo -e "  ${DIM}Reinicia el gateway para aplicar${NC}"; } \
+          || echo -e "  ${RED}[ERROR]${NC} No se pudo restaurar"
+        echo ""; read -r _ < /dev/tty ;;
+
+      5)
+        clear; echo ""
+        echo -e "  ${CYAN}${BOLD}═══ Wizard de OpenClaw ═══${NC}"; echo ""
+        echo -e "  ${YELLOW}${BOLD}⚠ El wizard puede sobreescribir tu config actual${NC}"; echo ""
+        local _PRI_W; _PRI_W=$(_cl_cfg_get_primary)
+        echo -e "  Config actual: ${BOLD}${_PRI_W:-no configurado}${NC}"
+        echo ""
+        _cl_cfg_backup "pre-wizard"
+        echo -e "  ${GREEN}[OK]${NC} Backup automático creado"
+        echo -e "  ${DIM}Si algo sale mal → usa [4] Restaurar backup${NC}"
+        echo ""; echo -n "  ¿Continuar? (s/n): "
+        read -r _WCONF < /dev/tty
+        [ "$_WCONF" != "s" ] && [ "$_WCONF" != "S" ] && {
+          echo "  Cancelado."; echo ""; read -r _ < /dev/tty; continue; }
+        echo ""
+        local _OLD_LD="${LD_PRELOAD:-}"; unset LD_PRELOAD
+        openclaw onboard < /dev/tty || \
+          echo -e "  ${YELLOW}[AVISO]${NC} Wizard terminó con error"
+        [ -n "$_OLD_LD" ] && export LD_PRELOAD="$_OLD_LD"
+        echo ""; read -r _ < /dev/tty ;;
+
+      b|B|"") break ;;
+    esac
+  done
+}
+
+
+# ════════════════════════════════════════════
+#  SUBMENÚ OPENCLAW NATIVO
+#  Para instalaciones con location=nativo_termux
+#  (glibc + npm — sin proot)
+# ════════════════════════════════════════════
+submenu_openclaw_native() {
+  local PORT=18789
+  while true; do
+    clear; echo ""
+    local _CL_ST; _CL_ST="stopped"
+    curl -sf --max-time 1 http://127.0.0.1:$PORT &>/dev/null && _CL_ST="running"
+    local _CL_VER; _CL_VER=$(get_reg openclaw version)
+    [ -z "$_CL_VER" ] && _CL_VER="?"
+    local _TOKEN; _TOKEN=$(_cl_native_get_token)
+
+    local _STATUS_LINE _URL_LINE
+    case "$_CL_ST" in
+      running) _STATUS_LINE="${GREEN}● activo${NC}" ;;
+      *)       _STATUS_LINE="${YELLOW}○ detenido${NC}" ;;
+    esac
+
+    echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
+    echo    "  ║  ⬡ OPENCLAW  (nativo · glibc)          ║"
+    echo    "  ╠══════════════════════════════════════════╣"
+    printf  "  ║  ${NC}v%-6s  ${DIM}native · termux ARM64${NC}${CYAN}${BOLD}      ║
+" "$_CL_VER"
+    printf  "  ║  ${NC}Gateway: %-30b${CYAN}${BOLD}║
+" "$_STATUS_LINE"
+    [ -n "$_TOKEN" ] &&       printf "  ║  ${GREEN}${DIM}http://localhost:%-5s/#token=***${NC}${CYAN}${BOLD}   ║
+" "$PORT"
+    # Mostrar modelo activo en el panel
+    local _CL_PRIMARY; _CL_PRIMARY=$(python3 -c "
+import json,os
+try:
+  d=json.load(open(os.path.expanduser('~/.openclaw/openclaw.json')))
+  print(d.get('agents',{}).get('defaults',{}).get('model',{}).get('primary','?'))
+except: print('?')
+" 2>/dev/null)
+    echo    "  ╠══════════════════════════════════════════╣"
+    printf  "  ║  ${NC}${DIM}Modelo: %-32s${CYAN}${BOLD}║\n" "$_CL_PRIMARY"
+    echo    "  ╠══════════════════════════════════════════╣"
+    echo -e "  ║  ${NC}[1] Iniciar / reiniciar gateway        ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[2] Detener gateway                    ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[3] Ver logs en vivo (tmux attach)     ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[4] Mostrar URL con token              ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[5] Abrir TUI (terminal)               ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[6] Ejecutar openclaw onboard          ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[7] Proveedor IA / Modelo              ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[8] Instalar / actualizar              ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[b] Volver                             ${CYAN}${BOLD}║"
+    echo -e "  ╚══════════════════════════════════════════╝${NC}"
+    echo ""; echo -n "  Opción: "
+    read -r OPT < /dev/tty
+
+    case "$OPT" in
+      1)
+        clear; echo ""
+        echo -e "  ${CYAN}[+] Iniciando OpenClaw gateway...${NC}"; echo ""
+        if _cl_native_start "$PORT"; then
+          echo -e "  ${GREEN}[OK]${NC} Gateway iniciado en :${PORT}"
+          local _T; _T=$(_cl_native_get_token)
+          [ -n "$_T" ] &&             echo -e "  ${GREEN}  URL: http://localhost:${PORT}/#token=${_T}${NC}" ||             echo -e "  ${DIM}  URL: http://localhost:${PORT}${NC}"
+        else
+          echo -e "  ${RED}[ERROR]${NC} Gateway no respondió"
+          echo -e "  ${DIM}  Revisa: cat ~/openclaw-logs/runtime.log${NC}"
+        fi
+        echo ""; read -r _ < /dev/tty ;;
+      2)
+        clear; echo ""
+        _cl_native_stop
+        sleep 1
+        curl -sf --max-time 1 http://127.0.0.1:$PORT &>/dev/null           && echo -e "  ${YELLOW}[AVISO]${NC} Gateway aún responde — espera unos segundos"           || echo -e "  ${GREEN}[OK]${NC} Gateway detenido"
+        echo ""; read -r _ < /dev/tty ;;
+      3)
+        clear; echo ""
+        if tmux has-session -t openclaw 2>/dev/null; then
+          echo -e "  ${DIM}(Ctrl+B D para salir sin matar el proceso)${NC}"; echo ""
+          sleep 1; tmux attach -t openclaw
+        else
+          echo -e "  ${YELLOW}[AVISO]${NC} Sin sesión tmux activa — usa [1] para iniciar"
+          echo "  Log: cat ~/openclaw-logs/runtime.log"
+        fi
+        echo ""; read -r _ < /dev/tty ;;
+      4)
+        clear; echo ""
+        local _T2; _T2=$(_cl_native_get_token)
+        if [ -n "$_T2" ]; then
+          echo -e "  ${BOLD}URL con token:${NC}"; echo ""
+          echo -e "  ${GREEN}http://localhost:${PORT}/#token=${_T2}${NC}"; echo ""
+          echo -e "  ${DIM}Copia y abre en Brave o Chrome${NC}"
+        else
+          echo -e "  ${YELLOW}[AVISO]${NC} Token no encontrado"
+          echo -e "  ${DIM}  Ejecuta [6] openclaw onboard para configurar${NC}"
+        fi
+        echo ""; read -r _ < /dev/tty ;;
+      5)
+        clear; echo ""
+        echo -e "  ${CYAN}Abriendo OpenClaw TUI...${NC}"
+        echo -e "  ${DIM}Ctrl+C para salir${NC}"; echo ""
+        openclaw tui < /dev/tty
+        echo ""; read -r _ < /dev/tty ;;
+      6)
+        clear; echo ""
+        echo -e "  ${CYAN}[+] Ejecutando openclaw onboard...${NC}"; echo ""
+        echo -e "  ${DIM}Configura gateway, agente y canales${NC}"; echo ""
+        local _OLD_LD="${LD_PRELOAD:-}"
+        unset LD_PRELOAD
+        openclaw onboard < /dev/tty ||           echo -e "  ${YELLOW}[AVISO]${NC} onboard terminó con error — vuelve a intentar"
+        [ -n "$_OLD_LD" ] && export LD_PRELOAD="$_OLD_LD"
+        echo ""; read -r _ < /dev/tty ;;
+      7) _submenu_cl_proveedor; continue ;;
+      8)
+        clear; echo ""
+        _ensure_install_script "install_openclaw.sh" || { read -r _ < /dev/tty; continue; }
+        bash "$HOME/install_openclaw.sh" < /dev/tty
+        echo ""; read -r _ < /dev/tty ;;
+      b|B|"") break ;;
+    esac
+  done
+}
+
+# ════════════════════════════════════════════
+#  SUBMENÚ HERMES AGENT
+# ════════════════════════════════════════════
+submenu_hermes() {
+  while true; do
+    clear; echo ""
+    local _HM_GW_ST; _HM_GW_ST=$(_hermes_gw_status)
+    local HM_STATUS HM_GW_LINE
+    local HM_VER; HM_VER=$(get_reg hermes version)
+    [ -z "$HM_VER" ] && \
+      HM_VER=$(hermes version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+    [ -z "$HM_VER" ] && HM_VER="?"
+    local HM_MODEL; HM_MODEL=$(grep "^hermes\.model=" "$REGISTRY" 2>/dev/null | cut -d'=' -f2)
+    [ -z "$HM_MODEL" ] && HM_MODEL="no configurado"
+
+    case "$_HM_GW_ST" in
+      running) HM_STATUS="${GREEN}● gateway activo${NC}"; HM_GW_LINE="  tmux: hermes-gw" ;;
+      *)       HM_STATUS="${GREEN}● listo${NC}";          HM_GW_LINE="" ;;
+    esac
+
+    echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
+    echo    "  ║  ⚕ HERMES AGENT                         ║"
+    echo    "  ╠══════════════════════════════════════════╣"
+    printf  "  ║  ${NC}Estado: %b${CYAN}${BOLD}%-18s║\n" "$HM_STATUS" ""
+    printf  "  ║  ${NC}${DIM}v%-8s  modelo: %-16s${NC}${CYAN}${BOLD}║\n" "$HM_VER" "${HM_MODEL:0:16}"
+    [ -n "$HM_GW_LINE" ] && printf "  ║  ${GREEN}%-40s${CYAN}${BOLD}║\n" "$HM_GW_LINE"
+    echo    "  ╠══════════════════════════════════════════╣"
+    echo -e "  ║  ${NC}[1] Abrir Hermes (TUI)                 ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[2] Gateway (Telegram/Discord/SMS)     ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[3] Comandos — referencia ejecutable   ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[4] Configurar proveedor IA            ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[5] Usar Ollama local                  ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[6] Estado y diagnóstico               ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[7] Wizard completo (hermes setup)     ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[8] Actualizar Hermes                  ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[9] Instalar / reinstalar              ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[b] Volver                             ${CYAN}${BOLD}║"
+    echo -e "  ╚══════════════════════════════════════════╝${NC}"
+    echo ""; echo -n "  Opción: "
+    read -r OPT < /dev/tty
+
+    case "$OPT" in
+      1)
+        clear; echo ""
+        echo -e "  ${CYAN}[+] Abriendo Hermes Agent...${NC}"
+        echo -e "  ${DIM}Usa /help dentro de Hermes para ver comandos slash${NC}"
+        echo -e "  ${DIM}Ctrl+C o /exit para salir${NC}"; echo ""
+        hermes < /dev/tty
+        echo ""; read -r _ < /dev/tty ;;
+
+      2)
+        # Submenú Gateway
+        while true; do
+          clear; echo ""
+          local _GW_NOW; _GW_NOW=$(_hermes_gw_status)
+          local _GW_PILL
+          [ "$_GW_NOW" = "running" ] \
+            && _GW_PILL="${GREEN}● activo (tmux: hermes-gw)${NC}" \
+            || _GW_PILL="${YELLOW}○ detenido${NC}"
+          echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
+          echo    "  ║  ⚕ HERMES — GATEWAY                     ║"
+          echo    "  ╠══════════════════════════════════════════╣"
+          printf  "  ║  ${NC}Estado: %b${CYAN}${BOLD}%-14s║\n" "$_GW_PILL" ""
+          echo    "  ╠══════════════════════════════════════════╣"
+          echo -e "  ║  ${NC}[1] Iniciar gateway (foreground/tmux)  ${CYAN}${BOLD}║"
+          echo -e "  ║  ${DIM}    hermes gateway run — Termux recom. ${CYAN}${BOLD}║"
+          echo -e "  ║  ${NC}[2] Ver estado gateway                 ${CYAN}${BOLD}║"
+          echo -e "  ║  ${NC}[3] Ver logs gateway                   ${CYAN}${BOLD}║"
+          echo -e "  ║  ${NC}[4] Detener gateway                    ${CYAN}${BOLD}║"
+          echo -e "  ║  ${NC}[b] Volver                             ${CYAN}${BOLD}║"
+          echo -e "  ╚══════════════════════════════════════════╝${NC}"
+          echo ""; echo -n "  Opción: "
+          read -r GOPT < /dev/tty
+          case "$GOPT" in
+            1)
+              clear; echo ""
+              if [ "$_GW_NOW" = "running" ]; then
+                echo -e "  ${YELLOW}[AVISO]${NC} Gateway ya está corriendo (tmux: hermes-gw)"
+                echo -e "  ${DIM}Adjúntate con: tmux attach -t hermes-gw${NC}"
+                echo ""; read -r _ < /dev/tty; continue
+              fi
+              echo -e "  ${CYAN}[+] Iniciando gateway en sesión tmux...${NC}"; echo ""
+              tmux new-session -d -s "hermes-gw" "hermes gateway run" 2>/dev/null
+              sleep 2
+              _hermes_gw_status | grep -q "running" \
+                && echo -e "  ${GREEN}[OK]${NC} Gateway iniciado en tmux: hermes-gw" \
+                || echo -e "  ${YELLOW}[AVISO]${NC} Verifica: tmux attach -t hermes-gw"
+              echo ""; read -r _ < /dev/tty ;;
+            2)
+              clear; echo ""
+              hermes gateway status < /dev/tty 2>/dev/null || \
+                echo -e "  ${YELLOW}[AVISO]${NC} hermes gateway status falló"
+              echo ""; read -r _ < /dev/tty ;;
+            3)
+              clear; echo ""
+              if tmux has-session -t "hermes-gw" 2>/dev/null; then
+                echo -e "  ${DIM}Adjuntando tmux: hermes-gw — Ctrl+B D para salir${NC}"; echo ""
+                sleep 1
+                tmux attach-session -t "hermes-gw" < /dev/tty
+              else
+                echo -e "  ${YELLOW}[AVISO]${NC} Gateway no está corriendo"
+              fi
+              echo ""; read -r _ < /dev/tty ;;
+            4)
+              clear; echo ""
+              _hermes_gw_stop
+              echo ""; read -r _ < /dev/tty ;;
+            b|B|"") break ;;
+          esac
+        done ;;
+
+      3)
+        # Submenú comandos — referencia ejecutable
+        while true; do
+          clear; echo ""
+          echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
+          echo    "  ║  ⚕ HERMES — COMANDOS                    ║"
+          echo    "  ╠══════════════════════════════════════════╣"
+          echo -e "  ║  ${NC}AGENTE${CYAN}${BOLD}                                   ║"
+          echo -e "  ║  ${NC}[1] hermes          TUI interactiva    ${CYAN}${BOLD}║"
+          echo -e "  ║  ${NC}[2] hermes chat      Chat interactivo  ${CYAN}${BOLD}║"
+          echo -e "  ║  ${NC}[3] hermes model     Cambiar modelo    ${CYAN}${BOLD}║"
+          echo -e "  ║  ${NC}[4] hermes setup     Wizard completo   ${CYAN}${BOLD}║"
+          echo -e "  ╠══════════════════════════════════════════╣"
+          echo -e "  ║  ${NC}ESTADO${CYAN}${BOLD}                                   ║"
+          echo -e "  ║  ${NC}[5] hermes status    Agente + auth     ${CYAN}${BOLD}║"
+          echo -e "  ║  ${NC}[6] hermes doctor    Diagnóstico       ${CYAN}${BOLD}║"
+          echo -e "  ║  ${NC}[7] hermes version   Versión           ${CYAN}${BOLD}║"
+          echo -e "  ╠══════════════════════════════════════════╣"
+          echo -e "  ║  ${NC}MENSAJERÍA${CYAN}${BOLD}                               ║"
+          echo -e "  ║  ${NC}[8] hermes send      Enviar mensaje    ${CYAN}${BOLD}║"
+          echo -e "  ║  ${DIM}    Telegram·Discord·SMS·Signal       ${CYAN}${BOLD}║"
+          echo -e "  ╠══════════════════════════════════════════╣"
+          echo -e "  ║  ${NC}[9] hermes kanban    Tablero tareas    ${CYAN}${BOLD}║"
+          echo -e "  ║  ${NC}[b] Volver                             ${CYAN}${BOLD}║"
+          echo -e "  ╚══════════════════════════════════════════╝${NC}"
+          echo ""; echo -n "  Opción (ejecuta el comando): "
+          read -r COPT < /dev/tty
+          case "$COPT" in
+            1) clear; hermes < /dev/tty;        echo ""; read -r _ < /dev/tty ;;
+            2) clear; hermes chat < /dev/tty;   echo ""; read -r _ < /dev/tty ;;
+            3) clear; hermes model < /dev/tty;  echo ""; read -r _ < /dev/tty ;;
+            4) clear; hermes setup < /dev/tty;  echo ""; read -r _ < /dev/tty ;;
+            5)
+              clear; echo ""
+              hermes status 2>/dev/null || echo -e "  ${YELLOW}[AVISO]${NC} hermes status falló"
+              echo ""; read -r _ < /dev/tty ;;
+            6)
+              clear; echo ""
+              hermes doctor 2>/dev/null || echo -e "  ${YELLOW}[AVISO]${NC} hermes doctor falló"
+              echo ""; read -r _ < /dev/tty ;;
+            7)
+              clear; echo ""
+              hermes version 2>/dev/null || echo -e "  ${YELLOW}[AVISO]${NC} hermes version falló"
+              echo ""; read -r _ < /dev/tty ;;
+            8)
+              clear; echo ""
+              echo -e "  ${CYAN}hermes send — envía mensaje one-shot${NC}"; echo ""
+              echo -e "  ${DIM}Ejemplo: hermes send --to telegram \"Hola\"${NC}"; echo ""
+              echo -n "  Mensaje (ENTER cancela): "
+              read -r _MSG < /dev/tty
+              [ -z "$_MSG" ] && { echo -e "  ${YELLOW}Cancelado${NC}"; echo ""; read -r _ < /dev/tty; continue; }
+              hermes send "$_MSG" < /dev/tty 2>/dev/null || \
+                echo -e "  ${YELLOW}[AVISO]${NC} Configura la plataforma con: hermes setup"
+              echo ""; read -r _ < /dev/tty ;;
+            9) clear; hermes kanban < /dev/tty; echo ""; read -r _ < /dev/tty ;;
+            b|B|"") break ;;
+          esac
+        done ;;
+
+      4)
+        # Configurar proveedor IA — mismo patrón que OpenClaw [7]
+        clear; echo ""
+        echo -e "  ${CYAN}Cambiar proveedor IA de Hermes${NC}"; echo ""
+        echo -e "  ${BOLD}[1]${NC} Configurar via wizard (recomendado)"
+        echo -e "  ${DIM}    Lanza: hermes model${NC}"; echo ""
+        echo -e "  ${BOLD}[2]${NC} Configurar Ollama local rápido"
+        echo -e "  ${DIM}    Detecta modelos y configura automáticamente${NC}"; echo ""
+        echo -e "  ${BOLD}[b]${NC} Volver"
+        echo ""; echo -n "  Opción: "
+        read -r POPT < /dev/tty
+        case "$POPT" in
+          1)
+            echo ""
+            echo -e "  ${CYAN}Lanzando hermes model...${NC}"
+            echo -e "  ${DIM}Selecciona el provider con las flechas y Enter${NC}"; echo ""
+            hermes model < /dev/tty
+            echo "" ;;
+          2)
+            clear; echo ""
+            if ! curl -sf http://127.0.0.1:11434 &>/dev/null; then
+              echo -e "  ${YELLOW}[AVISO]${NC} Ollama no está corriendo en :11434"
+              echo -e "  ${DIM}Inícialo con: ollama-start${NC}"; echo ""
+              echo -n "  ¿Continuar de todas formas? (s/n): "
+              read -r _OL < /dev/tty
+              [ "$_OL" != "s" ] && [ "$_OL" != "S" ] && {
+                echo ""; read -r _ < /dev/tty; continue
+              }
+            fi
+            mapfile -t HM_MODEL_LIST < <(_hermes_list_models)
+            echo -e "  ${CYAN}Modelos instalados:${NC}"; echo ""
+            if [ ${#HM_MODEL_LIST[@]} -eq 0 ]; then
+              echo -e "  ${YELLOW}(ninguno — instala con ollama pull)${NC}"
+            else
+              for i in "${!HM_MODEL_LIST[@]}"; do
+                printf "    [%d] %s\n" "$((i+1))" "${HM_MODEL_LIST[$i]}"
+              done
+            fi
+            echo ""
+            echo -n "  Número o nombre (ENTER cancela): "
+            read -r HM_OL_INPUT < /dev/tty
+            [ -z "$HM_OL_INPUT" ] && {
+              echo -e "  ${YELLOW}Cancelado${NC}"; echo ""; read -r _ < /dev/tty; continue
+            }
+            local HM_OL_MODEL=""
+            if [[ "$HM_OL_INPUT" =~ ^[0-9]+$ ]] && [ "$HM_OL_INPUT" -ge 1 ] && \
+               [ "$HM_OL_INPUT" -le "${#HM_MODEL_LIST[@]}" ]; then
+              HM_OL_MODEL="${HM_MODEL_LIST[$((HM_OL_INPUT-1))]}"
+            else
+              HM_OL_MODEL="$HM_OL_INPUT"
+            fi
+            echo -e "  Configurando: ${CYAN}${HM_OL_MODEL}${NC}"; echo ""
+            # Hermes config en ~/.hermes/config.yaml
+            # Formato provider ollama: model: ollama/<nombre>
+            local HM_CFG="$HOME/.hermes/config.yaml"
+            if [ -f "$HM_CFG" ]; then
+              # Actualizar la línea de model si ya existe
+              if grep -q "^model:" "$HM_CFG" 2>/dev/null; then
+                sed -i "s|^model:.*|model: ollama/${HM_OL_MODEL}|" "$HM_CFG"
+              else
+                echo "model: ollama/${HM_OL_MODEL}" >> "$HM_CFG"
+              fi
+            else
+              mkdir -p "$HOME/.hermes"
+              echo "model: ollama/${HM_OL_MODEL}" > "$HM_CFG"
+            fi
+            # Guardar en registry
+            grep -v "^hermes\.model=" "$REGISTRY" > "$REGISTRY.tmp" 2>/dev/null || touch "$REGISTRY.tmp"
+            echo "hermes.model=ollama/${HM_OL_MODEL}" >> "$REGISTRY.tmp"
+            mv "$REGISTRY.tmp" "$REGISTRY"
+            echo -e "  ${GREEN}[OK]${NC} Ollama configurado: ${HM_OL_MODEL}"
+            echo -e "  ${DIM}Reinicia Hermes para aplicar cambios${NC}" ;;
+        esac
+        echo ""; read -r _ < /dev/tty ;;
+
+      5)
+        # Usar Ollama local — atajo directo a la opción [2] de proveedor
+        clear; echo ""
+        if ! curl -sf http://127.0.0.1:11434 &>/dev/null; then
+          echo -e "  ${YELLOW}[AVISO]${NC} Ollama no está corriendo en :11434"
+          echo -e "  ${DIM}Inícialo con: ollama-start${NC}"; echo ""
+          echo -n "  ¿Continuar de todas formas? (s/n): "
+          read -r _OL < /dev/tty
+          [ "$_OL" != "s" ] && [ "$_OL" != "S" ] && {
+            echo ""; read -r _ < /dev/tty; continue
+          }
+        fi
+        mapfile -t HM_MODEL_LIST < <(_hermes_list_models)
+        echo -e "  ${CYAN}Modelos Ollama disponibles:${NC}"; echo ""
+        if [ ${#HM_MODEL_LIST[@]} -eq 0 ]; then
+          echo -e "  ${YELLOW}(ninguno — instala con: ollama pull qwen2.5:0.5b)${NC}"
+          echo ""; read -r _ < /dev/tty; continue
+        fi
+        for i in "${!HM_MODEL_LIST[@]}"; do
+          printf "    [%d] %s\n" "$((i+1))" "${HM_MODEL_LIST[$i]}"
+        done
+        echo ""
+        echo -n "  Número o nombre (ENTER cancela): "
+        read -r HM_OL_INPUT < /dev/tty
+        [ -z "$HM_OL_INPUT" ] && {
+          echo -e "  ${YELLOW}Cancelado${NC}"; echo ""; read -r _ < /dev/tty; continue
+        }
+        local HM_OL_MODEL2=""
+        if [[ "$HM_OL_INPUT" =~ ^[0-9]+$ ]] && [ "$HM_OL_INPUT" -ge 1 ] && \
+           [ "$HM_OL_INPUT" -le "${#HM_MODEL_LIST[@]}" ]; then
+          HM_OL_MODEL2="${HM_MODEL_LIST[$((HM_OL_INPUT-1))]}"
+        else
+          HM_OL_MODEL2="$HM_OL_INPUT"
+        fi
+        echo -e "  Configurando: ${CYAN}${HM_OL_MODEL2}${NC}"; echo ""
+        local HM_CFG2="$HOME/.hermes/config.yaml"
+        if [ -f "$HM_CFG2" ]; then
+          grep -q "^model:" "$HM_CFG2" 2>/dev/null \
+            && sed -i "s|^model:.*|model: ollama/${HM_OL_MODEL2}|" "$HM_CFG2" \
+            || echo "model: ollama/${HM_OL_MODEL2}" >> "$HM_CFG2"
+        else
+          mkdir -p "$HOME/.hermes"
+          echo "model: ollama/${HM_OL_MODEL2}" > "$HM_CFG2"
+        fi
+        grep -v "^hermes\.model=" "$REGISTRY" > "$REGISTRY.tmp" 2>/dev/null || touch "$REGISTRY.tmp"
+        echo "hermes.model=ollama/${HM_OL_MODEL2}" >> "$REGISTRY.tmp"
+        mv "$REGISTRY.tmp" "$REGISTRY"
+        echo -e "  ${GREEN}[OK]${NC} Hermes → Ollama local: ${HM_OL_MODEL2}"
+        echo -e "  ${DIM}Reinicia Hermes para aplicar cambios${NC}"
+        echo ""; read -r _ < /dev/tty ;;
+
+      6)
+        clear; echo ""
+        echo -e "  ${CYAN}hermes status:${NC}"; echo ""
+        hermes status 2>/dev/null || echo -e "  ${YELLOW}[AVISO]${NC} hermes status falló"
+        echo ""
+        echo -e "  ${CYAN}hermes doctor:${NC}"; echo ""
+        hermes doctor 2>/dev/null || echo -e "  ${YELLOW}[AVISO]${NC} hermes doctor falló"
+        echo ""; read -r _ < /dev/tty ;;
+
+      7)
+        clear; echo ""
+        echo -e "  ${CYAN}[+] Lanzando hermes setup (wizard completo)...${NC}"; echo ""
+        hermes setup < /dev/tty
+        # Actualizar versión y modelo en registry tras wizard
+        local _HV; _HV=$(hermes version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+        [ -n "$_HV" ] && {
+          grep -v "^hermes\.version=" "$REGISTRY" > "$REGISTRY.tmp" 2>/dev/null || touch "$REGISTRY.tmp"
+          echo "hermes.version=${_HV}" >> "$REGISTRY.tmp"
+          mv "$REGISTRY.tmp" "$REGISTRY"
+        }
+        echo ""; read -r _ < /dev/tty ;;
+
+      8)
+        clear; echo ""
+        echo -e "  ${CYAN}[+] Actualizando Hermes Agent...${NC}"; echo ""
+        hermes update < /dev/tty 2>/dev/null || {
+          echo -e "  ${YELLOW}[AVISO]${NC} hermes update falló"
+          echo -e "  ${DIM}Prueba: cd ~/.hermes/hermes-agent && git pull${NC}"
+        }
+        # Refrescar versión en registry
+        local _HVU; _HVU=$(hermes version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+        [ -n "$_HVU" ] && {
+          grep -v "^hermes\.version=" "$REGISTRY" > "$REGISTRY.tmp" 2>/dev/null || touch "$REGISTRY.tmp"
+          echo "hermes.version=${_HVU}" >> "$REGISTRY.tmp"
+          mv "$REGISTRY.tmp" "$REGISTRY"
+          echo -e "  ${GREEN}[OK]${NC} versión actualizada a ${_HVU}"
+        }
+        echo ""; read -r _ < /dev/tty ;;
+
+      9)
+        clear; echo ""
+        _ensure_install_script "install_hermes.sh" || { read -r _ < /dev/tty; continue; }
+        bash "$HOME/install_hermes.sh" < /dev/tty
+        echo ""; read -r _ < /dev/tty ;;
+
+      b|B|"") break ;;
+    esac
+  done
+}
+
 submenu_desinstalar() {
   while true; do
     clear; echo ""
@@ -3781,6 +5452,7 @@ submenu_desinstalar() {
     echo -e "  ║  ${NC}[5] Python         [6] Remote${RED}${BOLD}           ║"
     echo -e "  ║  ${NC}[7] OpenCode       [8] OpenClaw${RED}${BOLD}         ║"
     echo -e "  ║  ${NC}[9] Distro Debian  [10] OpenClaude${RED}${BOLD}      ║"
+    echo -e "  ║  ${NC}[11] Hermes Agent${RED}${BOLD}                        ║"
     echo -e "  ║  ${NC}[b] Cancelar${RED}${BOLD}                            ║"
     echo -e "  ╚══════════════════════════════════════════╝${NC}"
     echo ""; echo -n "  Módulo: "; read -r OPT < /dev/tty
@@ -3796,6 +5468,7 @@ submenu_desinstalar() {
       8)  uninstall_module "openclaw"    "OpenClaw"                 ; break ;;
       9)  uninstall_module "proot"       "Distro Debian (rootfs)"   ; break ;;
       10) uninstall_module "openclaude"  "OpenClaude"               ; break ;;
+      11) uninstall_module "hermes"      "Hermes Agent"             ; break ;;
       b|B|"") break ;;
     esac
   done

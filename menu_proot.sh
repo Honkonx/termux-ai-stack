@@ -110,42 +110,25 @@ _load_proot_cache() {
 
 
 # ════════════════════════════════════════════
-#  HELPER: proot login con bind mount del proyecto
+#  HELPER: proot-distro login para opencode/openclaw
 #
-#  Fix B3: --bind /sdcard eliminado — proot-distro
-#    lo monta automáticamente. Bind extra = overlap.
+#  NOTA TÉCNICA: proot-distro monta /storage /system /vendor
+#  de forma hardcoded — no hay forma de quitarlos sin root.
+#  proot directo tampoco funciona: no puede ejecutar binarios
+#  ELF de Debian sin el linker que configura proot-distro.
+#  El acceso al filesystem de Android es una limitación real
+#  del stack proot en Android sin root.
 #
-#  Fix Sandbox: si target_path apunta a /sdcard o
-#    /termux-home, resuelve la ruta REAL en el host
-#    y la expone con --bind HOST_DIR:PROOT_DIR.
-#    Así opencode web solo ve la carpeta del proyecto,
-#    no el sistema Android completo.
-#
-#  Uso: _proot_sdcard_login "RUTA_EN_PROOT" -- cmd
+#  Lo que SÍ se controla: el cwd del proyecto (cd correcto)
+#  y la config de opencode (PATH explícito, HOME=/root).
 # ════════════════════════════════════════════
 _proot_sdcard_login() {
   local target_path="$1"; shift
-
-  # Resolver la ruta del HOST real para el bind
-  local host_path="$target_path"
-  # /sdcard/X → /storage/emulated/0/X (ruta real Android)
-  host_path="${host_path/\/sdcard//storage/emulated/0}"
-  # /termux-home/X → $HOME/X (ruta real Termux)
-  host_path="${host_path/\/termux-home/$HOME}"
-
-  # Si la ruta host existe → bind restringido solo a esa carpeta
-  # Esto evita que opencode vea el sistema Android completo desde la UI web
-  if [ -d "$host_path" ] && [ "$host_path" != "/" ]; then
-    proot-distro login "$DISTRO_NAME" \
-      --bind "$HOME:/termux-home" \
-      --bind "$host_path:$target_path" \
-      -- "$@"
-  else
-    # Fallback sin bind de proyecto (p.ej. rutas dentro del proot nativo)
-    proot-distro login "$DISTRO_NAME" \
-      --bind "$HOME:/termux-home" \
-      -- "$@"
-  fi
+  # --bind $HOME:/termux-home expone el home de Termux sin
+  # sobreescribir /root del contenedor (donde vive .nvm/.config)
+  proot-distro login "$DISTRO_NAME" \
+    --bind "$HOME:/termux-home" \
+    -- "$@"
 }
 
 # ════════════════════════════════════════════
@@ -208,17 +191,28 @@ _check_proot_combined() {
     _OC_CACHE="not_installed||"
   fi
 
-  # ── openclaw → estado final con curl (Termux, no proot) ──
+  # ── openclaw → nativo tiene prioridad sobre proot ────────────
+  # Si el binario nativo existe, no es necesario entrar al proot para el check
   local cl_status cl_ver
-  cl_status="${cl_raw%%|*}"
-  if [ "$cl_status" = "found" ]; then
+  local _cl_native_bin=""
+  [ -f "$HOME/.npm-global/bin/openclaw" ] && _cl_native_bin="$HOME/.npm-global/bin/openclaw"
+  [ -z "$_cl_native_bin" ] && command -v openclaw &>/dev/null &&     _cl_native_bin="$(command -v openclaw)"
+
+  if [ -n "$_cl_native_bin" ]; then
+    # Nativo encontrado — usar directamente sin depender del resultado proot
     cl_ver=$(grep "^openclaw\.version=" "$REGISTRY" 2>/dev/null | cut -d'=' -f2)
     [ -z "$cl_ver" ] && cl_ver="?"
-    curl -sf --max-time 1 http://127.0.0.1:18789 &>/dev/null \
-      && _CLAW_CACHE="running|${cl_ver}|:18789" \
-      || _CLAW_CACHE="stopped|${cl_ver}|"
+    curl -sf --max-time 1 http://127.0.0.1:18789 &>/dev/null       && _CLAW_CACHE="running|${cl_ver}|native"       || _CLAW_CACHE="stopped|${cl_ver}|native"
   else
-    _CLAW_CACHE="not_installed||"
+    # Nativo no encontrado — usar resultado proot
+    cl_status="${cl_raw%%|*}"
+    if [ "$cl_status" = "found" ]; then
+      cl_ver=$(grep "^openclaw\.version=" "$REGISTRY" 2>/dev/null | cut -d'=' -f2)
+      [ -z "$cl_ver" ] && cl_ver="?"
+      curl -sf --max-time 1 http://127.0.0.1:18789 &>/dev/null         && _CLAW_CACHE="running|${cl_ver}|:18789"         || _CLAW_CACHE="stopped|${cl_ver}|"
+    else
+      _CLAW_CACHE="not_installed||"
+    fi
   fi
 
   local now=$SECONDS
@@ -251,7 +245,18 @@ check_opencode() {
 }
 
 check_openclaw() {
-  # Fix S22: solo verificar [ -d ROOTFS_PATH ], no archivos internos (permisos 0700)
+  # Prioridad: nativo > proot
+  # 1. Nativo — instantáneo, sin login proot
+  local _cn_bin=""
+  [ -f "$HOME/.npm-global/bin/openclaw" ] && _cn_bin="$HOME/.npm-global/bin/openclaw"
+  [ -z "$_cn_bin" ] && command -v openclaw &>/dev/null && _cn_bin="$(command -v openclaw)"
+  if [ -n "$_cn_bin" ]; then
+    local cl_ver; cl_ver=$(grep "^openclaw\.version=" "$REGISTRY" 2>/dev/null | cut -d'=' -f2)
+    [ -z "$cl_ver" ] && cl_ver="?"
+    curl -sf --max-time 1 http://127.0.0.1:18789 &>/dev/null       && echo "running|${cl_ver}|native"       || echo "stopped|${cl_ver}|native"
+    return
+  fi
+  # 2. Proot — Fix S22: solo verificar [ -d ROOTFS_PATH ]
   { [ -z "$DISTRO_NAME" ] || [ ! -d "$ROOTFS_PATH" ]; } && {
     echo "not_installed||"; return
   }
@@ -262,9 +267,7 @@ check_openclaw() {
     local cl_ver
     cl_ver=$(grep "^openclaw\.version=" "$REGISTRY" 2>/dev/null | cut -d'=' -f2)
     [ -z "$cl_ver" ] && cl_ver="?"
-    curl -sf --max-time 1 http://127.0.0.1:18789 &>/dev/null \
-      && echo "running|${cl_ver}|:18789" \
-      || echo "stopped|${cl_ver}|"
+    curl -sf --max-time 1 http://127.0.0.1:18789 &>/dev/null       && echo "running|${cl_ver}|"       || echo "stopped|${cl_ver}|"
   else
     echo "not_installed||"
   fi
@@ -791,7 +794,9 @@ submenu_openclaw() {
     echo -e "  ║  ${NC}[5] Gestionar proyectos                ${CYAN}${BOLD}║"
     echo -e "  ║  ${NC}[6] Detener gateway                    ${CYAN}${BOLD}║"
     echo -e "  ║  ${NC}[7] Cambiar proveedor IA               ${CYAN}${BOLD}║"
-    echo -e "  ║  ${NC}[8] Instalar / actualizar              ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[8] Instalar / actualizar (proot)      ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[i] Instalar versión nativa             ${CYAN}${BOLD}║"
+    echo -e "  ║  ${DIM}    glibc+npm · recomendada             ${CYAN}${BOLD}║"
     echo -e "  ║  ${NC}[b] Volver                             ${CYAN}${BOLD}║"
     echo -e "  ╚══════════════════════════════════════════╝${NC}"
     echo ""; echo -n "  Opción: "
@@ -1047,6 +1052,16 @@ print('OK')
         _ensure_install_script "install_openclaw.sh" || { read -r _ < /dev/tty; continue; }
         bash "$HOME/install_openclaw.sh" < /dev/tty
         echo ""; read -r _ < /dev/tty ;;
+      i|I)
+        # Instalar versión nativa desde el menú proot
+        # Lanza install_openclaw.sh y pre-selecciona modo nativo
+        clear; echo ""
+        echo -e "  ${CYAN}[+] Instalando OpenClaw nativo (glibc + npm)...${NC}"; echo ""
+        echo -e "  ${DIM}El instalador preguntará el modo — selecciona [1] Nativo${NC}"; echo ""
+        _ensure_install_script "install_openclaw.sh" || { read -r _ < /dev/tty; continue; }
+        # Pasar "1" como primera entrada para pre-seleccionar modo nativo
+        { echo "1"; cat /dev/tty; } | bash "$HOME/install_openclaw.sh"
+        echo ""; read -r _ < /dev/tty ;;
       b|B|"") break ;;
     esac
   done
@@ -1218,13 +1233,16 @@ PYEOF
           echo -e "  ${RED}[ERROR]${NC} No existe: $TARGET_DIR"
           echo ""; read -r _ < /dev/tty; continue
         }
-        local REAL_PATH
-        REAL_PATH=$(readlink -f "$TARGET_DIR" 2>/dev/null || echo "$TARGET_DIR")
-        REAL_PATH="${REAL_PATH/\/storage\/emulated\/0/\/sdcard}"
-        REAL_PATH="${REAL_PATH/${HOME}/\/termux-home}"
+        # Ruta real en el host Android (para mensajes y _oc_set_project)
+        local HOST_PROJECT
+        HOST_PROJECT=$(readlink -f "$TARGET_DIR" 2>/dev/null || echo "$TARGET_DIR")
+        # Ruta dentro del proot (/storage/emulated/0 → /sdcard via proot-distro)
+        local PROOT_PATH="$HOST_PROJECT"
+        PROOT_PATH="${PROOT_PATH/\/storage\/emulated\/0/\/sdcard}"
+        PROOT_PATH="${PROOT_PATH/${HOME}/\/termux-home}"
         echo ""
         echo -e "  ${CYAN}Proyecto:${NC} $(basename "$TARGET_DIR")"
-        echo -e "  ${DIM}cwd: $REAL_PATH${NC}"; echo ""
+        echo -e "  ${DIM}cwd: $PROOT_PATH${NC}"; echo ""
         echo "  [1] TUI  — interfaz en terminal"
         echo "  [2] Web  — servidor en :3000"
         echo ""; echo -n "  Modo: "
@@ -1232,27 +1250,25 @@ PYEOF
         case "$MODO" in
           1)
             echo ""
-            # Fix Sandbox: exponer solo la carpeta del proyecto
-            # --bind PROYECTO_HOST:PROYECTO_PROOT limita el acceso de opencode
             _oc_ensure_providers
-            _oc_set_project "$REAL_PATH"
-            _proot_sdcard_login "$REAL_PATH" bash -c \
+            _oc_set_project "$PROOT_PATH"
+            _proot_sdcard_login "$PROOT_PATH" bash -c \
               "export HOME=/root
                export PATH='/root/.local/bin:/usr/local/bin:/usr/bin:/bin'
-               cd '$REAL_PATH' && opencode ." < /dev/tty
+               cd '$PROOT_PATH' && opencode ." < /dev/tty
             echo ""; read -r _ < /dev/tty ;;
           2)
             pkill -f "opencode web" 2>/dev/null; sleep 1
             echo ""
             echo -e "  ${CYAN}Iniciando servidor en proyecto...${NC}"
+            echo -e "  ${DIM}Proyecto: $(basename "$TARGET_DIR")${NC}"
             echo -e "  ${DIM}Cuando veas la URL presiona ENTER${NC}"; echo ""
-            # Fix Sandbox + CWD: forzar proyecto correcto antes de lanzar
             _oc_ensure_providers
-            _oc_set_project "$REAL_PATH"
-            _proot_sdcard_login "$REAL_PATH" bash -c \
+            _oc_set_project "$PROOT_PATH"
+            _proot_sdcard_login "$PROOT_PATH" bash -c \
               "export HOME=/root
                export PATH='/root/.local/bin:/usr/local/bin:/usr/bin:/bin'
-               cd '$REAL_PATH' && opencode web --port 3000 --hostname 127.0.0.1" &
+               cd '$PROOT_PATH' && opencode web --port 3000 --hostname 127.0.0.1" &
             echo $! > "$HOME/.opencode_web.pid"
             echo ""
             echo -n "  Presiona ENTER cuando veas 'Web interface: http://127.0.0.1:3000'..."
@@ -1485,38 +1501,50 @@ PYEOF
 }
 
 # ════════════════════════════════════════════
-#  SUBMENÚ SERVICIOS (n8n + OpenClaw)
+#  SUBMENÚ SERVICIOS (n8n + OpenClaw + Hermes)
 #  $1 = N8N_STATE precalculado desde el loop principal (opcional)
 #  $2 = CL_STATE  precalculado desde el loop principal (opcional)
-#  Si se pasan, se usan en el primer render — evita re-chequeo proot.
+#  $3 = HM_STATE  precalculado desde el loop principal (opcional)
+#  Si se pasan, se usan en el primer render — evita re-chequeo.
 #  En renders siguientes (al volver de sub-submenú) sí re-chequea.
 # ════════════════════════════════════════════
 submenu_servicios() {
   # Estados iniciales: usar los valores del loop principal si se pasan
   local _N8_INIT="${1:-}"
   local _CL_INIT="${2:-}"
+  local _HM_INIT="${3:-}"
   local _FIRST_RENDER=1
 
   while true; do
     clear; echo ""
 
-    local N8_S N8_V N8_E CL_S CL_V CL_E
+    local N8_S N8_V N8_E CL_S CL_V CL_E HM_S HM_V HM_E
 
     if [ "$_FIRST_RENDER" = "1" ] && [ -n "$_N8_INIT" ] && [ -n "$_CL_INIT" ]; then
-      # Primer render: usar estados ya calculados — sin proot adicional
+      # Primer render: n8n y Hermes usan estado pre-calculado.
+      # OpenClaw: siempre hacer check_openclaw_native primero — garantiza
+      # prioridad nativa aunque _CL_INIT venga del caché proot.
       N8_S="$_N8_INIT"
       N8_V=$(grep "^n8n\.version=" "$REGISTRY" 2>/dev/null | cut -d'=' -f2)
       [ -z "$N8_V" ] && N8_V="?"
       N8_E=""
-      IFS='|' read -r CL_S CL_V CL_E <<< "$_CL_INIT"
+      local _CLN_FIRST; _CLN_FIRST=$(check_openclaw_native 2>/dev/null)
+      IFS='|' read -r _CLN_S _CLN_V _CLN_E <<< "$_CLN_FIRST"
+      if [ "$_CLN_S" != "not_installed" ] && [ -n "$_CLN_S" ]; then
+        CL_S="$_CLN_S"; CL_V="$_CLN_V"; CL_E="$_CLN_E"
+      else
+        IFS='|' read -r CL_S CL_V CL_E <<< "$_CL_INIT"
+      fi
+      IFS='|' read -r HM_S HM_V HM_E <<< "${_HM_INIT:-not_installed||}"
       _FIRST_RENDER=0
     else
       # Renders siguientes: chequeo real (usuario volvió de sub-submenú)
       IFS='|' read -r N8_S N8_V N8_E <<< "$(check_n8n)"
       IFS='|' read -r CL_S CL_V CL_E <<< "$(check_openclaw_cached)"
+      IFS='|' read -r HM_S HM_V HM_E <<< "$(check_hermes)"
     fi
 
-    local N8_PILL CL_PILL
+    local N8_PILL CL_PILL HM_PILL
     case "$N8_S" in
       running)       N8_PILL="${GREEN}● activo  ${NC}" ;;
       stopped)       N8_PILL="${GREEN}● listo   ${NC}" ;;
@@ -1529,14 +1557,24 @@ submenu_servicios() {
       not_installed) CL_PILL="${YELLOW}○ no instal${NC}"; CL_V="──────────" ;;
       *)             CL_PILL="${YELLOW}● ${CL_S}${NC}" ;;
     esac
+    case "$HM_S" in
+      running)       HM_PILL="${GREEN}● activo  ${NC}" ;;
+      stopped)       HM_PILL="${GREEN}● listo   ${NC}" ;;
+      not_installed) HM_PILL="${YELLOW}○ no instal${NC}"; HM_V="──────────" ;;
+      *)             HM_PILL="${YELLOW}● ${HM_S}${NC}" ;;
+    esac
 
     echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
     echo    "  ║  ⬡ SERVICIOS                            ║"
     echo    "  ╠══════════════════════════════════════════╣"
     printf  "  ║  ${NC}[1] n8n        %b  %b${CYAN}${BOLD}║\n" "$N8_PILL" "${NC}→ submenú${CYAN}${BOLD}"
     printf  "  ║      ${NC}${DIM}%s${NC}${CYAN}${BOLD}%-$((28 - ${#N8_V}))s║\n" "$N8_V" ""
+    local _CL_MODE_LABEL
+    [ "$CL_E" = "native" ] && _CL_MODE_LABEL="${DIM} ·native${NC}" || _CL_MODE_LABEL=""
     printf  "  ║  ${NC}[2] OpenClaw   %b  %b${CYAN}${BOLD}║\n" "$CL_PILL" "${NC}→ submenú${CYAN}${BOLD}"
-    printf  "  ║      ${NC}${DIM}%s${NC}${CYAN}${BOLD}%-$((28 - ${#CL_V}))s║\n" "$CL_V" ""
+    printf  "  ║      ${NC}${DIM}v%s%b${NC}${CYAN}${BOLD}%-$((26 - ${#CL_V}))s║\n" "$CL_V" "$_CL_MODE_LABEL" ""
+    printf  "  ║  ${NC}[3] Hermes     %b  %b${CYAN}${BOLD}║\n" "$HM_PILL" "${NC}→ submenú${CYAN}${BOLD}"
+    printf  "  ║      ${NC}${DIM}%s${NC}${CYAN}${BOLD}%-$((28 - ${#HM_V}))s║\n" "$HM_V" ""
     echo    "  ╠══════════════════════════════════════════╣"
     echo -e "  ║  ${NC}[b] Volver al menú principal${CYAN}${BOLD}           ║"
     echo -e "  ╚══════════════════════════════════════════╝${NC}"
@@ -1549,9 +1587,19 @@ submenu_servicios() {
           && install_module "n8n" "n8n" \
           || submenu_n8n "$N8_S" ;;
       2)
-        [ "$CL_S" = "not_installed" ] \
-          && install_module "OpenClaw" "openclaw" \
-          || submenu_openclaw ;;
+        if [ "$CL_S" = "not_installed" ]; then
+          install_module "OpenClaw" "openclaw"
+        elif [ "$CL_E" = "native" ]; then
+          # Nativo instalado → submenú nativo (sin proot, sin NVM)
+          submenu_openclaw_native
+        else
+          # Proot instalado → submenú proot existente
+          submenu_openclaw
+        fi ;;
+      3)
+        [ "$HM_S" = "not_installed" ] \
+          && install_module "Hermes Agent" "hermes" \
+          || submenu_hermes ;;
       b|B|"") break ;;
     esac
   done

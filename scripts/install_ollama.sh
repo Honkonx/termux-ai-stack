@@ -12,23 +12,24 @@
 #  QUÉ HACE:
 #    ✅ Actualiza Termux (solo si no lo hizo el maestro)
 #    ✅ Verifica si Ollama ya está instalado
-#    ✅ Instala Ollama vía pkg (método estable)
+#    ✅ Instala Ollama — Estándar (pkg) o Termux/GPU (npm)
 #    ✅ Ofrece descargar un modelo inicial
 #    ✅ Crea script de inicio con tmux
 #    ✅ Escribe estado al registry ~/.android_server_registry
-#    ✅ Agrega aliases a .bashrc
+#    ✅ Agrega aliases a .bashrc (incluye OLLAMA_VULKAN=1 permanente)
 #    ✅ PASO 7 — Genera vision_bot.py, bot_utils.py, image_archive.py
+#
+#  VERSIONES:
+#    [1] Estándar    — pkg install ollama (ARM64 genérico, CPU-only)
+#    [2] Termux      — npm @mmmbuto/ollama-termux@latest
+#                      (precompilado ARM64, GPU optimizada, OLLAMA_VULKAN=1)
 #
 #  RESPONSABILIDAD DEL MAESTRO (instalar.sh):
 #    ⏭  Tema visual (GitHub Dark + JetBrains Mono)
 #    ⏭  termux.properties + extra-keys
 #    ⏭  pkg update base → exporta ANDROID_SERVER_READY=1
 #
-#  PROBLEMA CONOCIDO:
-#    Ollama v0.11.5+ tiene regresión de rendimiento en Termux ARM64
-#    (bug #27290 en termux-packages). Pendiente fix oficial.
-#
-#  VERSIÓN: 3.0.0 | Mayo 2026
+#  VERSIÓN: 4.0.0 | Junio 2026
 # ============================================================
 
 TERMUX_PREFIX="/data/data/com.termux/files/usr"
@@ -110,29 +111,17 @@ if command -v ollama &>/dev/null; then
 fi
 
 # ============================================================
-# DETECCIÓN DE HARDWARE — GPU + CPU features (silencioso)
-# Los resultados se muestran en el Paso B después de elegir método
+# DETECCIÓN DE CPU features (silencioso)
+# Solo para info — no condiciona opciones del menú
 # ============================================================
-
-detect_vulkan_type() {
-  local vk_type=""
-  if command -v vulkaninfo &>/dev/null; then
-    vk_type=$(vulkaninfo 2>/dev/null | grep "deviceType" | head -1)
-  fi
-  [ -z "$vk_type" ] && \
-    vk_type=$(LD_LIBRARY_PATH=/system/lib64 vulkaninfo 2>/dev/null \
-      | grep "deviceType" | head -1)
-  echo "$vk_type"
-}
 
 detect_cpu_features() {
   local features result="base"
   features=$(grep -m1 -i "^Features" /proc/cpuinfo 2>/dev/null)
   [ -z "$features" ] && features=$(grep -i "features" /proc/cpuinfo 2>/dev/null | head -1)
-
   # i8mm — multiplicación de matrices int8 (ARMv8.6+)
   echo "$features" | grep -q "i8mm" && result="i8mm"
-  # dotprod — "asimddp" es el nombre ARM oficial de dotprod en kernels Android
+  # dotprod — "asimddp" es el nombre ARM oficial en kernels Android
   echo "$features" | grep -qE "dotprod|asimddp" && {
     [ "$result" = "base" ] && result="dotprod" || result="${result}+dotprod"
   }
@@ -141,165 +130,31 @@ detect_cpu_features() {
   echo "$result"
 }
 
-# detect_gpu — sin requerir vulkaninfo instalado
-detect_gpu() {
-  local info=""
-  if command -v vulkaninfo &>/dev/null; then
-    info=$(vulkaninfo 2>/dev/null | grep -i "deviceName" | head -1)
-  fi
-  if [ -z "$info" ]; then
-    info=$(LD_LIBRARY_PATH=/system/lib64 vulkaninfo 2>/dev/null \
-      | grep -i "deviceName" | head -1)
-    [ -n "$info" ] && GPU_SRC="system_lib"
-  fi
-
-  if echo "$info" | grep -qi "adreno"; then
-    echo "adreno"
-    return
-  elif echo "$info" | grep -qi "mali"; then
-    echo "mali"
-    return
-  elif echo "$info" | grep -qi "swiftshader\|llvmpipe"; then
-    echo "software"
-    return
-  elif [ -n "$info" ]; then
-    echo "vulkan_system"
-    return
-  fi
-
-  # Fallback sin vulkaninfo — getprop es la fuente mas confiable en Android
-  # 4 capas: ro.hardware.egl -> ro.hardware -> ro.board.platform -> ro.product.board
-  local hw_egl hw_prop hw_platform hw_board
-  hw_egl=$(getprop ro.hardware.egl 2>/dev/null | tr '[:upper:]' '[:lower:]')
-  hw_prop=$(getprop ro.hardware 2>/dev/null | tr '[:upper:]' '[:lower:]')
-  hw_platform=$(getprop ro.board.platform 2>/dev/null | tr '[:upper:]' '[:lower:]')
-  hw_board=$(getprop ro.product.board 2>/dev/null | tr '[:upper:]' '[:lower:]')
-  local hw_all="${hw_egl} ${hw_prop} ${hw_platform} ${hw_board}"
-
-  # Qualcomm/Adreno: qcom, lahaina, kona, taro, kalama, pineapple, sm*, sdm*
-  if echo "$hw_all" | grep -qE "adreno|qcom|lahaina|kona|taro|kalama|pineapple|crow|shima|yupik|sm[0-9]|sdm[0-9]|snapdragon|qualcomm"; then
-    echo "adreno_no_vulkan"
-  # MediaTek/Mali: mt*, dimensity, helio
-  elif echo "$hw_all" | grep -qE "mt[0-9]|mediatek|dimensity|helio|mali"; then
-    echo "mali_no_vulkan"
-  # Exynos/Samsung
-  elif echo "$hw_all" | grep -qE "exynos|universal[0-9]"; then
-    echo "mali_no_vulkan"
-  else
-    # Ultimo fallback: nodos de dispositivo
-    { [ -e /dev/mali0 ] || [ -e /sys/class/misc/mali0 ]; } && echo "mali_no_vulkan" && return
-    [ -e /dev/kgsl-3d0 ] && echo "adreno_no_vulkan" && return
-    echo "none"
-  fi
-}
-
-HW_GPU=$(detect_gpu)
 HW_CPU=$(detect_cpu_features)
-HW_VK_TYPE=$(detect_vulkan_type)
 
-# Determinar modo recomendado
-# CPU optimizada se ofrece siempre que haya i8mm o dotprod — independiente de GPU
-HW_MODE="cpu_standard"
-HW_GPU_AVAILABLE=false
-[ "$HW_CPU" != "base" ] && HW_MODE="cpu_optimized"
-
-case "$HW_GPU" in
-  adreno)
-    if echo "$HW_VK_TYPE" | grep -qi "INTEGRATED_GPU\|DISCRETE_GPU"; then
-      HW_MODE="gpu_vulkan"
-      HW_GPU_AVAILABLE=true
-    fi
-    ;;
-  adreno_no_vulkan)
-    # Snapdragon sin vulkaninfo — CPU optimizada si hay features, si no estándar
-    : # HW_MODE ya seteado arriba según CPU
-    ;;
-  mali|mali_no_vulkan|software|vulkan_system|none)
-    # Sin GPU offload — HW_MODE depende solo de CPU features (ya seteado arriba)
-    : ;;
-esac
-
-# ── Paso A — Método de instalación ───────────────────────────
+# ── Menú de versión ──────────────────────────────────────────
 clear; echo ""
-echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
-echo -e "  ║  ¿Cómo instalar Ollama?                  ║"
-echo -e "  ╚══════════════════════════════════════════╝${NC}"
+echo -e "${CYAN}${BOLD}"
+echo -e "  ╔════════════════════════════════════════╗"
+echo -e "  ║       Ollama — elige versión           ║"
+echo -e "  ╠════════════════════════════════════════╣"
+printf  "  ║  CPU: %-32s║\n" "${HW_CPU}"
+echo -e "  ╠════════════════════════════════════════╣"
+echo -e "  ║                                        ║"
+echo -e "  ║  ${NC}${CYAN}[1]${BOLD} Estándar  ${NC}— versión oficial.${CYAN}${BOLD}       ║"
+echo -e "  ║  ${NC}${GREEN}[2]${BOLD} Termux    ${NC}— GPU optimizada. ★${CYAN}${BOLD}     ║"
+echo -e "  ║                                        ║"
+echo -e "  ║  ${NC}${DIM}[b] Cancelar${CYAN}${BOLD}                           ║"
+echo -e "  ║                                        ║"
+echo -e "  ╚════════════════════════════════════════╝${NC}"
 echo ""
-echo -e "  ${GREEN}[1]${NC} Instalación limpia"
-echo -e "  ${CYAN}[2]${NC} Desde GitHub Releases"
-echo -e "  ${DIM}[b]${NC} Cancelar"
-echo ""
-echo -n "  Opción: "
-read -r METODO_CHOICE < /dev/tty
-
-case "$METODO_CHOICE" in
-  b|B) echo "Cancelado."; exit 0 ;;
-  2)   INSTALL_METHOD="github" ;;
-  *)   INSTALL_METHOD="clean"  ;;
-esac
-
-# ── Paso B — Submenú limpio según método ─────────────────────
-clear; echo ""
-titulo "DETECCIÓN DE HARDWARE"
-printf "  GPU: %-20s CPU: %s\n" "$HW_GPU" "$HW_CPU"
-echo -e "  Recomendado: ${GREEN}${HW_MODE}${NC}"
-echo ""
-
-if [ "$INSTALL_METHOD" = "clean" ]; then
-  echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
-  echo -e "  ║  Instalación limpia — elige versión      ║"
-  echo -e "  ╚══════════════════════════════════════════╝${NC}"
-else
-  echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
-  echo -e "  ║  GitHub Releases — elige versión         ║"
-  echo -e "  ╚══════════════════════════════════════════╝${NC}"
-fi
-echo ""
-
-# [1] Estándar — siempre disponible
-echo -e "  ${CYAN}[1]${NC} Estándar    — genérico"
-
-# [2] Optimizada — según CPU
-if [ "$HW_MODE" = "cpu_optimized" ] || [ "$HW_MODE" = "gpu_vulkan" ]; then
-  echo -e "  ${GREEN}[2]${NC} Optimizada  — recomendado ★"
-else
-  echo -e "  ${YELLOW}[2]${NC} Optimizada  — no disponible"
-fi
-
-# [3] Vulkan GPU — según GPU
-if $HW_GPU_AVAILABLE; then
-  echo -e "  ${GREEN}[3]${NC} Vulkan GPU  — disponible"
-else
-  echo -e "  ${YELLOW}[3]${NC} Vulkan GPU  — no disponible"
-fi
-
-echo ""
-echo -n "  Versión [1"
-[ "$HW_MODE" != "cpu_standard" ] && echo -n "/2"
-$HW_GPU_AVAILABLE && echo -n "/3"
-echo -n "]: "
+echo -n "  Opción [1/2]: "
 read -r VERSION_CHOICE < /dev/tty
 
-# Validar y asignar modo de instalación
-INSTALL_MODE="standard"
 case "$VERSION_CHOICE" in
-  2)
-    if [ "$HW_MODE" = "cpu_optimized" ] || [ "$HW_MODE" = "gpu_vulkan" ]; then
-      INSTALL_MODE="optimized"
-    else
-      warn "Sin instrucciones avanzadas — usando estándar"
-      INSTALL_MODE="standard"
-    fi
-    ;;
-  3)
-    if $HW_GPU_AVAILABLE; then
-      INSTALL_MODE="gpu_vulkan"
-    else
-      warn "GPU Vulkan no disponible — usando estándar"
-      INSTALL_MODE="standard"
-    fi
-    ;;
-  *) INSTALL_MODE="standard" ;;
+  b|B) echo "Cancelado."; exit 0 ;;
+  2)   INSTALL_MODE="termux_npm" ;;
+  *)   INSTALL_MODE="standard"   ;;
 esac
 
 echo ""
@@ -307,67 +162,9 @@ echo -n "  ¿Continuar? (s/n): "
 read -r CONFIRM < /dev/tty
 [ "$CONFIRM" != "s" ] && [ "$CONFIRM" != "S" ] && { echo "Cancelado."; exit 0; }
 
-# ── Variables para GitHub Releases ───────────────────────────
-GITHUB_API_OLLAMA="https://api.github.com/repos/Honkonx/termux-ai-stack/releases/latest"
-RELEASE_JSON_OLLAMA=""
+# INSTALL_METHOD ya no distingue clean/github — se determina por INSTALL_MODE
+INSTALL_METHOD="clean"
 
-_fetch_release_ollama() {
-  [ -n "$RELEASE_JSON_OLLAMA" ] && return
-  RELEASE_JSON_OLLAMA=$(curl -fsSL "$GITHUB_API_OLLAMA" 2>/dev/null)
-}
-
-_get_ollama_asset_url() {
-  local part_name="$1"
-  _fetch_release_ollama
-  echo "$RELEASE_JSON_OLLAMA" | \
-    grep -o "\"browser_download_url\": *\"[^\"]*${part_name}[^\"]*\"" | \
-    grep -o 'https://[^"]*' | head -1
-}
-
-_download_ollama_asset() {
-  local part_name="$1"
-  local dest_dir="$2"
-  local url
-  url=$(_get_ollama_asset_url "$part_name")
-
-  if [ -z "$url" ]; then
-    echo ""
-    warn "No se encontró '${part_name}' en GitHub Releases"
-    warn "Es posible que aún no esté disponible para tu versión"
-    echo ""
-    echo -e "  ${YELLOW}Opciones:${NC}"
-    echo -e "  ${CYAN}[1]${NC} Instalar versión limpia como fallback"
-    echo -e "  ${CYAN}[2]${NC} Salir"
-    echo -n "  Opción: "
-    read -r FB_OPT < /dev/tty
-    if [ "$FB_OPT" = "1" ]; then
-      INSTALL_METHOD="clean"
-      info "Cambiando a instalación limpia..."
-      return 1
-    else
-      echo "Cancelado."; exit 0
-    fi
-  fi
-
-  local filename
-  filename=$(basename "$url")
-  local dest_file="$dest_dir/$filename"
-  mkdir -p "$dest_dir"
-
-  info "Descargando ${filename}..."
-  curl -fL --progress-bar "$url" -o "$dest_file" 2>/dev/null || \
-    wget --progress=bar:force -O "$dest_file" "$url" 2>/dev/null
-
-  if [ ! -s "$dest_file" ]; then
-    warn "Descarga fallida"
-    INSTALL_METHOD="clean"
-    return 1
-  fi
-
-  log "Descarga completa: $(du -h "$dest_file" | cut -f1)"
-  DOWNLOADED_OLLAMA="$dest_file"
-  return 0
-}
 
 # ============================================================
 # PASO 1 — Actualizar Termux (condicional)
@@ -440,162 +237,70 @@ fi
 # ============================================================
 # PASO 2 — Instalar Ollama
 # ============================================================
-titulo "PASO 2 — Instalando Ollama (método: ${INSTALL_METHOD} / versión: ${INSTALL_MODE})"
+titulo "PASO 2 — Instalando Ollama (versión: ${INSTALL_MODE})"
 
 if check_done "ollama_install"; then
   log "Ollama ya instalado [checkpoint]"
 else
 
-  # ── Rama GitHub Releases ─────────────────────────────────
-  if [ "$INSTALL_METHOD" = "github" ]; then
+  case "$INSTALL_MODE" in
 
-    # Mapear INSTALL_MODE → nombre del asset en GitHub
-    case "$INSTALL_MODE" in
-      optimized) GH_PART="part4-ollama-optimized" ;;
-      gpu_vulkan) GH_PART="part4-ollama-vulkan"   ;;
-      *)          GH_PART="part4-ollama-standard"  ;;
-    esac
+    standard)
+      # Ollama genérico ARM64 via pkg — CPU-only
+      info "Instalando Ollama vía pkg (ARM64 genérico, CPU-only)..."
+      pkg install ollama -y \
+        -o Dpkg::Options::="--force-confdef" \
+        -o Dpkg::Options::="--force-confold" || \
+        error "Error instalando Ollama. Verifica conexión."
+      log "Ollama instalado: $(ollama --version 2>/dev/null | head -1)"
+      ;;
 
-    DOWNLOADED_OLLAMA=""
-    DL_TMP="$HOME/ollama_dl_tmp"
+    termux_npm)
+      # Versión Termux — precompilada ARM64, GPU optimizada (Vulkan auto)
+      # Fuente: @mmmbuto/ollama-termux — binarios + .so vía postinstall npm
 
-    if _download_ollama_asset "$GH_PART" "$DL_TMP"; then
-      # Extraer el paquete descargado
-      info "Extrayendo ${GH_PART}..."
-      EXTRACT_TMP="$DL_TMP/extract"
-      mkdir -p "$EXTRACT_TMP"
-      tar -xJf "$DOWNLOADED_OLLAMA" -C "$EXTRACT_TMP" 2>/dev/null || \
-        error "Error extrayendo el paquete. Archivo corrupto."
+      # ── Paso 2a: paquetes Vulkan/GPU ─────────────────────
+      info "Instalando paquetes Vulkan/GPU..."
+      pkg install vulkan-tools vulkan-loader-android -y \
+        -o Dpkg::Options::="--force-confdef" \
+        -o Dpkg::Options::="--force-confold" 2>/dev/null || \
+        warn "vulkan-tools/loader no disponibles — continuando sin ellos"
 
-      # Copiar binarios a PREFIX
-      for bin in llama-server llama-cli ollama; do
-        SRC=$(find "$EXTRACT_TMP" -name "$bin" -type f 2>/dev/null | head -1)
-        if [ -n "$SRC" ]; then
-          cp "$SRC" "$TERMUX_PREFIX/bin/$bin"
-          chmod +x "$TERMUX_PREFIX/bin/$bin"
-          log "$bin instalado desde release"
-        fi
-      done
+      # Turnip (Freedreno) — driver Vulkan nativo para Adreno 6xx/7xx
+      # Compatible con POCO F5 (Adreno 725 / Snapdragon 7+ Gen 2)
+      pkg install mesa-vulkan-icd-freedreno -y \
+        -o Dpkg::Options::="--force-confdef" \
+        -o Dpkg::Options::="--force-confold" 2>/dev/null && \
+        log "Turnip (Freedreno) instalado — driver Vulkan nativo Adreno" || \
+        warn "mesa-vulkan-icd-freedreno no disponible — se usará driver del sistema"
 
-      # Si no hay binario ollama en el paquete, instalar via pkg para gestión de modelos
-      if ! command -v ollama &>/dev/null; then
-        info "Instalando Ollama pkg para gestión de modelos..."
-        pkg install ollama -y \
-          -o Dpkg::Options::="--force-confdef" \
-          -o Dpkg::Options::="--force-confold" 2>/dev/null || \
-          warn "Ollama pkg no instalado — usa llama-server directamente"
+      # ── Paso 2b: nodejs-lts + npm install ────────────────
+      info "Instalando nodejs-lts (requerido por el instalador npm)..."
+      pkg install nodejs-lts -y \
+        -o Dpkg::Options::="--force-confdef" \
+        -o Dpkg::Options::="--force-confold" || \
+        error "Error instalando nodejs-lts."
+
+      info "Instalando Ollama Termux vía npm (@mmmbuto/ollama-termux@latest)..."
+      npm install -g @mmmbuto/ollama-termux@latest || \
+        error "Error en npm install. Verifica conexión o prueba versión Estándar."
+
+      # ── Verificar binario y Vulkan ────────────────────────
+      if command -v ollama &>/dev/null; then
+        log "Ollama Termux instalado: $(ollama --version 2>/dev/null | head -1)"
+      else
+        warn "Binario 'ollama' no encontrado en PATH tras npm install"
+        warn "Verifica con: which ollama  o  ls \$PREFIX/bin/ollama"
       fi
 
-      rm -rf "$DL_TMP"
-      log "Ollama instalado desde GitHub Releases ($GH_PART)"
-    fi
-    # Si _download_ollama_asset falló y el usuario eligió fallback a limpia,
-    # INSTALL_METHOD ya fue cambiado a "clean" dentro de la función — cae al bloque de abajo
-  fi
+      if command -v vulkaninfo &>/dev/null; then
+        VK_DEV=$(vulkaninfo 2>/dev/null | grep "deviceName" | head -1 | sed 's/.*= //')
+        [ -n "$VK_DEV" ] && log "Vulkan activo: ${VK_DEV}" || \
+          warn "vulkaninfo instalado pero sin dispositivo detectado (normal sin driver Turnip)"
+      fi
+      ;;
 
-  # ── Rama instalación limpia ──────────────────────────────
-  # Se ejecuta si INSTALL_METHOD="clean" desde el inicio
-  # O si INSTALL_METHOD cambió a "clean" por fallback desde GitHub
-  if [ "$INSTALL_METHOD" = "clean" ]; then
-    case "$INSTALL_MODE" in
-
-      standard)
-        info "Instalando Ollama vía pkg (genérico ARM64)..."
-        pkg install ollama -y \
-          -o Dpkg::Options::="--force-confdef" \
-          -o Dpkg::Options::="--force-confold" || \
-          error "Error instalando Ollama. Verifica conexión."
-        log "Ollama instalado: $(ollama --version 2>/dev/null | head -1)"
-        ;;
-
-      optimized)
-        info "Compilando llama.cpp optimizado con flags CPU: ${HW_CPU}"
-        info "Instalando dependencias de compilación..."
-        pkg install cmake clang git -y \
-          -o Dpkg::Options::="--force-confdef" \
-          -o Dpkg::Options::="--force-confold" || \
-          error "Error instalando dependencias de compilación."
-
-        CPU_FLAGS="-march=armv8-a"
-        echo "$HW_CPU" | grep -q "i8mm"    && CPU_FLAGS="-march=armv8.6-a+i8mm+dotprod"
-        echo "$HW_CPU" | grep -q "dotprod" && [ "$CPU_FLAGS" = "-march=armv8-a" ] && \
-          CPU_FLAGS="-march=armv8.2-a+dotprod"
-        echo "$HW_CPU" | grep -q "sve"     && CPU_FLAGS="${CPU_FLAGS}+sve"
-
-        info "Flags de compilación: ${CPU_FLAGS}"
-        info "Clonando llama.cpp (puede tardar)..."
-
-        BUILD_DIR="$HOME/llama_cpp_build"
-        rm -rf "$BUILD_DIR"
-        git clone --depth=1 https://github.com/ggerganov/llama.cpp "$BUILD_DIR" || \
-          error "Error clonando llama.cpp. Verifica conexión."
-
-        cd "$BUILD_DIR" && mkdir -p build && cd build
-        cmake .. \
-          -DCMAKE_BUILD_TYPE=Release \
-          -DCMAKE_C_FLAGS="$CPU_FLAGS" \
-          -DCMAKE_CXX_FLAGS="$CPU_FLAGS" \
-          -DLLAMA_BUILD_TESTS=OFF \
-          -DLLAMA_BUILD_EXAMPLES=ON || error "Error en cmake."
-
-        info "Compilando (esto puede tardar 10-20 minutos)..."
-        make -j4 llama-server llama-cli 2>&1 | tail -5
-        [ $? -ne 0 ] && error "Error de compilación. Intenta con versión estándar."
-
-        cp bin/llama-server "$TERMUX_PREFIX/bin/llama-server" 2>/dev/null
-        cp bin/llama-cli    "$TERMUX_PREFIX/bin/llama-cli"    2>/dev/null
-        chmod +x "$TERMUX_PREFIX/bin/llama-server" "$TERMUX_PREFIX/bin/llama-cli" 2>/dev/null
-
-        info "Instalando Ollama pkg para gestión de modelos..."
-        pkg install ollama -y \
-          -o Dpkg::Options::="--force-confdef" \
-          -o Dpkg::Options::="--force-confold" 2>/dev/null || \
-          warn "Ollama pkg no instalado — usa llama-server directamente"
-
-        cd "$HOME"
-        rm -rf "$BUILD_DIR"
-        log "Directorio de compilación eliminado (+260MB libres)"
-        log "llama.cpp optimizado compilado e instalado"
-        log "Binarios: llama-server · llama-cli"
-        ;;
-
-      gpu_vulkan)
-        info "Compilando llama.cpp con soporte Vulkan GPU..."
-        pkg install cmake clang git vulkan-tools -y \
-          -o Dpkg::Options::="--force-confdef" \
-          -o Dpkg::Options::="--force-confold" || \
-          error "Error instalando dependencias."
-
-        BUILD_DIR="$HOME/llama_cpp_build"
-        rm -rf "$BUILD_DIR"
-        git clone --depth=1 https://github.com/ggerganov/llama.cpp "$BUILD_DIR" || \
-          error "Error clonando llama.cpp."
-
-        cd "$BUILD_DIR" && mkdir -p build && cd build
-        cmake .. \
-          -DCMAKE_BUILD_TYPE=Release \
-          -DGGML_VULKAN=ON || error "Error en cmake con Vulkan."
-
-        info "Compilando con Vulkan (puede tardar 15-25 minutos)..."
-        make -j4 llama-server llama-cli 2>&1 | tail -5
-        [ $? -ne 0 ] && error "Error compilando con Vulkan."
-
-        cp bin/llama-server "$TERMUX_PREFIX/bin/llama-server" 2>/dev/null
-        cp bin/llama-cli    "$TERMUX_PREFIX/bin/llama-cli"    2>/dev/null
-        chmod +x "$TERMUX_PREFIX/bin/llama-server" "$TERMUX_PREFIX/bin/llama-cli" 2>/dev/null
-
-        pkg install ollama -y \
-          -o Dpkg::Options::="--force-confdef" \
-          -o Dpkg::Options::="--force-confold" 2>/dev/null
-
-        cd "$HOME"
-        rm -rf "$BUILD_DIR"
-        log "Directorio de compilación eliminado (+260MB libres)"
-        log "llama.cpp con Vulkan compilado e instalado"
-        ;;
-
-    esac
-  fi
+  esac
 
   mark_done "ollama_install"
 fi
@@ -666,15 +371,17 @@ else
 
   # Eliminar aliases anteriores de ollama
   if [ -f "$BASHRC" ]; then
-    grep -v "ollama-start\|ollama-stop\|ollama-list\|ollama-run\|ollama-pull\|ollama-status\|OLLAMA_HOST" \
+    grep -v "ollama-start\|ollama-stop\|ollama-list\|ollama-run\|ollama-pull\|ollama-status\|OLLAMA_HOST\|OLLAMA_VULKAN" \
       "$BASHRC" > "$BASHRC.tmp" 2>/dev/null && mv "$BASHRC.tmp" "$BASHRC"
   fi
 
   cat >> "$BASHRC" << 'ALIASES'
 
 # ════════════════════════════════
-#  Ollama · aliases
+#  Ollama · aliases + entorno
 # ════════════════════════════════
+# OLLAMA_VULKAN=1 — activa GPU Vulkan siempre que el driver lo soporte
+export OLLAMA_VULKAN=1
 alias ollama-start='bash ~/scripts/ollama/ollama_start.sh'
 alias ollama-stop='bash ~/scripts/ollama/ollama_stop.sh'
 alias ollama-status='curl -s http://localhost:11434 && echo " (corriendo)" || echo "Ollama no responde en :11434"'
@@ -693,7 +400,7 @@ fi
 # ============================================================
 titulo "PASO 5 — Modelo inicial (opcional)"
 
-echo "  Hardware: GPU=${HW_GPU} · CPU=${HW_CPU}"
+echo "  CPU: ${HW_CPU} · Versión instalada: ${INSTALL_MODE}"
 echo ""
 echo "  Modelos de texto recomendados:"
 echo "  [1] qwen2.5:0.5b  ~395MB  — Más liviano, respuestas rápidas"
@@ -703,28 +410,15 @@ echo "  [4] llama3.2:1b   ~1.3GB  — Buena calidad, liviano"
 echo ""
 echo "  Modelos de visión (análisis de imágenes):"
 echo "  [5] moondream:1.8b ~1.1GB — Visión ligero (recomendado)"
-echo "  [6] llava:7b       ~4.7GB — Visión calidad (requiere RAM)"
+echo "  [6] llava:7b       ~4.7GB — Visión calidad (requiere 6GB+ RAM)"
 echo ""
-
-# Opciones GPU solo si hay hardware compatible
-if $HW_GPU_AVAILABLE; then
-  echo -e "  ${GREEN}GPU Vulkan detectada ✅ — modelos GPU disponibles:${NC}"
-  echo "  [7] llama3.2:3b   ~2.0GB — CPU/GPU híbrido"
-  echo "  [8] qwen2.5:3b    ~2.0GB — CPU/GPU híbrido"
-  echo ""
-elif [ "$HW_GPU" = "adreno" ] || [ "$HW_GPU" = "adreno_no_vulkan" ]; then
-  echo -e "  ${YELLOW}Adreno detectado — GPU Vulkan no confirmada.${NC}"
-  echo -e "  ${YELLOW}Se usará CPU optimizada (${HW_CPU}).${NC}"
-  echo ""
-elif [ "$HW_GPU" = "mali" ] || [ "$HW_GPU" = "mali_no_vulkan" ]; then
-  echo -e "  ${CYAN}Mali detectado — GPU offload no disponible sin root.${NC}"
-  echo -e "  ${CYAN}Se usará CPU optimizada (${HW_CPU}).${NC}"
-  echo ""
-fi
-
+echo "  Modelos medianos (GPU Vulkan recomendado):"
+echo "  [7] llama3.2:3b   ~2.0GB — texto calidad"
+echo "  [8] qwen2.5:3b    ~2.0GB — texto/código"
+echo ""
 echo "  [0] Omitir — lo haré después manualmente"
 echo ""
-echo -n "  Elige modelo: "
+echo -n "  Elige modelo [1-8/0]: "
 read -r MODEL_CHOICE < /dev/tty
 
 SELECTED_MODEL=""
@@ -735,8 +429,8 @@ case "$MODEL_CHOICE" in
   4) SELECTED_MODEL="llama3.2:1b" ;;
   5) SELECTED_MODEL="moondream:1.8b" ;;
   6) SELECTED_MODEL="llava:7b" ;;
-  7) $HW_GPU_AVAILABLE && SELECTED_MODEL="llama3.2:3b" || warn "GPU no disponible — elige otra opción" ;;
-  8) $HW_GPU_AVAILABLE && SELECTED_MODEL="qwen2.5:3b"  || warn "GPU no disponible — elige otra opción" ;;
+  7) SELECTED_MODEL="llama3.2:3b" ;;
+  8) SELECTED_MODEL="qwen2.5:3b" ;;
   *) SELECTED_MODEL="" ;;
 esac
 
@@ -769,8 +463,9 @@ fi
 # ============================================================
 titulo "PASO 6 — Actualizando registry"
 
-OLLAMA_VER=$(pkg show ollama 2>/dev/null | grep "^Version:" | awk '{print $2}')
-[ -z "$OLLAMA_VER" ] && OLLAMA_VER=$(ollama --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+# Obtener versión — compatible con pkg y npm install
+OLLAMA_VER=$(ollama --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+[-a-z.0-9]*' | head -1)
+[ -z "$OLLAMA_VER" ] && OLLAMA_VER=$(pkg show ollama 2>/dev/null | grep "^Version:" | awk '{print $2}')
 [ -z "$OLLAMA_VER" ] && OLLAMA_VER="unknown"
 
 update_registry "$OLLAMA_VER"
@@ -805,9 +500,14 @@ echo "  curl http://localhost:11434/api/tags     → listar modelos"
 echo "  curl http://localhost:11434/api/chat ... → chat"
 echo ""
 echo -e "${YELLOW}  IMPORTANTE:${NC}"
-echo "  1. Cierra y reabre Termux para activar los aliases"
+echo "  1. Cierra y reabre Termux para activar aliases y OLLAMA_VULKAN=1"
 echo "  2. Inicia con: ollama-start"
 echo "  3. La primera ejecución de un modelo tarda más"
+if [ "$INSTALL_MODE" = "termux_npm" ]; then
+  echo ""
+  echo -e "  ${GREEN}  Versión Termux activa:${NC} GPU Vulkan habilitado (OLLAMA_VULKAN=1)"
+  echo "  Si el driver lo soporta, Ollama usará GPU automáticamente."
+fi
 echo ""
 if [ -z "$ANDROID_SERVER_READY" ]; then
   echo -e "${CYAN}  TIP: ejecuta instalar.sh para aplicar tema visual${NC}"

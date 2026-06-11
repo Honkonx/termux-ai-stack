@@ -13,7 +13,7 @@
 #    [p]    → rendimiento & keepalive
 #
 #  MÓDULOS:
-#    [1] Servicios     — n8n + OpenClaw   (proot)
+#    [1] Servicios     — n8n + OpenClaw + Hermes (proot + nativo)
 #    [2] Code Tools    — Claude + OpenCode (nativo + proot)
 #    [3] Ollama        — modelos IA local  (nativo)
 #    [4] Expo/EAS/Git  — builds móviles    (nativo)
@@ -52,10 +52,12 @@ _PROOT_LOADED=0
 #  renders del loop aunque los módulos se
 #  carguen tarde.
 # ════════════════════════════════════════════
-_CC_CACHE=""   ; _CC_REFRESH=0
-_OC_CACHE=""   ; _OC_CACHE_TS=0
-_CLAW_CACHE="" ; _CLAW_CACHE_TS=0
-_OCL_CACHE=""  ; _OCL_REFRESH=0
+_CC_CACHE=""     ; _CC_REFRESH=0
+_CLNATIVE_CACHE=""; _CLNATIVE_REFRESH=0
+_OC_CACHE=""     ; _OC_CACHE_TS=0
+_CLAW_CACHE=""   ; _CLAW_CACHE_TS=0
+_OCL_CACHE=""    ; _OCL_REFRESH=0
+_HERMES_CACHE="" ; _HERMES_REFRESH=0
 _PROOT_CACHE_TTL=30          # TTL caché en memoria (segundos)
 _PROOT_CACHE_TTL_PERSIST=300 # TTL caché en archivo — sobrevive reinicios (5 min)
 
@@ -393,9 +395,11 @@ check_expo()            { _run_check_nativo check_expo           "$@"; }
 check_python()          { _run_check_nativo check_python         "$@"; }
 check_remote()          { _run_check_nativo check_remote         "$@"; }
 check_claude()          { _run_check_nativo check_claude         "$@"; }
+check_hermes()          { _run_check_nativo check_hermes         "$@"; }
 check_n8n()             { _run_check_proot  check_n8n            "$@"; }
 check_opencode_cached() { _run_check_proot  check_opencode_cached "$@"; }
 check_openclaw_cached() { _run_check_proot  check_openclaw_cached "$@"; }
+check_openclaw_native() { _run_check_nativo check_openclaw_native "$@"; }
 check_openclaude()      { _run_check_nativo check_openclaude      "$@"; }
 
 # ════════════════════════════════════════════
@@ -527,6 +531,15 @@ install_module() {
     return 0
   fi
 
+  # Hermes: pass-through a install_hermes.sh — lanza wizard interactivo igual que openclaw
+  if [ "$module_key" = "hermes" ]; then
+    _ensure_install_script "install_hermes.sh" || return 1
+    bash "$HOME/install_hermes.sh" < /dev/tty
+    echo ""; read -r _ < /dev/tty
+    _post_install_cleanup
+    return 0
+  fi
+
   # Expo, opencode, openclaw — menú fuente estándar
   echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
   printf  "  ║  %-40s║\n" "¿Cómo instalar ${name}?"
@@ -578,6 +591,10 @@ show_help() {
   echo -e "  ║  OPENCLAUDE${NC}"
   echo    "  ║  openclaude  oc  (alias corto)"
   echo -e "${CYAN}${BOLD}  ╠══════════════════════════════════════════╣"
+  echo -e "  ║  HERMES AGENT${NC}"
+  echo    "  ║  hermes  hermes chat  hermes model"
+  echo    "  ║  hermes gateway run  hermes status"
+  echo -e "${CYAN}${BOLD}  ╠══════════════════════════════════════════╣"
   echo -e "  ║  REMOTE (SSH + Dashboard)${NC}"
   echo    "  ║  SSH WiFi: ssh -p 8022 user@IP"
   echo    "  ║  SSH Tunnel: cloudflared access ssh"
@@ -602,10 +619,12 @@ _add_bashrc()      { grep -q "$1" "$HOME/.bashrc" 2>/dev/null || echo "$1" >> "$
 #  HELPERS DE CACHÉ
 # ════════════════════════════════════════════
 _invalidate_cache() {
-  _CC_REFRESH=1;  _CC_CACHE=""
-  _OCL_REFRESH=1; _OCL_CACHE=""
-  _OC_CACHE="";   _OC_CACHE_TS=0
-  _CLAW_CACHE=""; _CLAW_CACHE_TS=0
+  _CC_REFRESH=1;       _CC_CACHE=""
+  _OCL_REFRESH=1;      _OCL_CACHE=""
+  _HERMES_REFRESH=1;   _HERMES_CACHE=""
+  _CLNATIVE_REFRESH=1; _CLNATIVE_CACHE=""
+  _OC_CACHE="";        _OC_CACHE_TS=0
+  _CLAW_CACHE="";      _CLAW_CACHE_TS=0
   # Borrar caché persistente — fuerza que el próximo render
   # llame a proot y escriba estado fresco al archivo
   rm -f "$HOME/.proot_status_cache" 2>/dev/null || true
@@ -642,6 +661,15 @@ while true; do
   { check_python; } > "${_TMP}_py"  2>/dev/null &
   { check_remote; } > "${_TMP}_rm"  2>/dev/null &
 
+  # Hermes: nativo — caché ligero como openclaude
+  if [ -z "$_HERMES_CACHE" ] || [ "$_HERMES_REFRESH" = "1" ]; then
+    { _HERMES_CACHE=$(check_hermes 2>/dev/null); _HERMES_REFRESH=0
+      echo "$_HERMES_CACHE"; } > "${_TMP}_hm" 2>/dev/null &
+    _HERMES_FROM_FILE=1
+  else
+    _HERMES_FROM_FILE=0
+  fi
+
   # OpenClaude: usa caché si está vigente (nativo — rápido)
   if [ -z "$_OCL_CACHE" ] || [ "$_OCL_REFRESH" = "1" ]; then
     { _OCL_CACHE=$(check_openclaude 2>/dev/null); _OCL_REFRESH=0
@@ -658,6 +686,16 @@ while true; do
     _CC_FROM_FILE=1
   else
     _CC_FROM_FILE=0
+  fi
+
+  # OpenClaw nativo: rápido (~10ms), prioridad sobre proot
+  # Solo se revalúa si caché nativa expiró o está vacía
+  if [ -z "$_CLNATIVE_CACHE" ] || [ "$_CLNATIVE_REFRESH" = "1" ]; then
+    { _CLNATIVE_CACHE=$(check_openclaw_native 2>/dev/null); _CLNATIVE_REFRESH=0
+      echo "$_CLNATIVE_CACHE"; } > "${_TMP}_cln" 2>/dev/null &
+    _CLNATIVE_FROM_FILE=1
+  else
+    _CLNATIVE_FROM_FILE=0
   fi
 
   # Proot combinado: refresca si caché expiró
@@ -710,13 +748,29 @@ while true; do
   fi
   IFS='|' read -r CC_STATE CC_VER CC_EXTRA <<< "$_CC_CACHE"
 
+  if [ "$_HERMES_FROM_FILE" = "1" ]; then
+    _HERMES_CACHE=$(cat "${_TMP}_hm" 2>/dev/null)
+  fi
+  IFS='|' read -r HM_STATE HM_VER HM_EXTRA <<< "$_HERMES_CACHE"
+
   if [ "$_PROOT_FROM_FILE" = "1" ]; then
     _OC_CACHE=$(cat   "${_TMP}_oc" 2>/dev/null)
     _CLAW_CACHE=$(cat "${_TMP}_cl" 2>/dev/null)
     _OC_CACHE_TS=$SECONDS
     _CLAW_CACHE_TS=$SECONDS
   fi
-  IFS='|' read -r CL_STATE CL_VER CL_EXTRA <<< "$_CLAW_CACHE"
+  if [ "$_CLNATIVE_FROM_FILE" = "1" ]; then
+    _CLNATIVE_CACHE=$(cat "${_TMP}_cln" 2>/dev/null)
+    _CLNATIVE_REFRESH=0
+  fi
+  IFS='|' read -r CLN_STATE CLN_VER CLN_EXTRA <<< "$_CLNATIVE_CACHE"
+
+  # Openclaw: nativo tiene prioridad si está instalado
+  if [ "$CLN_STATE" != "not_installed" ] && [ -n "$CLN_STATE" ]; then
+    CL_STATE="$CLN_STATE"; CL_VER="$CLN_VER"; CL_EXTRA="$CLN_EXTRA"
+  else
+    IFS='|' read -r CL_STATE CL_VER CL_EXTRA <<< "$_CLAW_CACHE"
+  fi
   IFS='|' read -r OC_STATE OC_VER OC_EXTRA <<< "$_OC_CACHE"
 
   rm -f "${_TMP}"_* 2>/dev/null
@@ -740,15 +794,18 @@ while true; do
   echo -e "${NC}"
 
   # ── Módulos ───────────────────────────────────────────────────
-  # [1] Servicios — n8n + OpenClaw
+  # [1] Servicios — n8n + OpenClaw + Hermes
   SVC_STATE="not_installed"
   { [ "$N8N_STATE" != "not_installed" ] || \
-    [ "$CL_STATE"  != "not_installed" ]; } && SVC_STATE="ready"
+    [ "$CL_STATE"  != "not_installed" ] || \
+    [ "$HM_STATE"  != "not_installed" ]; } && SVC_STATE="ready"
   { [ "$N8N_STATE" = "running" ] || \
-    [ "$CL_STATE"  = "running" ]; }        && SVC_STATE="running"
+    [ "$CL_STATE"  = "running" ] || \
+    [ "$HM_STATE"  = "running" ]; }        && SVC_STATE="running"
   SVC_VER=""
   [ "$N8N_STATE" != "not_installed" ] && SVC_VER="n8n:${N8N_VER:-?}"
   [ "$CL_STATE"  != "not_installed" ] && SVC_VER="${SVC_VER:+${SVC_VER} }claw:${CL_VER:-?}"
+  [ "$HM_STATE"  != "not_installed" ] && SVC_VER="${SVC_VER:+${SVC_VER} }hm:${HM_VER:-?}"
   [ -z "$SVC_VER" ] && SVC_VER="──────────"
   draw_module "1" "⬡" "Servicios"    "$SVC_STATE" "$SVC_VER"        "→ submenú"
 
@@ -788,8 +845,9 @@ while true; do
 
   case "$OPT" in
     1)
-      _require_proot || continue
-      submenu_servicios "$N8N_STATE" "$CL_STATE" ;;
+      _require_proot  || continue
+      _require_nativo || continue
+      submenu_servicios "$N8N_STATE" "$CL_STATE" "$HM_STATE" ;;
     2)
       _require_proot  || continue
       _require_nativo || continue
@@ -854,7 +912,7 @@ while true; do
         "install_n8n.sh" "install_claude.sh" "install_ollama.sh"
         "install_expo.sh" "install_python.sh" "install_ssh.sh"
         "install_remote.sh" "install_opencode.sh" "install_openclaw.sh"
-        "install_openclaude.sh"
+        "install_openclaude.sh" "install_hermes.sh"
         "backup.sh" "restore.sh"
       )
       # Scripts en raíz del repo → se descargan a ~/scripts/
