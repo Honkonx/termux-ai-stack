@@ -300,26 +300,78 @@ _ensure_nodejs() {
 }
 
 _ensure_glibc() {
-  check_done "glibc_deps" && { log "glibc-runner ya instalado [checkpoint]"; return; }
-  info "Verificando glibc-runner..."
-
-  local NEED_INSTALL=false
-  [ ! -f "$GLIBC_LD" ]  && NEED_INSTALL=true
-  [ ! -f "$PATCHELF" ]  && NEED_INSTALL=true
-
-  if $NEED_INSTALL; then
-    info "Instalando glibc-runner + patchelf-glibc + jq..."
-    pkg install -y glibc-repo 2>/dev/null || true
-    pkg update -y \
-      -o Dpkg::Options::="--force-confdef" \
-      -o Dpkg::Options::="--force-confold" 2>&1 | tail -2
-    pkg install -y glibc-runner patchelf-glibc jq \
-      -o Dpkg::Options::="--force-confdef" \
-      -o Dpkg::Options::="--force-confold" || error "No se pudo instalar glibc-runner"
+  # SIEMPRE verificar binarios — no confiar solo en checkpoint
+  # (patchelf-glibc puede haberse desinstalado o el checkpoint ser de otra sesión)
+  if check_done "glibc_deps" && [ -x "$GLIBC_LD" ] && [ -x "$PATCHELF" ]; then
+    log "glibc-runner ya instalado [checkpoint + binarios verificados]"
+    return
   fi
 
-  [ -f "$GLIBC_LD" ]  || error "ld.so no encontrado en $GLIBC_LD — reinstala glibc-runner"
-  [ -f "$PATCHELF" ]  || error "patchelf no encontrado en $PATCHELF — reinstala patchelf-glibc"
+  # Si checkpoint existía pero binarios faltan → limpiar checkpoint
+  if check_done "glibc_deps"; then
+    warn "Checkpoint glibc_deps existía pero faltan binarios — reinstalando"
+    sed -i '/^glibc_deps$/d' "$CHECKPOINT" 2>/dev/null || true
+  fi
+
+  info "Instalando glibc-runner + patchelf-glibc + jq..."
+
+  # Paso 1: habilitar repo glibc
+  pkg install -y glibc-repo \
+    -o Dpkg::Options::="--force-confdef" \
+    -o Dpkg::Options::="--force-confold" 2>/dev/null || true
+
+  # Paso 2: actualizar índice (necesario tras agregar glibc-repo)
+  pkg update -y \
+    -o Dpkg::Options::="--force-confdef" \
+    -o Dpkg::Options::="--force-confold" 2>&1 | tail -2
+
+  # Paso 3: instalar paquetes — con reintentos
+  local GLIBC_PKGS="glibc-runner patchelf-glibc jq"
+  local attempts=0
+  while [ $attempts -lt 2 ]; do
+    pkg install -y $GLIBC_PKGS \
+      -o Dpkg::Options::="--force-confdef" \
+      -o Dpkg::Options::="--force-confold" 2>&1 | tail -5
+    # Verificar que patchelf quedó instalado
+    if [ -x "$PATCHELF" ] && [ -x "$GLIBC_LD" ]; then
+      break
+    fi
+    attempts=$((attempts + 1))
+    if [ $attempts -lt 2 ]; then
+      warn "patchelf-glibc no detectado — reintentando con apt-get..."
+      apt-get install -y $GLIBC_PKGS \
+        -o Dpkg::Options::="--force-confdef" \
+        -o Dpkg::Options::="--force-confold" 2>&1 | tail -5
+    fi
+  done
+
+  # Verificación final robusta
+  if [ ! -x "$PATCHELF" ]; then
+    # Buscar patchelf en rutas alternativas
+    local ALT_PE=""
+    for _p in "$TERMUX_PREFIX/glibc/bin/patchelf" \
+              "$TERMUX_PREFIX/bin/patchelf" \
+              "$(command -v patchelf 2>/dev/null)"; do
+      [ -x "$_p" ] && { ALT_PE="$_p"; break; }
+    done
+    if [ -n "$ALT_PE" ]; then
+      warn "patchelf encontrado en ruta alternativa: $ALT_PE"
+      PATCHELF="$ALT_PE"
+    else
+      echo ""
+      echo -e "${RED}${BOLD}  patchelf-glibc no se pudo instalar.${NC}"
+      echo -e "  Prueba manual:"
+      echo -e "    ${CYAN}pkg install glibc-repo${NC}"
+      echo -e "    ${CYAN}pkg update${NC}"
+      echo -e "    ${CYAN}pkg install patchelf-glibc${NC}"
+      echo -e "  Luego verifica:"
+      echo -e "    ${CYAN}ls -la $TERMUX_PREFIX/glibc/bin/patchelf${NC}"
+      echo ""
+      error "patchelf no encontrado en $PATCHELF ni en PATH — reinstala patchelf-glibc"
+    fi
+  fi
+
+  [ -x "$GLIBC_LD" ] || error "ld.so no encontrado en $GLIBC_LD — reinstala glibc-runner"
 
   # Agregar ~/.local/bin al PATH si no está
   if ! grep -q '\.local/bin' "$HOME/.bashrc" 2>/dev/null; then
@@ -388,8 +440,17 @@ _install_native_clean() {
   # Patchear intérprete ELF
   chmod +x "$NATIVE_BINARY"
   info "Parcheando intérprete ELF..."
-  # Usar ruta absoluta: patchelf-glibc instala en $TERMUX_PREFIX/glibc/bin/patchelf
-  # NO en $PREFIX/bin — no está en PATH por defecto
+  # Validar que patchelf existe antes de intentar
+  if [ ! -x "$PATCHELF" ]; then
+    # Último intento: buscar en PATH
+    local _FOUND_PE; _FOUND_PE=$(command -v patchelf 2>/dev/null || true)
+    if [ -x "$_FOUND_PE" ]; then
+      PATCHELF="$_FOUND_PE"
+      warn "Usando patchelf de PATH: $PATCHELF"
+    else
+      error "patchelf no encontrado en $PATCHELF ni en PATH.\n  Ejecuta: pkg install patchelf-glibc\n  Luego reintenta."
+    fi
+  fi
   # LD_PRELOAD= evita que termux-exec crashee patchelf (libc.so incompatible con glibc)
   LD_PRELOAD= "$PATCHELF" --set-interpreter "$GLIBC_LD" "$NATIVE_BINARY" || \
     error "patchelf falló — ruta: $PATCHELF"

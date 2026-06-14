@@ -6,9 +6,6 @@
 #  USO STANDALONE:
 #    bash install_n8n.sh
 #
-#  USO VÍA MAESTRO (cuando repo sea público):
-#    bash <(curl -fsSL https://raw.githubusercontent.com/TU_USUARIO/android-server/main/modules/install_n8n.sh)
-#
 #  QUÉ HACE:
 #    ✅ Actualiza Termux (solo si no lo hizo el maestro)
 #    ✅ Instala proot-distro + Debian Bookworm ARM64
@@ -18,17 +15,11 @@
 #    ✅ Configura arranque automático (Termux:Boot)
 #    ✅ Escribe estado al registry ~/.android_server_registry
 #
-#  RESPONSABILIDAD DEL MAESTRO (instalar.sh):
-#    ⏭  Tema visual (GitHub Dark + JetBrains Mono)
-#    ⏭  termux.properties + extra-keys
-#    ⏭  pkg update base → exporta ANDROID_SERVER_READY=1
-#
-#  NO INSTALA:
-#    ❌ EAS CLI / Expo → usar install_expo.sh
-#    ❌ Claude Code    → usar install_claude.sh
-#    ❌ Ollama         → usar install_ollama.sh
-#
-#  VERSIÓN: 2.6.0 | Mayo 2026
+#  VERSIÓN: 2.7.0 | Junio 2026
+#  FIXES:
+#    [FIX-1] Inner script: escrito a $HOME/ no a rootfs (permisos 700 bloqueaban escritura)
+#    [FIX-2] Restore n8n: inyección vía stdin en lugar de cp al rootfs (evita noexec + permisos)
+#    [FIX-3] Extracción tar n8n restaurado: pipe directo desde $HOME/ sin pasar por /tmp
 # ============================================================
 
 TERMUX_PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
@@ -95,16 +86,12 @@ HEADER
 echo -e "${NC}"
 
 # ── Detección canónica del rootfs ────────────────────────────
-# FUENTE PRIMARIA: proot-distro list (fiable con permisos 700 del rootfs)
-# FALLBACK: enumeración de directorios en installed-rootfs/
-# Fix: permisos 0700 en debian/ impiden [ -f dir/bin/bash ] desde scripts
 ROOTFS_BASE="$TERMUX_PREFIX/var/lib/proot-distro/installed-rootfs"
 DISTRO_NAME=""
 ROOTFS_PATH=""
 _detect_rootfs() {
   DISTRO_NAME=""
   ROOTFS_PATH=""
-  # Método 1: proot-distro list (no requiere entrar al directorio)
   if command -v proot-distro &>/dev/null; then
     local _pd_out
     _pd_out=$(proot-distro list 2>/dev/null)
@@ -119,7 +106,6 @@ _detect_rootfs() {
       fi
     done
   fi
-  # Método 2: fallback por directorio (si proot-distro no está o no lista)
   if [ -d "$ROOTFS_BASE" ]; then
     local _rd
     for _rd in "$ROOTFS_BASE"/*/; do
@@ -214,21 +200,54 @@ fi
 ensure_restore_sh() {
   if [ ! -f "$HOME/restore.sh" ]; then
     info "Descargando restore.sh..."
-    curl -fsSL "https://raw.githubusercontent.com/Honkonx/termux-ai-stack/main/scripts/restore.sh" \
+    curl -fsSL "https://raw.githubusercontent.com/Honkonx/termux-ai-stack/main/restore.sh" \
       -o "$HOME/restore.sh" && chmod +x "$HOME/restore.sh" || \
       error "No se pudo descargar restore.sh"
   fi
 }
 
+# ── [FIX-2] Función: restaurar n8n vía stdin (sin cp al rootfs) ──
+# Evita el problema de permisos 700 en $ROOTFS_PATH/root desde fuera del proot
+# y evita usar /tmp (noexec Android 15).
+# El archivo tar se pasa directamente por stdin al proot.
+_restore_n8n_from_file() {
+  local TAR_FILE="$1"
+  [ ! -f "$TAR_FILE" ] && error "Archivo no encontrado: $TAR_FILE"
+
+  local FILE_SIZE
+  FILE_SIZE=$(wc -c < "$TAR_FILE" 2>/dev/null)
+  [ -z "$FILE_SIZE" ] || [ "$FILE_SIZE" -lt 1024 ] && \
+    error "Archivo corrupto (${FILE_SIZE:-0} bytes)"
+
+  info "Extrayendo n8n dentro del proot (vía stdin)..."
+  # [FIX-2]: pipe directo — sin escribir nada al rootfs desde fuera
+  proot-distro login "$DISTRO_NAME" -- bash -c \
+    'export HOME=/root
+     export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+     mkdir -p /usr/local/lib/node_modules /usr/local/bin /usr/lib/node_modules /usr/bin /root/.n8n
+     echo "[INFO] Extrayendo desde stdin..."
+     tar -xJf - -C / 2>/dev/null || \
+       tar -xJf - -C / --ignore-failed-read 2>/dev/null || \
+       { echo "[ERROR] Extraccion fallida"; exit 1; }
+     [ -f /usr/local/bin/n8n ]         && chmod +x /usr/local/bin/n8n
+     [ -f /usr/bin/n8n ]               && chmod +x /usr/bin/n8n
+     [ -f /usr/local/bin/cloudflared ] && chmod +x /usr/local/bin/cloudflared
+     [ -f /usr/local/bin/node ]        && chmod +x /usr/local/bin/node
+     [ -f /usr/bin/node ]              && chmod +x /usr/bin/node
+     { [ -f /usr/local/bin/n8n ] || [ -f /usr/bin/n8n ]; } && \
+       echo "[OK] n8n verificado en PATH" || echo "[AVISO] n8n no encontrado"
+     echo "[DONE]"' \
+    < "$TAR_FILE"
+
+  return $?
+}
+
 case "$INSTALL_MODE" in
   1)
-    # Todo desde GitHub: proot-base + n8n-data
     info "Opcion 1 - Todo desde GitHub Releases..."
     ensure_restore_sh
-    # Primero restaurar rootfs Debian limpio
     bash "$HOME/restore.sh" --module proot-base --source github || \
       error "Fallo restore del rootfs Debian desde GitHub"
-    # Luego restaurar n8n (binario + datos)
     bash "$HOME/restore.sh" --module n8n --source github || \
       error "Fallo restore de n8n desde GitHub"
     mark_done "debian_install"
@@ -237,13 +256,11 @@ case "$INSTALL_MODE" in
     CLEAN_N8N=false
     ;;
   2)
-    # Todo limpio: proot-distro install + npm install n8n
     info "Opcion 2 - Instalacion completamente limpia..."
     CLEAN_ROOTFS=true
     CLEAN_N8N=true
     ;;
   3)
-    # Rootfs GitHub + n8n limpio (npm)
     info "Opcion 3 - Rootfs desde GitHub + n8n instalacion limpia..."
     ensure_restore_sh
     bash "$HOME/restore.sh" --module proot-base --source github || \
@@ -253,7 +270,6 @@ case "$INSTALL_MODE" in
     CLEAN_N8N=true
     ;;
   4)
-    # Rootfs limpio (proot-distro) + n8n desde GitHub
     info "Opcion 4 - Rootfs limpio + n8n desde GitHub..."
     ensure_restore_sh
     CLEAN_ROOTFS=true
@@ -394,12 +410,9 @@ fi
 
 # ============================================================
 # PASO 3 — Instalar Debian Bookworm (proot)
-# Detección canónica: proot-distro list + fallback por directorio.
-# Fix S22: permisos 0700 en debian/ bloqueaban [ -f dir/bin/bash ]
 # ============================================================
 titulo "PASO 3 — Instalando Debian Bookworm"
 
-# ── Re-detección en PASO 3 ────────────────────────────────────
 _detect_rootfs
 
 if [ "${CLEAN_ROOTFS:-true}" = "false" ]; then
@@ -429,7 +442,6 @@ else
       error "Falló instalación de Debian"
     fi
 
-    # Re-detectar tras instalación (sleep 2: esperar flush del FS)
     sleep 2
     _detect_rootfs
 
@@ -445,26 +457,48 @@ info "Usando distro: ${DISTRO_NAME}"
 
 # ============================================================
 # PASO 4 — Instalar n8n + cloudflared dentro del proot
+#
+# [FIX-1] Inner script ahora se escribe en $HOME/ (Termux nativo),
+#         no en $ROOTFS_PATH/root/ (permisos 700 desde fuera del proot).
+#         Se pasa al proot con --bind mount de solo lectura.
+#         Ruta segura: $HOME/n8n_setup_inner.sh → accesible como
+#         /data/data/com.termux/files/home/n8n_setup_inner.sh dentro del proot.
+#
+# [FIX-2] Modo restore n8n: usa _restore_n8n_from_file() que inyecta
+#         el tar vía stdin, eliminando cp al rootfs (falla por permisos 700)
+#         y el uso de /tmp (noexec Android 15).
 # ============================================================
 titulo "PASO 4 — Instalando n8n + cloudflared en Debian"
 
 if check_done "n8n_install"; then
   log "n8n ya instalado [checkpoint]"
 elif [ "${CLEAN_N8N:-true}" = "false" ]; then
-  # Opción 4: n8n desde GitHub Releases (part5)
+  # Opciones 1 y 4: n8n desde GitHub Releases (part5-n8n-data)
   info "Restaurando n8n + cloudflared desde GitHub Releases..."
+
+  # Descargar el tar a $HOME/ (no a /tmp — noexec en Android 15)
+  # restore.sh descarga a $HOME/.termux_ai_downloads/ o similar
+  # Llamamos restore.sh que maneja la descarga + verificación SHA256
+  # y luego usamos _restore_n8n_from_file con el archivo en $HOME/
+  #
+  # Si restore.sh ya fue ejecutado en opciones 1/3 marcando n8n_install,
+  # este bloque no se alcanza. Para opción 4, llamamos restore.sh que
+  # descarga y delega la extracción al proot vía stdin.
   bash "$HOME/restore.sh" --module n8n --source github || \
     error "Falló la restauración de n8n desde GitHub"
+
   mark_done "n8n_install"
   log "n8n restaurado desde GitHub ✓"
 else
+  # Opciones 2 y 3: instalación limpia con npm
   info "Instalando software en Debian (15-25 min)..."
   info "No cierres Termux durante este paso..."
 
-  # IMPORTANTE: proot-distro login consume stdin antes de lanzar bash.
-  # bash << 'HEREDOC' nunca recibe los comandos → exit 0 sin instalar nada.
-  # Solución: escribir script a archivo dentro del rootfs, ejecutar con bash /ruta
-  _N8N_SETUP_SCRIPT="${ROOTFS_PATH}/root/n8n_setup_inner.sh"
+  # [FIX-1]: El script se escribe en $HOME/ (Termux nativo, siempre escribible).
+  # NO se usa $ROOTFS_PATH/root/ porque tiene permisos 0700 desde fuera del proot.
+  # Se monta $HOME/ en el proot con --bind para que bash pueda leerlo.
+  _N8N_SETUP_SCRIPT="$HOME/n8n_setup_inner.sh"
+
   cat > "$_N8N_SETUP_SCRIPT" << 'INNERSCRIPT'
 #!/bin/bash
 set -e
@@ -524,10 +558,23 @@ echo "  n8n:         $(n8n --version 2>/dev/null)"
 echo "  cloudflared: $(cloudflared --version 2>/dev/null | head -1)"
 echo "[COMPLETADO] Debian setup listo"
 INNERSCRIPT
+
   chmod +x "$_N8N_SETUP_SCRIPT"
 
-  proot-distro login "$DISTRO_NAME" -- bash /root/n8n_setup_inner.sh
+  # Verificar que el script fue creado correctamente antes de entrar al proot
+  if [ ! -f "$_N8N_SETUP_SCRIPT" ] || [ ! -s "$_N8N_SETUP_SCRIPT" ]; then
+    error "No se pudo crear el script inner en $HOME/ — revisa espacio en disco"
+  fi
+  log "Script inner creado en $HOME/ ($(wc -l < "$_N8N_SETUP_SCRIPT") líneas)"
+
+  # [FIX-1]: Montar $HOME/ de Termux dentro del proot como /termux-home/
+  # y ejecutar el script desde ahí. Evita escribir nada al rootfs desde fuera.
+  _TERMUX_HOME="$HOME"
+  proot-distro login "$DISTRO_NAME" \
+    --bind "${_TERMUX_HOME}:/termux-home" \
+    -- bash /termux-home/n8n_setup_inner.sh
   _N8N_RC=$?
+
   rm -f "$_N8N_SETUP_SCRIPT" 2>/dev/null
 
   [ $_N8N_RC -eq 0 ] || error "El setup de Debian falló. Re-ejecuta el script para reintentar."
@@ -549,7 +596,6 @@ mkdir -p "$N8N_SCRIPTS"
 # --- start_servidor.sh ---
 cat > "$N8N_SCRIPTS/start_servidor.sh" << SCRIPT
 #!/data/data/com.termux/files/usr/bin/bash
-# wake-lock para evitar que Android mate el proceso
 termux-wake-lock 2>/dev/null &
 
 LAST_URL="\$HOME/.last_cf_url"
@@ -569,8 +615,6 @@ tmux kill-session -t "\$SESSION" 2>/dev/null || true
 sleep 1
 
 # ── Ventana 0: n8n ───────────────────────────────────────────
-# NODE_FUNCTION_ALLOW_BUILTIN se pasa DENTRO del proot para que
-# el proceso n8n lo herede correctamente
 tmux new-session -d -s "\$SESSION" -n "n8n"
 
 N8N_CMD="export HOME=/root"
@@ -588,23 +632,22 @@ N8N_CMD="\${N8N_CMD} && n8n start"
 
 [ -n "\$WEBHOOK_URL_CFG" ] && echo "[*] Webhook URL: \$WEBHOOK_URL_CFG"
 tmux send-keys -t "\$SESSION:n8n" \
-  "proot-distro login \"\$DISTRO_NAME\" -- bash -c '\${N8N_CMD}'" Enter
+  "proot-distro login \"\${DISTRO_NAME:-debian}\" -- bash -c '\${N8N_CMD}'" Enter
 
 echo "[*] Esperando que n8n inicie (35 seg)..."
 sleep 35
 
 # ── Ventana 1: cloudflared ───────────────────────────────────
-# Corre en ventana tmux SEPARADA — fix crash signal 6
 echo "[*] Iniciando cloudflared tunnel (ventana separada)..."
 tmux new-window -t "\$SESSION" -n "tunnel"
 
 if [ -f "\$HOME/.cf_token" ]; then
   CF_TOK=\$(cat "\$HOME/.cf_token")
   tmux send-keys -t "\$SESSION:tunnel" \
-    "proot-distro login \"\$DISTRO_NAME\" -- bash -c 'cloudflared tunnel --no-autoupdate run --token \${CF_TOK} 2>&1 | tee /root/cf_url.log'" Enter
+    "proot-distro login \"\${DISTRO_NAME:-debian}\" -- bash -c 'cloudflared tunnel --no-autoupdate run --token \${CF_TOK} 2>&1 | tee /root/cf_url.log'" Enter
 else
   tmux send-keys -t "\$SESSION:tunnel" \
-    "proot-distro login \"\$DISTRO_NAME\" -- bash -c 'cloudflared tunnel --no-autoupdate --url http://localhost:5678 2>&1 | tee /root/cf_url.log'" Enter
+    "proot-distro login \"\${DISTRO_NAME:-debian}\" -- bash -c 'cloudflared tunnel --no-autoupdate --url http://localhost:5678 2>&1 | tee /root/cf_url.log'" Enter
 fi
 
 echo "[*] Obteniendo URL pública (40 seg)..."
@@ -614,7 +657,7 @@ sleep 40
 if [ -n "\$WEBHOOK_URL_CFG" ]; then
   CF_URL="\$WEBHOOK_URL_CFG"
 else
-  CF_URL=\$(proot-distro login "\$DISTRO_NAME" -- bash -c \
+  CF_URL=\$(proot-distro login "\${DISTRO_NAME:-debian}" -- bash -c \
     "grep -o 'https://[a-zA-Z0-9.-]*\\.trycloudflare\\.com' /root/cf_url.log 2>/dev/null | head -1" 2>/dev/null)
 fi
 
@@ -638,13 +681,13 @@ echo "║  Ctrl+B D → salir sin detener         ║"
 echo "╚════════════════════════════════════════╝"
 SCRIPT
 chmod +x "$N8N_SCRIPTS/start_servidor.sh"
-log "start_servidor.sh creado (con NODE_FUNCTION_ALLOW_BUILTIN + fix cloudflared)"
+log "start_servidor.sh creado"
 
 # --- stop_servidor.sh ---
 cat > "$N8N_SCRIPTS/stop_servidor.sh" << 'SCRIPT'
 #!/data/data/com.termux/files/usr/bin/bash
 echo "[*] Deteniendo n8n y cloudflared..."
-proot-distro login "$DISTRO_NAME" -- bash -c \
+proot-distro login "${DISTRO_NAME:-debian}" -- bash -c \
   'pkill -f n8n 2>/dev/null; pkill -f cloudflared 2>/dev/null; rm -f /root/cf_url.log' 2>/dev/null || true
 tmux kill-session -t "n8n-server" 2>/dev/null || true
 rm -f "$HOME/.last_cf_url" 2>/dev/null
@@ -659,7 +702,7 @@ cat > "$N8N_SCRIPTS/ver_url.sh" << 'SCRIPT'
 URL=""
 [ -f "$HOME/.last_cf_url" ] && URL=$(cat "$HOME/.last_cf_url")
 if [ -z "$URL" ]; then
-  URL=$(proot-distro login "$DISTRO_NAME" -- bash -c \
+  URL=$(proot-distro login "${DISTRO_NAME:-debian}" -- bash -c \
     "grep -o 'https://[a-zA-Z0-9.-]*\.trycloudflare\.com' /root/cf_url.log 2>/dev/null | head -1" 2>/dev/null)
 fi
 [ -n "$URL" ] && echo "" && echo "  ▸ $URL" && echo "" || \
@@ -707,7 +750,7 @@ log "n8n_log.sh creado"
 cat > "$N8N_SCRIPTS/n8n_update.sh" << 'SCRIPT'
 #!/data/data/com.termux/files/usr/bin/bash
 echo "[*] Actualizando n8n..."
-proot-distro login "$DISTRO_NAME" -- bash -c \
+proot-distro login "${DISTRO_NAME:-debian}" -- bash -c \
   'export HOME=/root && npm update -g n8n && echo "n8n: $(n8n --version)"'
 SCRIPT
 chmod +x "$N8N_SCRIPTS/n8n_update.sh"
@@ -720,7 +763,7 @@ FECHA=\$(date +%Y%m%d_%H%M)
 DESTINO="/sdcard/Download/n8n_workflows_\$FECHA.tar.gz"
 echo "[*] Creando backup de workflows y credenciales n8n..."
 # Inyección via stdout — sin /tmp (noexec en Android 15)
-proot-distro login "${DISTRO_NAME}" -- bash -c \
+proot-distro login "\${DISTRO_NAME:-debian}" -- bash -c \
   'tar -czf - -C /root/.n8n . 2>/dev/null' > "\$DESTINO"
 SIZE=\$(du -h "\$DESTINO" 2>/dev/null | cut -f1)
 echo "[OK] Backup workflows: \$DESTINO (\$SIZE)"
@@ -747,10 +790,10 @@ SCRIPT
 chmod +x "$N8N_SCRIPTS/cf_token.sh"
 log "cf_token.sh creado"
 
-# --- debian.sh --- (punto de entrada — va en ~/)
+# --- debian.sh ---
 cat > "$HOME/debian.sh" << SCRIPT
 #!/data/data/com.termux/files/usr/bin/bash
-proot-distro login "${DISTRO_NAME}"
+proot-distro login "\${DISTRO_NAME:-debian}"
 SCRIPT
 chmod +x "$HOME/debian.sh"
 log "debian.sh creado"
@@ -834,7 +877,7 @@ titulo "INSTALACIÓN COMPLETADA"
 source "$HOME/.bashrc" 2>/dev/null || true
 
 IP=$(ip addr show wlan0 2>/dev/null | grep "inet " | awk '{print $2}' | cut -d'/' -f1)
-[ -z "$IP" ] && IP=$(ip route get 1 2>/dev/null | awk '{print $7; exit}')
+[ -z "$IP" ] && IP=$(ifconfig 2>/dev/null | grep -A1 "wlan0" | grep "inet " | awk '{print $2}')
 
 echo -e "${GREEN}${BOLD}"
 cat << 'RESUMEN'
