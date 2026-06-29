@@ -1,0 +1,96 @@
+{
+  "name": "Bot Telegram Avanzado v3 — Memoria Individual",
+  "nodes": [
+    {
+      "parameters": {
+        "updates": ["message"],
+        "additionalFields": {}
+      },
+      "id": "node-tg-trigger",
+      "name": "Telegram Trigger",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1.1,
+      "position": [200, 300],
+      "webhookId": "",
+      "credentials": {
+        "telegramApi": {
+          "id": "A",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// ── Extraer user_id, chat_id, mensaje y nombre del update de Telegram\nconst msg = $input.first().json.message;\n\nif (!msg || !msg.text) {\n  // Ignorar updates sin texto (fotos, stickers, etc.)\n  return [];\n}\n\nconst user_id = String(msg.from?.id || msg.chat?.id || '');\nconst chat_id = String(msg.chat?.id || user_id);\nconst mensaje = String(msg.text || '').trim();\nconst nombre  = String(msg.from?.first_name || msg.from?.username || user_id);\n\nif (!user_id || !mensaje) {\n  return [];\n}\n\nreturn [{ json: { user_id, chat_id, mensaje, nombre } }];"
+      },
+      "id": "node-extract",
+      "name": "Extraer datos Telegram",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [440, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ── Llamar a bot_core.py — toda la lógica está en Python\n// Registra usuario, encola, llama Ollama, guarda historial\nconst { execSync } = require('child_process');\n\nconst input   = $input.first().json;\nconst user_id = input.user_id;\nconst chat_id = input.chat_id;\nconst nombre  = (input.nombre  || user_id).replace(/'/g, '');\n\n// Escapar mensaje para argumento de línea de comandos\nconst mensaje = (input.mensaje || '').replace(/\\\\/g, '\\\\\\\\').replace(/'/g, \"'\\\\'\");\n\nconst PYTHON  = '/data/data/com.termux/files/usr/bin/python3';\nconst SCRIPT  = '/data/data/com.termux/files/home/bots/scripts/bot_core.py';\n\nlet stdout = '';\nlet stderr = '';\n\ntry {\n  stdout = execSync(\n    `${PYTHON} ${SCRIPT} enqueue` +\n    ` --user_id '${user_id}'` +\n    ` --chat_id '${chat_id}'` +\n    ` --nombre  '${nombre}'` +\n    ` --mensaje '${mensaje}'`,\n    { timeout: 150000, encoding: 'utf8' }\n  );\n} catch (e) {\n  stderr = e.message || String(e);\n  stdout = e.stdout  || '';\n}\n\nreturn [{ json: {\n  raw_stdout: stdout.trim(),\n  raw_stderr: stderr.trim(),\n  user_id,\n  chat_id\n}}];"
+      },
+      "id": "node-bot-core",
+      "name": "bot_core.py — procesar",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ── Parsear JSON retornado por bot_core.py\nconst input  = $input.first().json;\nconst stdout = input.raw_stdout || '{}';\nconst stderr = input.raw_stderr || '';\n\nlet data;\ntry {\n  data = JSON.parse(stdout);\n} catch(e) {\n  data = { status: 'error', message: 'parse_failed: ' + stdout };\n}\n\n// Si hay error en Python, respuesta de fallback\nif (data.status === 'error' || !data.respuesta) {\n  data.respuesta = '⚠️ Error interno. Intenta de nuevo.';\n  data._stderr   = stderr;\n}\n\n// Pasar chat_id desde nodo anterior si falta\nif (!data.chat_id) {\n  data.chat_id = input.chat_id;\n}\n\nreturn [{ json: data }];"
+      },
+      "id": "node-parse",
+      "name": "Parsear respuesta",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [920, 300]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chat_id }}",
+        "text": "={{ $json.respuesta }}",
+        "additionalFields": {}
+      },
+      "id": "node-tg-send",
+      "name": "Enviar a Telegram",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.1,
+      "position": [1160, 300],
+      "credentials": {
+        "telegramApi": {
+          "id": "",
+          "name": "Telegram account 3"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Telegram Trigger": {
+      "main": [[{ "node": "Extraer datos Telegram", "type": "main", "index": 0 }]]
+    },
+    "Extraer datos Telegram": {
+      "main": [[{ "node": "bot_core.py — procesar", "type": "main", "index": 0 }]]
+    },
+    "bot_core.py — procesar": {
+      "main": [[{ "node": "Parsear respuesta", "type": "main", "index": 0 }]]
+    },
+    "Parsear respuesta": {
+      "main": [[{ "node": "Enviar a Telegram", "type": "main", "index": 0 }]]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": []
+}

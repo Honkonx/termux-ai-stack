@@ -16,7 +16,11 @@
 #    - Rutas temp: $HOME/ (NUNCA /tmp/ — noexec en Android 15)
 #    - read: siempre < /dev/tty
 #
-#  VERSIÓN: 2.0.0 | Junio 2026
+#  VERSIÓN: 2.0.1 | Junio 2026
+#  FIX 2.0.1: grep de tag_name/browser_download_url no toleraba el
+#  espacio que la API de GitHub usa tras ":" en JSON pretty-printed
+#  → la release nunca se detectaba aunque el asset existiera.
+#  Patrón corregido a ": *" (igual que get_part_url() en restore.sh).
 # ============================================================
 
 TERMUX_PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
@@ -253,16 +257,15 @@ if [ "$FORCE_MODE" = "native" ]; then
       OC_RELEASE_VER="manual"
     else
       # Parsear JSON con grep/sed — sin jq
-      OC_RELEASE_TAG=$(grep -o '"tag_name":"[^"]*"' "$RELEASE_JSON_PATH" | head -1 | cut -d'"' -f4)
+      OC_RELEASE_TAG=$(grep -o '"tag_name": *"[^"]*"' "$RELEASE_JSON_PATH" | head -1 | cut -d'"' -f4)
       OC_RELEASE_VER=$(echo "$OC_RELEASE_TAG" | sed 's/^v//')
 
-      # Buscar URL del .pkg.tar.xz aarch64
-      OC_RELEASE_URL=$(grep -o '"browser_download_url":"[^"]*"' "$RELEASE_JSON_PATH" \
-        | grep "aarch64.*\.pkg\.tar\.xz" | head -1 | cut -d'"' -f4)
+      # Buscar cualquier archivo aarch64 con .pkg.tar.xz o .deb
+      OC_RELEASE_URL=$(grep -o '"browser_download_url": *"[^"]*aarch64[^"]*\.\(pkg\.tar\.xz\|deb\)"' "$RELEASE_JSON_PATH" | head -1 | cut -d'"' -f4)
 
       # Fallback: .deb aarch64
       if [ -z "$OC_RELEASE_URL" ]; then
-        OC_RELEASE_URL=$(grep -o '"browser_download_url":"[^"]*"' "$RELEASE_JSON_PATH" \
+        OC_RELEASE_URL=$(grep -o '"browser_download_url": *"[^"]*"' "$RELEASE_JSON_PATH" \
           | grep "aarch64.*\.deb" | head -1 | cut -d'"' -f4)
         [ -n "$OC_RELEASE_URL" ] && _PKG_FORMAT="deb" || _PKG_FORMAT=""
       else

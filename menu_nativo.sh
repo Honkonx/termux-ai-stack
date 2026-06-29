@@ -4617,364 +4617,6 @@ except Exception:
 }
 
 # ════════════════════════════════════════════
-#  HELPERS — openclaw.json backup + escritura
-# ════════════════════════════════════════════
-
-_CL_CFG_PATH="$HOME/.openclaw/openclaw.json"
-
-_cl_cfg_backup() {
-  local tag="${1:-change}"
-  local date_str
-  date_str=$(python3 -c "from datetime import datetime; print(datetime.now().strftime('%Y%m%d_%H%M%S'))")
-  local cfg="$HOME/.openclaw/openclaw.json"
-  [ -f "$cfg" ] || return 1
-  cp "$cfg" "${cfg}.bak" 2>/dev/null
-  cp "$cfg" "${cfg}.pre-${tag}-${date_str}" 2>/dev/null
-}
-
-_cl_cfg_get_primary() {
-  python3 -c "
-import json,os
-try:
-  d=json.load(open(os.path.expanduser('~/.openclaw/openclaw.json')))
-  print(d.get('agents',{}).get('defaults',{}).get('model',{}).get('primary','no configurado'))
-except: print('error')
-" 2>/dev/null
-}
-
-_cl_cfg_get_providers() {
-  python3 -c "
-import json,os
-try:
-  d=json.load(open(os.path.expanduser('~/.openclaw/openclaw.json')))
-  provs=list(d.get('models',{}).get('providers',{}).keys())
-  print(', '.join(provs) if provs else 'ninguno')
-except: print('?')
-" 2>/dev/null
-}
-
-# ════════════════════════════════════════════
-#  SUBMENÚ PROVEEDOR IA / MODELO
-# ════════════════════════════════════════════
-_submenu_cl_proveedor() {
-  local _CL_CFG="$HOME/.openclaw/openclaw.json"
-
-  while true; do
-    clear; echo ""
-    local _PRI _PROV
-    _PRI=$(_cl_cfg_get_primary)
-    _PROV=$(_cl_cfg_get_providers)
-
-    echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
-    echo    "  ║  ⬡ PROVEEDOR IA / MODELO               ║"
-    echo    "  ╠══════════════════════════════════════════╣"
-    printf  "  ║  ${NC}${DIM}Modelo activo : %-25s${CYAN}${BOLD}║\n" "$_PRI"
-    printf  "  ║  ${NC}${DIM}Providers     : %-25s${CYAN}${BOLD}║\n" "$_PROV"
-    echo    "  ╠══════════════════════════════════════════╣"
-    echo -e "  ║  ${NC}[1] Ver configuración completa         ${CYAN}${BOLD}║"
-    echo -e "  ║  ${NC}[2] Configurar Ollama local            ${CYAN}${BOLD}║"
-    echo -e "  ║  ${NC}[3] Proveedor personalizado            ${CYAN}${BOLD}║"
-    echo -e "  ║  ${NC}[4] Restaurar backup                  ${CYAN}${BOLD}║"
-    echo -e "  ║  ${NC}[5] Abrir wizard                      ${CYAN}${BOLD}║"
-    echo -e "  ║  ${NC}[b] Volver                            ${CYAN}${BOLD}║"
-    echo -e "  ╚══════════════════════════════════════════╝${NC}"
-    echo ""; echo -n "  Opción: "
-    read -r _POPT < /dev/tty
-
-    case "$_POPT" in
-
-      1)
-        clear; echo ""
-        echo -e "  ${CYAN}${BOLD}═══ Configuración actual openclaw.json ═══${NC}"; echo ""
-        python3 - "$_CL_CFG" << 'PYEOF'
-import json, os, sys
-cfg_path = sys.argv[1]
-try:
-    cfg = json.load(open(cfg_path))
-except Exception as e:
-    print(f'  [ERROR] {e}'); exit(1)
-pri = cfg.get('agents',{}).get('defaults',{}).get('model',{}).get('primary','no configurado')
-models_wl = list(cfg.get('agents',{}).get('defaults',{}).get('models',{}).keys())
-providers = cfg.get('models',{}).get('providers',{})
-cfg_dir = os.path.dirname(cfg_path)
-backups = sorted([f for f in os.listdir(cfg_dir)
-    if f.startswith('openclaw.json.pre-') or f == 'openclaw.json.bak'], reverse=True)
-print(f'  Modelo principal  : {pri}')
-print(f'  Whitelist agente  : {", ".join(models_wl) if models_wl else "(vacía)"}')
-print()
-print(f'  Providers configurados ({len(providers)}):')
-for pname, pdata in providers.items():
-    url = pdata.get('baseUrl','?')
-    api = pdata.get('api','?')
-    mods = [m.get('id','?') for m in pdata.get('models',[])]
-    print(f'    {pname} [{api}]')
-    print(f'      URL: {url}')
-    for m in mods:
-        print(f'      · {m}')
-print()
-if backups:
-    print(f'  Backups disponibles ({min(len(backups),5)}):')
-    for b in backups[:5]:
-        sz = os.path.getsize(os.path.join(cfg_dir, b))
-        print(f'    {b}  ({sz}B)')
-else:
-    print('  Sin backups aún')
-PYEOF
-        echo ""; read -r _ < /dev/tty ;;
-
-      2)
-        clear; echo ""
-        echo -e "  ${CYAN}${BOLD}═══ Configurar Ollama local ═══${NC}"; echo ""
-        if ! curl -sf --max-time 2 http://127.0.0.1:11434 &>/dev/null; then
-          echo -e "  ${RED}[ERROR]${NC} Ollama no responde en :11434"
-          echo -e "  ${DIM}Inícialo primero desde el menú Servicios → Ollama${NC}"
-          echo ""; read -r _ < /dev/tty; continue
-        fi
-        echo -e "  ${GREEN}[OK]${NC} Ollama activo"; echo ""
-
-        mapfile -t _OL_MODS < <(
-          curl -sf http://127.0.0.1:11434/api/tags 2>/dev/null |
-          python3 -c "
-import sys,json
-try:
-  d=json.load(sys.stdin)
-  [print(m['name']) for m in d.get('models',[])]
-except: pass
-" 2>/dev/null)
-
-        if [ ${#_OL_MODS[@]} -eq 0 ]; then
-          echo -e "  ${YELLOW}[AVISO]${NC} Ningún modelo instalado"
-          echo -e "  ${DIM}Descarga uno: ollama pull qwen3:8b${NC}"
-          echo ""; read -r _ < /dev/tty; continue
-        fi
-
-        echo -e "  Modelos instalados:"; echo ""
-        for i in "${!_OL_MODS[@]}"; do
-          printf "    ${BOLD}[%d]${NC} %s\n" "$((i+1))" "${_OL_MODS[$i]}"
-        done
-        echo ""
-        echo -n "  Número o nombre exacto (ENTER cancela): "
-        read -r _OL_IN < /dev/tty
-        [ -z "$_OL_IN" ] && { echo "  Cancelado."; echo ""; read -r _ < /dev/tty; continue; }
-
-        local _OL_MOD=""
-        if [[ "$_OL_IN" =~ ^[0-9]+$ ]] && \
-           [ "$_OL_IN" -ge 1 ] && [ "$_OL_IN" -le "${#_OL_MODS[@]}" ]; then
-          _OL_MOD="${_OL_MODS[$((_OL_IN-1))]}"
-        else
-          _OL_MOD="$_OL_IN"
-        fi
-
-        local _CTX=32768
-        case "$_OL_MOD" in
-          qwen3*|qwen2.5*|llama3*|gemma3*|phi*) _CTX=131072 ;;
-          deepseek*) _CTX=65536 ;;
-        esac
-
-        echo ""
-        echo -e "  Modelo: ${BOLD}${_OL_MOD}${NC}  (ctx: ${_CTX})"; echo ""
-        echo -e "  ¿Cómo usar este modelo?"; echo ""
-        echo -e "  ${BOLD}[1]${NC} Principal  — agente lo usa por defecto"
-        echo -e "  ${BOLD}[2]${NC} Secundario — disponible, sin cambiar el actual"
-        echo -e "  ${BOLD}[b]${NC} Cancelar"
-        echo ""; echo -n "  Opción: "
-        read -r _PRIO < /dev/tty
-        local _OL_PRIMARIO=false
-        case "$_PRIO" in
-          1) _OL_PRIMARIO=true ;;
-          2) _OL_PRIMARIO=false ;;
-          *) echo "  Cancelado."; echo ""; read -r _ < /dev/tty; continue ;;
-        esac
-
-        echo ""
-        echo -e "  ${BOLD}Resumen de cambios:${NC}"
-        echo -e "  · Provider ollama → http://127.0.0.1:11434/v1"
-        echo -e "  · Modelo: ollama/${_OL_MOD}"
-        $_OL_PRIMARIO \
-          && echo -e "  · ${GREEN}Será el modelo PRINCIPAL${NC}" \
-          || echo -e "  · Secundario — modelo actual sin cambios"
-        echo ""; echo -n "  ¿Confirmar? (s/n): "
-        read -r _CONF < /dev/tty
-        [ "$_CONF" != "s" ] && [ "$_CONF" != "S" ] && {
-          echo "  Cancelado."; echo ""; read -r _ < /dev/tty; continue; }
-
-        echo ""
-        _cl_cfg_backup "ollama"
-        local _PRIM_PY="False"
-        $_OL_PRIMARIO && _PRIM_PY="True"
-        python3 - "$_CL_CFG" "$_OL_MOD" "$_CTX" "$_PRIM_PY" << 'PYEOF'
-import json, os, sys
-from datetime import datetime
-cfg_path, model_id, ctx, primario = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4]=='True'
-model_full = f'ollama/{model_id}'
-with open(cfg_path) as f: cfg = json.load(f)
-cfg.setdefault('models',{}).setdefault('providers',{})['ollama'] = {
-    'baseUrl':'http://127.0.0.1:11434/v1','api':'openai-completions','apiKey':'ollama-local',
-    'models':[{'id':model_id,'name':model_id,'reasoning':False,'input':['text'],
-               'cost':{'input':0,'output':0,'cacheRead':0,'cacheWrite':0},
-               'contextWindow':ctx,'maxTokens':8192}]}
-cfg.setdefault('agents',{}).setdefault('defaults',{}).setdefault('models',{})[model_full] = {}
-if primario:
-    cfg['agents']['defaults'].setdefault('model',{})['primary'] = model_full
-cfg.setdefault('meta',{})['lastTouchedAt'] = datetime.now().strftime('%Y-%m-%dT%H:%M:%S.000Z')
-tmp = cfg_path + '.tmp'
-with open(tmp,'w') as f: json.dump(cfg, f, indent=2)
-os.replace(tmp, cfg_path)
-print('ok')
-PYEOF
-        if [ $? -eq 0 ]; then
-          echo -e "  ${GREEN}[OK]${NC} Ollama/${_OL_MOD} configurado"
-          $_OL_PRIMARIO && echo -e "  ${GREEN}[OK]${NC} Modelo principal → ollama/${_OL_MOD}"
-          echo -e "  ${DIM}Reinicia el gateway con [1] para aplicar${NC}"
-        else
-          echo -e "  ${RED}[ERROR]${NC} Escritura fallida — backup en ${_CL_CFG}.bak"
-        fi
-        echo ""; read -r _ < /dev/tty ;;
-
-      3)
-        clear; echo ""
-        echo -e "  ${CYAN}${BOLD}═══ Proveedor personalizado ═══${NC}"; echo ""
-        echo -e "  ${DIM}Para APIs OpenAI-compatible: DeepSeek, LM Studio, etc.${NC}"
-        echo -e "  ${DIM}Para Gemini/Anthropic usa [5] wizard — requieren OAuth.${NC}"; echo ""
-        echo -n "  Nombre del provider (ej: deepseek): "
-        read -r _PROV_NAME < /dev/tty
-        [ -z "$_PROV_NAME" ] && { echo "  Cancelado."; echo ""; read -r _ < /dev/tty; continue; }
-        echo -n "  Base URL (ej: https://api.deepseek.com/v1): "
-        read -r _PROV_URL < /dev/tty
-        [ -z "$_PROV_URL" ] && { echo "  Cancelado."; echo ""; read -r _ < /dev/tty; continue; }
-        echo -n "  API Key: "
-        read -r _PROV_KEY < /dev/tty
-        [ -z "$_PROV_KEY" ] && { echo "  Cancelado."; echo ""; read -r _ < /dev/tty; continue; }
-        echo -n "  ID del modelo (ej: deepseek-coder-v2): "
-        read -r _PROV_MOD < /dev/tty
-        [ -z "$_PROV_MOD" ] && { echo "  Cancelado."; echo ""; read -r _ < /dev/tty; continue; }
-        echo -n "  Context window (ENTER = 32768): "
-        read -r _PROV_CTX < /dev/tty
-        [[ "$_PROV_CTX" =~ ^[0-9]+$ ]] || _PROV_CTX=32768
-        echo ""
-        echo -e "  ¿Cómo usar este modelo?"
-        echo -e "  ${BOLD}[1]${NC} Principal   ${BOLD}[2]${NC} Secundario   ${BOLD}[b]${NC} Cancelar"
-        echo -n "  Opción: "
-        read -r _PPRIO < /dev/tty
-        local _PPRIM=false
-        case "$_PPRIO" in
-          1) _PPRIM=true ;;
-          2) _PPRIM=false ;;
-          *) echo "  Cancelado."; echo ""; read -r _ < /dev/tty; continue ;;
-        esac
-        echo ""
-        echo -e "  ${BOLD}Resumen:${NC}"
-        echo -e "  · Provider: ${_PROV_NAME}  URL: ${_PROV_URL}"
-        echo -e "  · Modelo: ${_PROV_MOD}  ctx: ${_PROV_CTX}"
-        $_PPRIM \
-          && echo -e "  · ${GREEN}Será el modelo PRINCIPAL${NC}" \
-          || echo -e "  · Secundario"
-        echo ""; echo -n "  ¿Confirmar? (s/n): "
-        read -r _PCONF < /dev/tty
-        [ "$_PCONF" != "s" ] && [ "$_PCONF" != "S" ] && {
-          echo "  Cancelado."; echo ""; read -r _ < /dev/tty; continue; }
-        echo ""
-        _cl_cfg_backup "custom-${_PROV_NAME}"
-        local _PP="False"; $_PPRIM && _PP="True"
-        python3 - "$_CL_CFG" "$_PROV_NAME" "$_PROV_URL" "$_PROV_KEY" \
-                   "$_PROV_MOD" "$_PROV_CTX" "$_PP" << 'PYEOF'
-import json, os, sys
-from datetime import datetime
-cfg_path,pname,purl,pkey,mid,ctx,primario = sys.argv[1:]
-ctx=int(ctx); primario=(primario=='True'); mfull=f'{pname}/{mid}'
-with open(cfg_path) as f: cfg=json.load(f)
-cfg.setdefault('models',{}).setdefault('providers',{})[pname]={
-    'baseUrl':purl,'api':'openai-completions','apiKey':pkey,
-    'models':[{'id':mid,'name':mid,'reasoning':False,'input':['text'],
-               'cost':{'input':0,'output':0,'cacheRead':0,'cacheWrite':0},
-               'contextWindow':ctx,'maxTokens':8192}]}
-cfg.setdefault('agents',{}).setdefault('defaults',{}).setdefault('models',{})[mfull]={}
-if primario: cfg['agents']['defaults'].setdefault('model',{})['primary']=mfull
-cfg.setdefault('meta',{})['lastTouchedAt']=datetime.now().strftime('%Y-%m-%dT%H:%M:%S.000Z')
-tmp=cfg_path+'.tmp'
-with open(tmp,'w') as f: json.dump(cfg,f,indent=2)
-os.replace(tmp,cfg_path); print('ok')
-PYEOF
-        [ $? -eq 0 ] \
-          && { echo -e "  ${GREEN}[OK]${NC} Provider '${_PROV_NAME}' configurado"
-               $_PPRIM && echo -e "  ${GREEN}[OK]${NC} Modelo principal → ${_PROV_NAME}/${_PROV_MOD}"
-               echo -e "  ${DIM}Reinicia el gateway para aplicar${NC}"; } \
-          || echo -e "  ${RED}[ERROR]${NC} Escritura fallida — backup en ${_CL_CFG}.bak"
-        echo ""; read -r _ < /dev/tty ;;
-
-      4)
-        clear; echo ""
-        echo -e "  ${CYAN}${BOLD}═══ Restaurar backup ═══${NC}"; echo ""
-        local _CFG_DIR; _CFG_DIR=$(dirname "$_CL_CFG")
-        mapfile -t _BAKS < <(
-          ls -t "$_CFG_DIR"/openclaw.json.pre-* \
-                "$_CFG_DIR/openclaw.json.bak" 2>/dev/null | head -10)
-        if [ ${#_BAKS[@]} -eq 0 ]; then
-          echo -e "  ${YELLOW}[AVISO]${NC} No hay backups disponibles"
-          echo -e "  ${DIM}Se crean automáticamente al modificar el config${NC}"
-          echo ""; read -r _ < /dev/tty; continue
-        fi
-        echo -e "  Backups disponibles:"; echo ""
-        for i in "${!_BAKS[@]}"; do
-          local _BSZ; _BSZ=$(wc -c < "${_BAKS[$i]}" 2>/dev/null)
-          printf "    ${BOLD}[%d]${NC} %s  ${DIM}(%s bytes)${NC}\n" \
-            "$((i+1))" "$(basename "${_BAKS[$i]}")" "$_BSZ"
-        done
-        echo ""; echo -n "  Número a restaurar (ENTER cancela): "
-        read -r _BAK_IN < /dev/tty
-        [ -z "$_BAK_IN" ] && { echo "  Cancelado."; echo ""; read -r _ < /dev/tty; continue; }
-        if ! [[ "$_BAK_IN" =~ ^[0-9]+$ ]] || \
-           [ "$_BAK_IN" -lt 1 ] || [ "$_BAK_IN" -gt "${#_BAKS[@]}" ]; then
-          echo -e "  ${RED}[ERROR]${NC} Número inválido"
-          echo ""; read -r _ < /dev/tty; continue
-        fi
-        local _BAK_FILE="${_BAKS[$((_BAK_IN-1))]}"
-        echo ""
-        echo -e "  ${YELLOW}[AVISO]${NC} Se restaurará: $(basename $_BAK_FILE)"
-        echo -e "  ${YELLOW}[AVISO]${NC} Config actual → .bak antes de restaurar"
-        python3 -c "import json,sys; json.load(open(sys.argv[1]))" \
-          "$_BAK_FILE" 2>/dev/null || {
-          echo -e "  ${RED}[ERROR]${NC} Backup inválido (JSON roto) — no se restaura"
-          echo ""; read -r _ < /dev/tty; continue; }
-        echo ""; echo -n "  ¿Confirmar restauración? (s/n): "
-        read -r _RCONF < /dev/tty
-        [ "$_RCONF" != "s" ] && [ "$_RCONF" != "S" ] && {
-          echo "  Cancelado."; echo ""; read -r _ < /dev/tty; continue; }
-        cp "$_CL_CFG" "${_CL_CFG}.bak" 2>/dev/null
-        cp "$_BAK_FILE" "$_CL_CFG" \
-          && { echo -e "  ${GREEN}[OK]${NC} Config restaurada"
-               echo -e "  ${DIM}Reinicia el gateway para aplicar${NC}"; } \
-          || echo -e "  ${RED}[ERROR]${NC} No se pudo restaurar"
-        echo ""; read -r _ < /dev/tty ;;
-
-      5)
-        clear; echo ""
-        echo -e "  ${CYAN}${BOLD}═══ Wizard de OpenClaw ═══${NC}"; echo ""
-        echo -e "  ${YELLOW}${BOLD}⚠ El wizard puede sobreescribir tu config actual${NC}"; echo ""
-        local _PRI_W; _PRI_W=$(_cl_cfg_get_primary)
-        echo -e "  Config actual: ${BOLD}${_PRI_W:-no configurado}${NC}"
-        echo ""
-        _cl_cfg_backup "pre-wizard"
-        echo -e "  ${GREEN}[OK]${NC} Backup automático creado"
-        echo -e "  ${DIM}Si algo sale mal → usa [4] Restaurar backup${NC}"
-        echo ""; echo -n "  ¿Continuar? (s/n): "
-        read -r _WCONF < /dev/tty
-        [ "$_WCONF" != "s" ] && [ "$_WCONF" != "S" ] && {
-          echo "  Cancelado."; echo ""; read -r _ < /dev/tty; continue; }
-        echo ""
-        local _OLD_LD="${LD_PRELOAD:-}"; unset LD_PRELOAD
-        openclaw onboard < /dev/tty || \
-          echo -e "  ${YELLOW}[AVISO]${NC} Wizard terminó con error"
-        [ -n "$_OLD_LD" ] && export LD_PRELOAD="$_OLD_LD"
-        echo ""; read -r _ < /dev/tty ;;
-
-      b|B|"") break ;;
-    esac
-  done
-}
-
-
-# ════════════════════════════════════════════
 #  SUBMENÚ OPENCLAW NATIVO
 #  Para instalaciones con location=nativo_termux
 #  (glibc + npm — sin proot)
@@ -5004,16 +4646,6 @@ submenu_openclaw_native() {
 " "$_STATUS_LINE"
     [ -n "$_TOKEN" ] &&       printf "  ║  ${GREEN}${DIM}http://localhost:%-5s/#token=***${NC}${CYAN}${BOLD}   ║
 " "$PORT"
-    # Mostrar modelo activo en el panel
-    local _CL_PRIMARY; _CL_PRIMARY=$(python3 -c "
-import json,os
-try:
-  d=json.load(open(os.path.expanduser('~/.openclaw/openclaw.json')))
-  print(d.get('agents',{}).get('defaults',{}).get('model',{}).get('primary','?'))
-except: print('?')
-" 2>/dev/null)
-    echo    "  ╠══════════════════════════════════════════╣"
-    printf  "  ║  ${NC}${DIM}Modelo: %-32s${CYAN}${BOLD}║\n" "$_CL_PRIMARY"
     echo    "  ╠══════════════════════════════════════════╣"
     echo -e "  ║  ${NC}[1] Iniciar / reiniciar gateway        ${CYAN}${BOLD}║"
     echo -e "  ║  ${NC}[2] Detener gateway                    ${CYAN}${BOLD}║"
@@ -5021,7 +4653,7 @@ except: print('?')
     echo -e "  ║  ${NC}[4] Mostrar URL con token              ${CYAN}${BOLD}║"
     echo -e "  ║  ${NC}[5] Abrir TUI (terminal)               ${CYAN}${BOLD}║"
     echo -e "  ║  ${NC}[6] Ejecutar openclaw onboard          ${CYAN}${BOLD}║"
-    echo -e "  ║  ${NC}[7] Proveedor IA / Modelo              ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[7] Configurar Ollama local            ${CYAN}${BOLD}║"
     echo -e "  ║  ${NC}[8] Instalar / actualizar              ${CYAN}${BOLD}║"
     echo -e "  ║  ${NC}[b] Volver                             ${CYAN}${BOLD}║"
     echo -e "  ╚══════════════════════════════════════════╝${NC}"
@@ -5084,7 +4716,56 @@ except: print('?')
         openclaw onboard < /dev/tty ||           echo -e "  ${YELLOW}[AVISO]${NC} onboard terminó con error — vuelve a intentar"
         [ -n "$_OLD_LD" ] && export LD_PRELOAD="$_OLD_LD"
         echo ""; read -r _ < /dev/tty ;;
-      7) _submenu_cl_proveedor; continue ;;
+      7)
+        clear; echo ""
+        echo -e "  ${CYAN}Configurar Ollama local en OpenClaw${NC}"; echo ""
+        if ! curl -sf http://127.0.0.1:11434 &>/dev/null; then
+          echo -e "  ${YELLOW}[AVISO]${NC} Ollama no responde — inícialo primero desde [3]"
+          echo ""; read -r _ < /dev/tty; continue
+        fi
+        mapfile -t _OL_MODELS < <(
+          curl -sf http://127.0.0.1:11434/api/tags 2>/dev/null |           python3 -c "
+import sys,json
+try:
+  d=json.load(sys.stdin)
+  [print(m['name']) for m in d.get('models',[])]
+except: pass
+" 2>/dev/null)
+        if [ ${#_OL_MODELS[@]} -eq 0 ]; then
+          echo -e "  ${YELLOW}(ningún modelo instalado — usa ollama pull)${NC}"
+          echo ""; read -r _ < /dev/tty; continue
+        fi
+        for i in "${!_OL_MODELS[@]}"; do
+          printf "    ${BOLD}[%d]${NC} %s
+" "$((i+1))" "${_OL_MODELS[$i]}"
+        done
+        echo ""; echo -n "  Número o nombre (ENTER cancela): "
+        read -r _OL_INPUT < /dev/tty
+        [ -z "$_OL_INPUT" ] && { echo "  Cancelado"; echo ""; read -r _ < /dev/tty; continue; }
+        local _OL_MODEL=""
+        if [[ "$_OL_INPUT" =~ ^[0-9]+$ ]] && [ "$_OL_INPUT" -ge 1 ] &&            [ "$_OL_INPUT" -le "${#_OL_MODELS[@]}" ]; then
+          _OL_MODEL="${_OL_MODELS[$((OL_INPUT-1))]}"
+        else
+          _OL_MODEL="$_OL_INPUT"
+        fi
+        # Escribir en openclaw.json
+        python3 -c "
+import json, os
+cfg_path = os.path.expanduser('~/.openclaw/openclaw.json')
+try:
+    cfg = json.load(open(cfg_path))
+except Exception:
+    cfg = {}
+cfg.setdefault('models',{}).setdefault('providers',{})['ollama'] = {
+    'baseUrl':'http://127.0.0.1:11434','api':'ollama','apiKey':'OLLAMA_API_KEY',
+    'models':[{'id':'$_OL_MODEL','name':'$_OL_MODEL','reasoning':False,
+               'input':['text'],'cost':{'input':0,'output':0,'cacheRead':0,'cacheWrite':0},
+               'contextWindow':32768,'maxTokens':8192}]}
+with open(cfg_path,'w') as f:
+    json.dump(cfg, f, indent=2)
+print('ok')
+" 2>/dev/null &&           echo -e "  ${GREEN}[OK]${NC} Ollama/${_OL_MODEL} configurado — reinicia con [1]" ||           echo -e "  ${RED}[ERROR]${NC} No se pudo escribir config"
+        echo ""; read -r _ < /dev/tty ;;
       8)
         clear; echo ""
         _ensure_install_script "install_openclaw.sh" || { read -r _ < /dev/tty; continue; }
