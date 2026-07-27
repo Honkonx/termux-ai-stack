@@ -29,6 +29,10 @@
 TERMUX_PREFIX="/data/data/com.termux/files/usr"
 export PATH="$TERMUX_PREFIX/bin:$TERMUX_PREFIX/sbin:$PATH"
 
+# ── Modo silencioso (invocado desde menu.sh, confirmación ya hecha ahí) ──
+SILENT_MODE=false
+for _arg in "$@"; do [ "$_arg" = "--silent" ] && SILENT_MODE=true; done
+
 # ── Colores ──────────────────────────────────────────────────
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -57,7 +61,8 @@ mark_done()  { echo "$1" >> "$CHECKPOINT"; }
 update_registry() {
   local version="$1"
   local date_now
-  date_now=$(date +%Y-%m-%d)
+  # Regla técnica ARM64: NUNCA date +%Y-%m-%d — usar python3 datetime.now()
+  date_now=$(python3 -c "from datetime import datetime; print(datetime.now().strftime('%Y-%m-%d'))" 2>/dev/null || date +%Y-%m-%d)
 
   [ ! -f "$REGISTRY" ] && touch "$REGISTRY"
 
@@ -90,17 +95,39 @@ echo -e "${NC}"
 # ── Verificar si ya está instalado ───────────────────────────
 if command -v eas &>/dev/null; then
   CURRENT_VER=$(eas --version 2>/dev/null | head -1)
-  echo -e "${GREEN}  ✓ EAS CLI ya está instalado${NC}"
-  echo -e "  Versión actual: ${CYAN}${CURRENT_VER}${NC}"
-  echo -e "  Usuario Expo:   ${CYAN}$(eas whoami 2>/dev/null || echo 'no logueado')${NC}"
-  echo ""
-  echo -n "  ¿Reinstalar/actualizar? (s/n): "
-  read -r REINSTALL
-  [ "$REINSTALL" != "s" ] && [ "$REINSTALL" != "S" ] && {
-    info "Nada que hacer. Saliendo."
-    exit 0
+  _update_eas_cli() {
+    _EAS_VER_BEFORE=$(eas --version 2>/dev/null | head -1 | grep -oP '[\d.]+' | head -1)
+    info "Actualizando EAS CLI (v${_EAS_VER_BEFORE:-?})..."
+    npm install -g eas-cli@latest 2>&1 | tail -5 || error "npm install eas-cli@latest falló"
+    _EAS_VER_AFTER=$(eas --version 2>/dev/null | head -1 | grep -oP '[\d.]+' | head -1)
+    update_registry "${_EAS_VER_AFTER:-unknown}"
+    echo ""
+    echo -e "  ${GREEN}[OK]${NC} EAS CLI actualizado"
+    printf "  Antes: %-20s\n" "${_EAS_VER_BEFORE:-?}"
+    printf "  Ahora: %-20s\n" "${_EAS_VER_AFTER:-?}"
   }
-  rm -f "$CHECKPOINT"
+  if $SILENT_MODE; then
+    _update_eas_cli; exit 0
+  fi
+  echo -e "  ${GREEN}✓ EAS CLI ya instalado${NC}"
+  echo -e "  Versión : ${CYAN}${CURRENT_VER}${NC}"
+  echo -e "  Usuario : ${CYAN}$(eas whoami 2>/dev/null || echo 'no logueado')${NC}"
+  echo ""
+  echo -e "  ${BOLD}¿Qué deseas hacer?${NC}"; echo ""
+  echo -e "  ${GREEN}[1]${NC} Actualizar   ${DIM}(npm install -g eas-cli@latest)${NC}"
+  echo -e "  [2] Reinstalar  ${DIM}(instalación completa desde cero)${NC}"
+  echo -e "  [q] Cancelar"
+  echo ""; echo -n "  Opción: "
+  read -r _EAS_OPT < /dev/tty
+  case "$_EAS_OPT" in
+    1) _update_eas_cli; echo ""; exit 0 ;;
+    2)
+      rm -f "$CHECKPOINT" ;;
+    q|Q|"")
+      info "Nada que hacer. Saliendo."; exit 0 ;;
+    *)
+      info "Nada que hacer. Saliendo."; exit 0 ;;
+  esac
 fi
 
 # ── Mostrar checkpoints previos ───────────────────────────────
@@ -109,14 +136,18 @@ if [ -f "$CHECKPOINT" ] && [ -s "$CHECKPOINT" ]; then
   while IFS= read -r line; do
     echo -e "  ${GREEN}✓${NC} $line"
   done < "$CHECKPOINT"
-  echo ""
-  echo -n "  ¿Continuar desde donde quedó? (s/n): "
-  read -r CONT
-  [ "$CONT" != "s" ] && [ "$CONT" != "S" ] && {
-    echo -n "  ¿Reiniciar desde cero? (s/n): "
-    read -r RESET
-    [ "$RESET" = "s" ] || [ "$RESET" = "S" ] && rm -f "$CHECKPOINT"
-  }
+  if $SILENT_MODE; then
+    echo -e "  ${DIM}(modo silencioso — continuando desde checkpoint)${NC}"
+  else
+    echo ""
+    echo -n "  ¿Continuar desde donde quedó? (s/n): "
+    read -r CONT < /dev/tty
+    [ "$CONT" != "s" ] && [ "$CONT" != "S" ] && {
+      echo -n "  ¿Reiniciar desde cero? (s/n): "
+      read -r RESET < /dev/tty
+      [ "$RESET" = "s" ] || [ "$RESET" = "S" ] && rm -f "$CHECKPOINT"
+    }
+  fi
   echo ""
 fi
 
@@ -130,9 +161,11 @@ echo ""
   echo "  Tema y termux.properties → ejecuta instalar.sh para eso"
 echo "  n8n, Claude Code, Ollama → cada uno tiene su propio script"
 echo ""
-echo -n "  ¿Continuar? (s/n): "
-read -r CONFIRMAR
-[ "$CONFIRMAR" != "s" ] && [ "$CONFIRMAR" != "S" ] && { echo "Cancelado."; exit 0; }
+if ! $SILENT_MODE; then
+  echo -n "  ¿Continuar? (s/n): "
+  read -r CONFIRMAR < /dev/tty
+  [ "$CONFIRMAR" != "s" ] && [ "$CONFIRMAR" != "S" ] && { echo "Cancelado."; exit 0; }
+fi
 
 # ============================================================
 # PASO 0 — Permiso de almacenamiento
@@ -280,13 +313,15 @@ titulo "PASO 4 — Login en Expo"
 if check_done "expo_login"; then
   log "Login ya completado [checkpoint]"
   info "Usuario: $(eas whoami 2>/dev/null || echo 'verificar con: eas whoami')"
+elif $SILENT_MODE; then
+  warn "Modo silencioso — login omitido, ejecutalo después con: expo-login"
 else
   echo ""
   echo "  Para compilar en la nube necesitas una cuenta en expo.dev"
   echo "  (gratis — 30 builds/mes en el plan gratuito)"
   echo ""
   echo -n "  ¿Hacer login ahora? (s/n): "
-  read -r DO_LOGIN
+  read -r DO_LOGIN < /dev/tty
 
   if [ "$DO_LOGIN" = "s" ] || [ "$DO_LOGIN" = "S" ]; then
     eas login

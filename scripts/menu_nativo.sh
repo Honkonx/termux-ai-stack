@@ -82,45 +82,42 @@ check_python() {
 }
 
 check_remote() {
-  local ssh_installed dashboard_installed
+  local ssh_installed
   ssh_installed=$(get_reg ssh installed)
-  dashboard_installed=$(get_reg dashboard installed)
 
-  local has_remote=false
-  [ "$ssh_installed" = "true" ] || [ "$dashboard_installed" = "true" ] && has_remote=true
-  [ -f "$REMOTE_SCRIPTS/dashboard_server.py" ] && has_remote=true
-
-  if [ "$has_remote" = "false" ]; then
-    echo "not_installed||"; return
-  fi
+  [ "$ssh_installed" != "true" ] && { echo "not_installed||"; return; }
 
   local ssh_ver; ssh_ver=$(get_reg ssh version)
   ssh_ver="${ssh_ver#v}"
   [ -z "$ssh_ver" ] && ssh_ver="?"
 
-  local ssh_active=false db_active=false
-  pgrep -x sshd &>/dev/null              && ssh_active=true
-  pgrep -f "dashboard_server.py" &>/dev/null && db_active=true
-
-  local status_detail=""
-  $ssh_active && status_detail="SSH●"
-  $db_active  && status_detail="${status_detail}${status_detail:+ }DB●"
-  [ -z "$status_detail" ] && status_detail="listo"
-
-  if $ssh_active || $db_active; then
-    echo "running|${ssh_ver}|${status_detail}"
-  else
-    echo "stopped|${ssh_ver}|"
-  fi
+  pgrep -x sshd &>/dev/null \
+    && echo "running|${ssh_ver}|" \
+    || echo "stopped|${ssh_ver}|"
 }
 
-check_openclaude() {
-  command -v openclaude &>/dev/null || { echo "not_installed||"; return; }
-  local ver; ver=$(get_reg openclaude version)
-  [ -z "$ver" ] && ver=$(npm list -g @gitlawb/openclaude 2>/dev/null \
-    | grep openclaude | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+check_antigravity() {
+  command -v agy &>/dev/null || { echo "not_installed||"; return; }
+  local ver; ver=$(get_reg antigravity version)
+  [ -z "$ver" ] && ver=$(agy --version 2>/dev/null | grep -oE '[0-9]+\.[0-9.]+' | head -1)
   [ -z "$ver" ] && ver="?"
   echo "ready|${ver}|"
+}
+
+# ════════════════════════════════════════════
+#  CHECK CODEX CLI
+#  Nativo Termux — npm global install
+#  Soporta múltiples canales: termux / vl / official
+# ════════════════════════════════════════════
+check_codex() {
+  [ -f "$HOME/.npm-global/bin/codex" ] || command -v codex &>/dev/null || { echo "not_installed||"; return; }
+  local ver; ver=$(get_reg codex version)
+  [ -z "$ver" ] && \
+    ver=$(codex --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+  [ -z "$ver" ] && ver="?"
+  local ch; ch=$(get_reg codex channel)
+  [ -z "$ch" ] && ch="termux"
+  echo "ready|${ver}|${ch}"
 }
 
 # ════════════════════════════════════════════
@@ -176,6 +173,12 @@ check_opencode_native() {
 #          o cualquier openclaw en PATH
 # ════════════════════════════════════════════
 check_openclaw_native() {
+  # openclaw.installed=true solo se escribe en PASO 11 de install_openclaw.sh,
+  # tras completar el arranque del gateway — si el proceso murió antes
+  # (SIGKILL/OOM en PASO 9), el binario puede existir en disco pero la
+  # instalación no se considera completa. No basta con ver el binario.
+  [ "$(get_reg openclaw installed)" = "true" ] || { echo "not_installed||native"; return; }
+
   local _bin=""
   # 1. npm-global (ruta estándar de install_openclaw.sh v2)
   if [ -f "$HOME/.npm-global/bin/openclaw" ]; then
@@ -199,7 +202,7 @@ check_openclaw_native() {
   [ -z "$ver" ] && ver="?"
 
   # Estado: running si gateway responde en :18789, stopped si binario existe
-  curl -sf --max-time 1 http://127.0.0.1:18789 &>/dev/null     && echo "running|${ver}|native"     || echo "stopped|${ver}|native"
+  curl -sf --max-time 2 http://127.0.0.1:18789 &>/dev/null     && echo "running|${ver}|native"     || echo "stopped|${ver}|native"
 }
 
 # ════════════════════════════════════════════
@@ -859,6 +862,58 @@ if modelos:
 # ════════════════════════════════════════════
 #  SUBMENÚ PERSONALIZACIÓN OLLAMA
 # ════════════════════════════════════════════
+# ════════════════════════════════════════════
+#  HELPER: ejecutar installer con output limpio
+# ════════════════════════════════════════════
+# Uso: _run_installer "install_hermes.sh" "Hermes Agent" [VAR=val ...]
+# Instalación silenciosa: fondo + spinner + log completo en
+# ~/.termux-ai-stack/logs/ — mismo mecanismo que _run_installer_menu()
+# de menu.sh (unificado 2026-07-25, antes corría siempre visible con tee)
+_run_installer() {
+  local _script="$1"
+  local _label="$2"
+  shift 2
+  local _extra_env="$*"   # VAR=val opcionales
+  local _log_dir="$HOME/.termux-ai-stack/logs"
+  local _log="$_log_dir/install_$(date +%Y%m%d_%H%M%S).log"
+  mkdir -p "$_log_dir"
+
+  clear; echo ""
+  echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
+  printf  "  ║  %-40s║\n" "Instalando: ${_label}"
+  echo    "  ╠══════════════════════════════════════════╣"
+  echo -e "  ║  ${NC}Log: ~/.termux-ai-stack/logs/          ${CYAN}${BOLD}║"
+  echo -e "  ╚══════════════════════════════════════════╝${NC}"
+  echo ""
+  echo -e "  ${DIM}Instalación silenciosa — el log completo queda en el archivo de arriba${NC}"
+  echo ""
+
+  _ensure_install_script "$_script" || return 1
+
+  env $_extra_env bash "$HOME/$_script" --silent > "$_log" 2>&1 &
+  local _pid=$!
+  local _SC="⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏" _SI=0
+  while kill -0 "$_pid" 2>/dev/null; do
+    printf "\r  ${CYAN}%s${NC} ${DIM}Instalando ${_label}...${NC}" "${_SC:$((_SI%${#_SC})):1}"
+    _SI=$((_SI+1)); sleep 0.12
+  done
+  wait "$_pid"
+  local _exit=$?
+  printf "\r\033[2K"
+
+  echo ""
+  if [ "$_exit" -eq 0 ]; then
+    echo -e "  ${GREEN}[OK]${NC} ${_label} instalado correctamente"
+  else
+    echo -e "  ${RED}[ERROR]${NC} Falló la instalación (código: ${_exit})"
+    echo -e "  ${DIM}Ver detalles: cat ${_log}${NC}"
+    echo ""
+    echo -e "  ${YELLOW}Últimas líneas del log:${NC}"
+    tail -15 "$_log" 2>/dev/null | sed 's/^/  /'
+  fi
+  echo ""
+}
+
 submenu_ollama_personalizacion() {
   _ollama_load_params
   while true; do
@@ -1136,6 +1191,8 @@ submenu_ollama() {
     echo -e "  ║  ${NC}[5] Modelos (ver / descargar / eliminar)${CYAN}${BOLD}║"
     echo -e "  ║  ${NC}[6] Configurar historial SQLite         ${CYAN}${BOLD}║"
     echo -e "  ║  ${NC}[7] Personalización (temp/prompt/rol)   ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[u] Actualizar Ollama                   ${CYAN}${BOLD}║"
+    echo -e "  ║  ${DIM}    pkg upgrade o npm según variante    ${CYAN}${BOLD}║"
     echo -e "  ║  ${NC}[b] Volver al menú principal            ${CYAN}${BOLD}║"
     echo -e "  ╚══════════════════════════════════════════╝${NC}"
     echo ""; echo -n "  Opción: "
@@ -1255,6 +1312,11 @@ submenu_ollama() {
         done ;;
       6) _ollama_config_sql ;;
       7) submenu_ollama_personalizacion ;;
+      u|U)
+        clear; echo ""
+        _ensure_install_script "install_ollama.sh" || { read -r _ < /dev/tty; continue; }
+        _run_installer "install_ollama.sh" "Ollama"
+        echo ""; read -r _ < /dev/tty ;;
       b|B|"") break ;;
     esac
     _ollama_load_cfg
@@ -1288,6 +1350,9 @@ submenu_claude() {
     echo -e "  ║  ${NC}[2] Abrir en proyecto                   ${CYAN}${BOLD}║"
     echo -e "  ║  ${NC}[3] Gestionar proyectos                 ${CYAN}${BOLD}║"
     echo -e "  ║  ${NC}[4] Instalar / cambiar método           ${CYAN}${BOLD}║"
+    if [ "$_CC_METHOD" = "native" ]; then
+      echo -e "  ║  ${NC}[u] Actualizar (solo binario + patchelf)${CYAN}${BOLD}║"
+    fi
     echo -e "  ║  ${NC}[b] Volver                              ${CYAN}${BOLD}║"
     echo -e "  ╚══════════════════════════════════════════╝${NC}"
     echo ""; echo -n "  Opción: "
@@ -1453,9 +1518,20 @@ submenu_claude() {
         done ;;
       4)
         clear; echo ""
-        _ensure_install_script "install_claude.sh" || { read -r _ < /dev/tty; continue; }
-        bash "$HOME/install_claude.sh" < /dev/tty
-        echo ""; read -r _ < /dev/tty ;;
+        # install_module ya hace todo: instalación fresca (elegir método,
+        # correr en silencio) o ya instalado (su propio menú actualizar/
+        # reinstalar, interactivo) — mismo camino que usa el menú principal
+        install_module "Claude Code" "claude"
+        ;;
+      u|U)
+        clear; echo ""
+        if [ "$_CC_METHOD" != "native" ]; then
+          echo -e "  ${YELLOW}[AVISO]${NC} Actualización solo disponible para Claude native (glibc)"
+          echo -e "  ${DIM}Legacy v2.1.111 está fijado — no se actualiza${NC}"
+          echo ""; read -r _ < /dev/tty; continue
+        fi
+        install_module "Claude Code" "claude"
+        ;;
       b|B|"") break ;;
     esac
   done
@@ -1473,7 +1549,7 @@ submenu_code_tools() {
 
   while true; do
     clear; echo ""
-    local CC_S CC_V CC_E OC_S OC_V OC_E OCL_S OCL_V OCL_E
+    local CC_S CC_V CC_E OC_S OC_V OC_E OCL_S OCL_V OCL_E CODEX_S CODEX_V CODEX_CH
 
     if [ "$_FIRST_RENDER" = "1" ] && [ -n "$_CC_INIT" ] && [ -n "$_OC_INIT" ]; then
       # Primer render: estados pre-calculados — sin check adicional
@@ -1489,7 +1565,8 @@ submenu_code_tools() {
         OC_V=$(echo "$_OC_CACHE" | cut -d'|' -f2); [ -z "$OC_V" ] && OC_V="?"
         OC_E="proot"
       fi
-      IFS='|' read -r OCL_S OCL_V OCL_E <<< "$(check_openclaude)"
+      IFS='|' read -r OCL_S OCL_V OCL_E <<< "$(check_antigravity)"
+      IFS='|' read -r CODEX_S CODEX_V CODEX_CH <<< "$(check_codex)"
       _FIRST_RENDER=0
     else
       # Renders siguientes: chequeo real — nativo primero
@@ -1501,7 +1578,8 @@ submenu_code_tools() {
         IFS='|' read -r OC_S OC_V OC_E <<< "$(check_opencode_cached)"
         [ "$OC_S" != "not_installed" ] && OC_E="proot"
       fi
-      IFS='|' read -r OCL_S OCL_V OCL_E <<< "$(check_openclaude)"
+      IFS='|' read -r OCL_S OCL_V OCL_E <<< "$(check_antigravity)"
+      IFS='|' read -r CODEX_S CODEX_V CODEX_CH <<< "$(check_codex)"
     fi
 
     # ── Pills y labels ────────────────────────────────────────
@@ -1540,16 +1618,21 @@ submenu_code_tools() {
       not_installed) OCL_PILL="${YELLOW}○ no instal${NC}"; OCL_V="──────────" ;;
       *)             OCL_PILL="${YELLOW}● ${OCL_S}${NC}" ;;
     esac
-    local _OCL_P; _OCL_P=$(get_reg openclaude provider)
-    case "$_OCL_P" in
-      ollama)     OCL_PROV_LABEL="${DIM}ollama local${NC}" ;;
-      anthropic)  OCL_PROV_LABEL="${DIM}anthropic${NC}" ;;
-      deepseek)   OCL_PROV_LABEL="${DIM}deepseek${NC}" ;;
-      openrouter) OCL_PROV_LABEL="${DIM}openrouter${NC}" ;;
-      manual)     OCL_PROV_LABEL="${DIM}manual${NC}" ;;
-      *)          OCL_PROV_LABEL="${DIM}sin conf.${NC}" ;;
-    esac
+    # Antigravity: autenticación Google — no hay proveedor configurable
+    OCL_PROV_LABEL="${DIM}Google Sign-In${NC}"
     [ "$OCL_S" = "not_installed" ] && OCL_PROV_LABEL=""
+
+    # ── Codex CLI ───────────────────────────────────────────────
+    local CODEX_PILL CODEX_CH_LABEL
+    case "$CODEX_S" in
+      ready)
+        CODEX_PILL="${GREEN}● listo   ${NC}"
+        CODEX_CH_LABEL="${DIM}${CODEX_CH} channel${NC}" ;;
+      not_installed)
+        CODEX_PILL="${YELLOW}○ no instal${NC}"; CODEX_V="──────────"; CODEX_CH_LABEL="" ;;
+      *)
+        CODEX_PILL="${YELLOW}● ${CODEX_S}${NC}"; CODEX_CH_LABEL="" ;;
+    esac
 
     echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
     echo    "  ║  ◆ CODE TOOLS                           ║"
@@ -1564,8 +1647,11 @@ submenu_code_tools() {
     printf  "  ║  ${NC}[2] OpenCode     %b  %b${CYAN}${BOLD}║\n" "$OC_PILL" "${NC}→ submenú${CYAN}${BOLD}"
     printf  "  ║      ${NC}v%-6s  %b${CYAN}${BOLD}%-16s║\n" "$OC_V" "$OC_MODE_LABEL" ""
     echo -e "  ║  ${DIM}──────────────────────────────────────${NC}${CYAN}${BOLD}║"
-    printf  "  ║  ${NC}[3] OpenClaude   %b  %b${CYAN}${BOLD}║\n" "$OCL_PILL" "${NC}→ submenú${CYAN}${BOLD}"
+    printf  "  ║  ${NC}[3] Antigravity  %b  %b${CYAN}${BOLD}║\n" "$OCL_PILL" "${NC}→ submenú${CYAN}${BOLD}"
     printf  "  ║      ${NC}v%-6s  %b${CYAN}${BOLD}%-16s║\n" "$OCL_V" "$OCL_PROV_LABEL" ""
+    echo -e "  ║  ${DIM}──────────────────────────────────────${NC}${CYAN}${BOLD}║"
+    printf  "  ║  ${NC}[4] Codex CLI    %b  %b${CYAN}${BOLD}║\n" "$CODEX_PILL" "${NC}→ submenú${CYAN}${BOLD}"
+    printf  "  ║      ${NC}v%-6s  %b${CYAN}${BOLD}%-16s║\n" "$CODEX_V" "$CODEX_CH_LABEL" ""
     echo    "  ╠══════════════════════════════════════════╣"
     echo -e "  ║  ${NC}[b] Volver al menú principal${CYAN}${BOLD}           ║"
     echo -e "  ╚══════════════════════════════════════════╝${NC}"
@@ -1601,12 +1687,139 @@ submenu_code_tools() {
         fi ;;
       3)
         if [ "$OCL_S" = "not_installed" ]; then
-          _ensure_install_script "install_openclaude.sh" && \
-            bash "$HOME/install_openclaude.sh" < /dev/tty
+          # install_module confirma antes de instalar (este call site no
+          # tenía ninguna confirmación propia) y corre en silencio
+          install_module "Antigravity CLI" "antigravity"
+        else
+          submenu_antigravity
+        fi ;;
+      4)
+        if [ "$CODEX_S" = "not_installed" ]; then
+          clear; echo ""
+          echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
+          echo    "  ║  ◆ CODEX CLI — OpenAI                   ║"
+          echo    "  ╠══════════════════════════════════════════╣"
+          echo -e "  ║  ${NC}¿Deseas instalar Codex CLI?              ${CYAN}${BOLD}║"
+          echo    "  ║                                           ║"
+          echo -e "  ║  ${NC}[1] Sí, instalar                         ${CYAN}${BOLD}║"
+          echo -e "  ║  ${NC}[2] No, cancelar                         ${CYAN}${BOLD}║"
+          echo -e "  ╚══════════════════════════════════════════╝${NC}"
+          echo ""; echo -n "  Opción: "
+          read -r _CDX_OPT < /dev/tty
+          if [ "$_CDX_OPT" = "1" ]; then
+            _run_installer "install_codex.sh" "Codex CLI"
+          fi
           echo ""; read -r _ < /dev/tty
         else
-          submenu_openclaude
+          submenu_codex
         fi ;;
+      b|B|"") break ;;
+    esac
+  done
+}
+
+# ════════════════════════════════════════════
+#  SUBMENÚ CODEX CLI
+#  OpenAI Codex CLI — npm global install
+#  Similar a submenu_claude()
+# ════════════════════════════════════════════
+submenu_codex() {
+  while true; do
+    clear; echo ""
+    local _CDX_VER _CDX_CH
+    _CDX_VER=$(get_reg codex version); [ -z "$_CDX_VER" ] && _CDX_VER="?"
+    _CDX_CH=$(get_reg codex channel);   [ -z "$_CDX_CH" ] && _CDX_CH="termux"
+    local _STATUS_LABEL="${DIM}npm v${_CDX_VER}  (${_CDX_CH} channel)${NC}"
+
+    echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
+    echo    "  ║  ◆ CODEX CLI — OpenAI                    ║"
+    echo    "  ╠══════════════════════════════════════════╣"
+    printf  "  ║  ${NC}%b${CYAN}${BOLD}%-*s║\n" "$_STATUS_LABEL" "$((40 - ${#_CDX_VER} - ${#_CDX_CH} - 5))" ""
+    echo    "  ╠══════════════════════════════════════════╣"
+    echo -e "  ║  ${NC}[1] Abrir Codex en directorio actual     ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[2] Abrir en proyecto                    ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[3] Gestionar proyectos                  ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[4] Login (codex login)                  ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[u] Actualizar (npm update)              ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[i] Reinstalar / cambiar canal           ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[b] Volver                               ${CYAN}${BOLD}║"
+    echo -e "  ╚══════════════════════════════════════════╝${NC}"
+    echo ""; echo -n "  Opción: "
+    read -r OPT < /dev/tty
+
+    case "$OPT" in
+      1)
+        clear
+        echo -e "\n  ${CYAN}Abriendo Codex CLI en $(pwd)...${NC}\n"
+        codex ;;
+      2)
+        clear; echo ""
+        mkdir -p "$HOME/proyectos"
+        mapfile -t PROJS < <(ls -1 "$HOME/proyectos/" 2>/dev/null)
+        echo -e "  ${CYAN}Proyectos en ~/proyectos/:${NC}"; echo ""
+        local IDX=1
+        [ ${#PROJS[@]} -gt 0 ] \
+          && for p in "${PROJS[@]}"; do printf "    [%d] %s\n" "$IDX" "$p"; IDX=$((IDX+1)); done \
+          || echo "    (ninguno)"
+        echo ""; echo "    [m] Ruta manual  [d] Download  [b] Volver"
+        echo ""; echo -n "  Elige: "
+        read -r PCHOICE < /dev/tty
+        local TARGET_DIR=""
+        case "$PCHOICE" in
+          m|M) echo -n "  Ruta: "; read -r TARGET_DIR < /dev/tty ;;
+          d|D)
+            mapfile -t DL_DIRS < <(find /storage/emulated/0/Download \
+              -maxdepth 1 -mindepth 1 -type d 2>/dev/null | xargs -I{} basename {})
+            [ ${#DL_DIRS[@]} -eq 0 ] && { echo "    (ninguna)"; read -r _ < /dev/tty; continue; }
+            for i in "${!DL_DIRS[@]}"; do printf "    [%d] %s\n" "$((i+1))" "${DL_DIRS[$i]}"; done
+            echo ""; echo -n "  Número: "; read -r DCHOICE < /dev/tty
+            if [[ "$DCHOICE" =~ ^[0-9]+$ ]] && [ "$DCHOICE" -ge 1 ] && \
+               [ "$DCHOICE" -le "${#DL_DIRS[@]}" ]; then
+              local DNAME="${DL_DIRS[$((DCHOICE-1))]}"
+              local LINK_DST="$HOME/proyectos/${DNAME}"
+              [ ! -e "$LINK_DST" ] && \
+                ln -s "/storage/emulated/0/Download/${DNAME}" "$LINK_DST" 2>/dev/null && \
+                echo -e "  ${GREEN}[OK]${NC} Symlink creado"
+              TARGET_DIR="$LINK_DST"
+            fi ;;
+          b|B|"") continue ;;
+          *)
+            if [[ "$PCHOICE" =~ ^[0-9]+$ ]] && [ "$PCHOICE" -ge 1 ] && \
+               [ "$PCHOICE" -le "${#PROJS[@]}" ]; then
+              TARGET_DIR="$HOME/proyectos/${PROJS[$((PCHOICE-1))]}"
+            fi ;;
+        esac
+        [ -z "$TARGET_DIR" ] && { echo ""; read -r _ < /dev/tty; continue; }
+        echo ""
+        echo -e "  ${CYAN}Abriendo Codex CLI en ${TARGET_DIR}...${NC}\n"
+        cd "$TARGET_DIR" && codex
+        cd "$OLDPWD" ;;
+      3)
+        clear; echo ""
+        echo -e "  ${CYAN}Proyectos en ~/proyectos/:${NC}"; echo ""
+        ls -1 "$HOME/proyectos/" 2>/dev/null \
+          && echo "" \
+          || echo "    (ninguno)"
+        echo -e "  ${DIM}Crea proyectos con: mkdir -p ~/proyectos/<nombre>${NC}"
+        echo ""; read -r _ < /dev/tty ;;
+      4)
+        clear; echo ""
+        echo -e "  ${CYAN}Iniciando sesión en Codex CLI...${NC}"; echo ""
+        echo -e "  ${DIM}Se abrirá el navegador para autenticarte.${NC}"; echo ""
+        codex login < /dev/tty
+        echo ""; echo -e "  ${GREEN}[OK]${NC} Proceso de login completado"
+        echo ""; read -r _ < /dev/tty ;;
+      u|U)
+        clear; echo ""
+        _run_installer "install_codex.sh" "Codex CLI" CODEX_MODE=update
+        echo ""; read -r _ < /dev/tty ;;
+      i|I)
+        clear; echo ""
+        # install_codex.sh ya tiene su propio menú "Reinstalar / cambiar
+        # canal" cuando detecta que ya está instalado — antes se
+        # reimplementaba acá el mismo menú
+        install_module "Codex CLI" "codex"
+        ;;
       b|B|"") break ;;
     esac
   done
@@ -2190,384 +2403,12 @@ print('ok')
       # ── Instalar / actualizar ────────────────────────────────
       8)
         clear; echo ""
-        _ensure_install_script "install_opencode.sh" && \
-          bash "$HOME/install_opencode.sh" < /dev/tty
+        _run_installer "install_opencode.sh" "OpenCode"
         echo ""; read -r _ < /dev/tty ;;
 
       b|B|"") break ;;
     esac
   done
-}
-
-# ════════════════════════════════════════════
-#  SUBMENÚ OPENCLAUDE
-# ════════════════════════════════════════════
-submenu_openclaude() {
-  local OCL_PROJ_DIR="$HOME/proyectos"
-  while true; do
-    clear; echo ""
-    local _OCL_VER; _OCL_VER=$(get_reg openclaude version)
-    [ -z "$_OCL_VER" ] && _OCL_VER="?"
-    local _OCL_PROV; _OCL_PROV=$(get_reg openclaude provider)
-    [ -z "$_OCL_PROV" ] && _OCL_PROV="sin conf."
-    local _OCL_MODEL; _OCL_MODEL=$(get_reg openclaude model)
-    [ -z "$_OCL_MODEL" ] && _OCL_MODEL="—"
-
-    echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
-    echo    "  ║  ◆ OPENCLAUDE                           ║"
-    echo    "  ╠══════════════════════════════════════════╣"
-    printf  "  ║  ${NC}v%-6s  proveedor: %-18s${CYAN}${BOLD}║\n" "$_OCL_VER" "$_OCL_PROV"
-    printf  "  ║  ${NC}modelo: %-32s${CYAN}${BOLD}║\n" "${_OCL_MODEL:0:32}"
-    echo    "  ╠══════════════════════════════════════════╣"
-    echo -e "  ║  ${NC}[1] Abrir en directorio actual          ${CYAN}${BOLD}║"
-    echo -e "  ║  ${NC}[2] Abrir en proyecto                   ${CYAN}${BOLD}║"
-    echo -e "  ║  ${NC}[3] Gestionar proyectos                 ${CYAN}${BOLD}║"
-    echo -e "  ║  ${NC}[4] Cambiar proveedor / modelo          ${CYAN}${BOLD}║"
-    echo -e "  ║  ${NC}[5] Ver configuración actual            ${CYAN}${BOLD}║"
-    echo -e "  ║  ${NC}[6] Instalar / reinstalar               ${CYAN}${BOLD}║"
-    echo -e "  ║  ${NC}[b] Volver                              ${CYAN}${BOLD}║"
-    echo -e "  ╚══════════════════════════════════════════╝${NC}"
-    echo ""; echo -n "  Opción: "
-    read -r OPT < /dev/tty
-
-    case "$OPT" in
-      1)
-        clear; echo ""
-        echo -e "  ${CYAN}Abriendo OpenClaude en $(pwd)...${NC}"
-        echo -e "  ${DIM}Proveedor: $_OCL_PROV · Modelo: $_OCL_MODEL${NC}"; echo ""
-        _ocl_apply_env
-        openclaude ;;
-      2)
-        clear; echo ""
-        mkdir -p "$OCL_PROJ_DIR"
-        mapfile -t PROJS < <(ls -1 "$OCL_PROJ_DIR/" 2>/dev/null)
-        echo -e "  ${CYAN}Proyectos en ~/proyectos/:${NC}"; echo ""
-        local IDX=1
-        [ ${#PROJS[@]} -gt 0 ] \
-          && for p in "${PROJS[@]}"; do printf "    [%d] %s\n" "$IDX" "$p"; IDX=$((IDX+1)); done \
-          || echo "    (ninguno)"
-        echo ""; echo "    [m] Ruta manual  [d] Download  [b] Volver"
-        echo ""; echo -n "  Elige: "
-        read -r PCHOICE < /dev/tty
-        local TARGET_DIR=""
-        case "$PCHOICE" in
-          m|M) echo -n "  Ruta: "; read -r TARGET_DIR < /dev/tty ;;
-          d|D)
-            mapfile -t DL_DIRS < <(find /storage/emulated/0/Download \
-              -maxdepth 1 -mindepth 1 -type d 2>/dev/null | xargs -I{} basename {})
-            [ ${#DL_DIRS[@]} -eq 0 ] && { echo "    (ninguna)"; read -r _ < /dev/tty; continue; }
-            for i in "${!DL_DIRS[@]}"; do printf "    [%d] %s\n" "$((i+1))" "${DL_DIRS[$i]}"; done
-            echo ""; echo -n "  Número: "; read -r DCHOICE < /dev/tty
-            if [[ "$DCHOICE" =~ ^[0-9]+$ ]] && [ "$DCHOICE" -ge 1 ] && \
-               [ "$DCHOICE" -le "${#DL_DIRS[@]}" ]; then
-              local DNAME="${DL_DIRS[$((DCHOICE-1))]}"
-              local LINK_DST="$HOME/proyectos/${DNAME}"
-              [ ! -e "$LINK_DST" ] && \
-                ln -s "/storage/emulated/0/Download/${DNAME}" "$LINK_DST" 2>/dev/null && \
-                echo -e "  ${GREEN}[OK]${NC} Symlink creado"
-              TARGET_DIR="$LINK_DST"
-            fi ;;
-          b|B|"") continue ;;
-          *)
-            [[ "$PCHOICE" =~ ^[0-9]+$ ]] && [ "$PCHOICE" -ge 1 ] && \
-            [ "$PCHOICE" -le "${#PROJS[@]}" ] && \
-              TARGET_DIR="$OCL_PROJ_DIR/${PROJS[$((PCHOICE-1))]}" ;;
-        esac
-        if [ -n "$TARGET_DIR" ] && [ -d "$TARGET_DIR" ]; then
-          echo -e "\n  ${CYAN}Abriendo en $TARGET_DIR...${NC}\n"
-          cd "$TARGET_DIR" || true
-          _ocl_apply_env
-          openclaude
-        elif [ -n "$TARGET_DIR" ]; then
-          echo -e "  ${RED}[ERROR]${NC} No existe: $TARGET_DIR"
-          read -r _ < /dev/tty
-        fi ;;
-      3)
-        while true; do
-          clear; echo ""
-          echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
-          echo    "  ║  ◆ OPENCLAUDE — Proyectos               ║"
-          echo    "  ╠══════════════════════════════════════════╣"
-          echo -e "  ║  ${NC}[1] Listar  [2] Nuevo symlink  [3] Borrar${CYAN}${BOLD}║"
-          echo -e "  ║  ${NC}[b] Volver${CYAN}${BOLD}                             ║"
-          echo -e "  ╚══════════════════════════════════════════╝${NC}"
-          echo ""; echo -n "  Opción: "; read -r GOPT < /dev/tty
-          case "$GOPT" in
-            1)
-              clear; echo ""
-              echo -e "  ${BOLD}Proyectos en ~/proyectos/:${NC}"; echo ""
-              mkdir -p "$HOME/proyectos"
-              ls "$HOME/proyectos/" 2>/dev/null | grep -q . \
-                && ls -la "$HOME/proyectos/" \
-                || echo -e "  ${DIM}(vacío)${NC}"
-              echo ""; read -r _ < /dev/tty ;;
-            2)
-              clear; echo ""
-              mapfile -t DL_DIRS < <(find /storage/emulated/0/Download \
-                -maxdepth 1 -mindepth 1 -type d 2>/dev/null | xargs -I{} basename {})
-              [ ${#DL_DIRS[@]} -eq 0 ] && {
-                echo -e "  ${YELLOW}No hay carpetas en Download${NC}"
-                read -r _ < /dev/tty; continue
-              }
-              for i in "${!DL_DIRS[@]}"; do
-                local LDST="$HOME/proyectos/${DL_DIRS[$i]}"
-                [ -L "$LDST" ] \
-                  && printf "    [%d] %s ${DIM}(ya existe)${NC}\n" "$((i+1))" "${DL_DIRS[$i]}" \
-                  || printf "    [%d] %s\n" "$((i+1))" "${DL_DIRS[$i]}"
-              done
-              echo ""; echo -n "  Número: "; read -r DCHOICE < /dev/tty
-              if [[ "$DCHOICE" =~ ^[0-9]+$ ]] && [ "$DCHOICE" -ge 1 ] && \
-                 [ "$DCHOICE" -le "${#DL_DIRS[@]}" ]; then
-                local DNAME="${DL_DIRS[$((DCHOICE-1))]}"
-                local LSRC="/storage/emulated/0/Download/${DNAME}"
-                local LDST2="$HOME/proyectos/${DNAME}"
-                mkdir -p "$HOME/proyectos"
-                [ -L "$LDST2" ] \
-                  && echo -e "  ${YELLOW}[AVISO]${NC} Ya existe: ~/proyectos/${DNAME}" \
-                  || { ln -s "$LSRC" "$LDST2" 2>/dev/null \
-                    && echo -e "  ${GREEN}[OK]${NC} Symlink creado" \
-                    || echo -e "  ${RED}[ERROR]${NC}"; }
-              fi
-              echo ""; read -r _ < /dev/tty ;;
-            3)
-              clear; echo ""
-              mkdir -p "$HOME/proyectos"
-              mapfile -t LINKS < <(find "$HOME/proyectos" -maxdepth 1 -type l 2>/dev/null \
-                | xargs -I{} basename {})
-              [ ${#LINKS[@]} -eq 0 ] && {
-                echo -e "  ${DIM}Sin symlinks${NC}"; read -r _ < /dev/tty; continue
-              }
-              for i in "${!LINKS[@]}"; do printf "    [%d] %s\n" "$((i+1))" "${LINKS[$i]}"; done
-              echo ""; echo -n "  Número: "; read -r LCHOICE < /dev/tty
-              if [[ "$LCHOICE" =~ ^[0-9]+$ ]] && [ "$LCHOICE" -ge 1 ] && \
-                 [ "$LCHOICE" -le "${#LINKS[@]}" ]; then
-                local LNAME="${LINKS[$((LCHOICE-1))]}"
-                echo -n "  ¿Eliminar ~/proyectos/${LNAME}? (s/n): "
-                read -r LCONFIRM < /dev/tty
-                [ "$LCONFIRM" = "s" ] || [ "$LCONFIRM" = "S" ] && {
-                  rm "$HOME/proyectos/$LNAME" \
-                    && echo -e "  ${GREEN}[OK]${NC} Eliminado" \
-                    || echo -e "  ${RED}[ERROR]${NC}"
-                }
-              fi
-              echo ""; read -r _ < /dev/tty ;;
-            b|B|"") break ;;
-          esac
-        done ;;
-      4) _ocl_select_provider ;;
-      5)
-        clear; echo ""
-        echo -e "  ${CYAN}${BOLD}Configuración OpenClaude${NC}"; echo ""
-        local BASE_URL API_KEY MODEL USE_OAI
-        BASE_URL=$(grep "^export OPENAI_BASE_URL=" "$HOME/.bashrc" 2>/dev/null | tail -1 | cut -d'=' -f2-)
-        API_KEY=$(grep  "^export OPENAI_API_KEY="  "$HOME/.bashrc" 2>/dev/null | tail -1 | cut -d'=' -f2-)
-        MODEL=$(grep    "^export OPENAI_MODEL="    "$HOME/.bashrc" 2>/dev/null | tail -1 | cut -d'=' -f2-)
-        USE_OAI=$(grep  "^export CLAUDE_CODE_USE_OPENAI=" "$HOME/.bashrc" 2>/dev/null | tail -1 | cut -d'=' -f2-)
-        echo -e "  CLAUDE_CODE_USE_OPENAI : ${USE_OAI:-no configurado}"
-        echo -e "  OPENAI_BASE_URL        : ${BASE_URL:-no configurado}"
-        if [ -n "$API_KEY" ]; then
-          echo -e "  OPENAI_API_KEY         : ${API_KEY:0:8}..."
-        else
-          echo -e "  OPENAI_API_KEY         : no configurado"
-        fi
-        echo -e "  OPENAI_MODEL           : ${MODEL:-no configurado}"
-        echo ""
-        echo -e "  ${DIM}Registry — proveedor: $_OCL_PROV · modelo: $_OCL_MODEL${NC}"
-        echo ""; read -r _ < /dev/tty ;;
-      6)
-        clear; echo ""
-        _ensure_install_script "install_openclaude.sh" || { read -r _ < /dev/tty; continue; }
-        bash "$HOME/install_openclaude.sh" < /dev/tty
-        echo ""; read -r _ < /dev/tty ;;
-      b|B|"") break ;;
-    esac
-  done
-}
-
-# ── Escribe proveedor en .bashrc y registry ───────────────
-_ocl_write_provider() {
-  local prov_name="$1" base_url="$2" api_key="$3" model="$4"
-  # Limpiar config anterior
-  grep -v "# openclaude-provider\|CLAUDE_CODE_USE_OPENAI\|OPENAI_BASE_URL\|OPENAI_API_KEY\|OPENAI_MODEL" \
-    "$HOME/.bashrc" > "$HOME/.bashrc.tmp" 2>/dev/null && mv "$HOME/.bashrc.tmp" "$HOME/.bashrc"
-  {
-    echo ""
-    echo "# openclaude-provider"
-    echo "export CLAUDE_CODE_USE_OPENAI=1"
-    echo "export OPENAI_BASE_URL=${base_url}"
-    [ -n "$api_key" ] && echo "export OPENAI_API_KEY=${api_key}"
-    echo "export OPENAI_MODEL=${model}"
-  } >> "$HOME/.bashrc"
-  # Aplicar en sesión actual
-  export CLAUDE_CODE_USE_OPENAI=1
-  export OPENAI_BASE_URL="$base_url"
-  [ -n "$api_key" ] && export OPENAI_API_KEY="$api_key"
-  export OPENAI_MODEL="$model"
-  # Actualizar registry
-  grep -v "^openclaude\.provider\|^openclaude\.model" "$REGISTRY" \
-    > "$REGISTRY.tmp" 2>/dev/null && mv "$REGISTRY.tmp" "$REGISTRY"
-  {
-    echo "openclaude.provider=${prov_name}"
-    echo "openclaude.model=${model}"
-  } >> "$REGISTRY"
-  echo -e "  ${GREEN}[OK]${NC} Proveedor guardado: ${prov_name} · ${model}"
-}
-
-# ── Submenú interactivo de selección de proveedor ────────
-_ocl_select_provider() {
-  while true; do
-    clear; echo ""
-    local _CUR_PROV; _CUR_PROV=$(get_reg openclaude provider)
-    local _CUR_MODEL; _CUR_MODEL=$(get_reg openclaude model)
-    [ -z "$_CUR_PROV"  ] && _CUR_PROV="sin conf."
-    [ -z "$_CUR_MODEL" ] && _CUR_MODEL="—"
-    echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
-    echo    "  ║  ◆ OPENCLAUDE — Proveedor               ║"
-    echo    "  ╠══════════════════════════════════════════╣"
-    printf  "  ║  ${NC}Actual: %-33s${CYAN}${BOLD}║\n" "${_CUR_PROV} · ${_CUR_MODEL:0:20}"
-    echo    "  ╠══════════════════════════════════════════╣"
-    echo -e "  ║  ${NC}[1] Ollama local    ${DIM}(:11434 · gratis)${NC}${CYAN}${BOLD}     ║"
-    echo -e "  ║  ${NC}[2] Anthropic       ${DIM}(API key · Claude)${NC}${CYAN}${BOLD}    ║"
-    echo -e "  ║  ${NC}[3] DeepSeek        ${DIM}(API key · barato)${NC}${CYAN}${BOLD}    ║"
-    echo -e "  ║  ${NC}[4] OpenRouter      ${DIM}(API key · gratis)${NC}${CYAN}${BOLD}    ║"
-    echo -e "  ║  ${NC}[5] Manual          ${DIM}(URL + key + modelo)${NC}${CYAN}${BOLD}  ║"
-    echo -e "  ║  ${NC}[b] Volver                              ${CYAN}${BOLD}║"
-    echo -e "  ╚══════════════════════════════════════════╝${NC}"
-    echo ""; echo -n "  Proveedor: "
-    read -r POPT < /dev/tty
-
-    case "$POPT" in
-      1)
-        clear; echo ""
-        echo -e "  ${CYAN}Ollama local — modelos disponibles:${NC}"; echo ""
-        if ! curl -sf "http://127.0.0.1:11434" &>/dev/null; then
-          echo -e "  ${YELLOW}[AVISO]${NC} Ollama no responde en :11434"
-          echo -e "  ${DIM}Inícialo primero desde el menú Ollama${NC}"; echo ""
-        fi
-        mapfile -t _OL_MODELS < <(
-          curl -sf "http://127.0.0.1:11434/api/tags" 2>/dev/null | \
-          python3 -c "
-import sys,json
-try:
-  d=json.load(sys.stdin)
-  [print(m['name']) for m in d.get('models',[])]
-except: pass
-" 2>/dev/null)
-        if [ ${#_OL_MODELS[@]} -gt 0 ]; then
-          for i in "${!_OL_MODELS[@]}"; do
-            printf "    [%d] %s\n" "$((i+1))" "${_OL_MODELS[$i]}"
-          done
-          echo ""; echo -n "  Número o nombre del modelo: "
-          read -r _ML < /dev/tty
-          local _MODEL=""
-          if [[ "$_ML" =~ ^[0-9]+$ ]] && [ "$_ML" -ge 1 ] && \
-             [ "$_ML" -le "${#_OL_MODELS[@]}" ]; then
-            _MODEL="${_OL_MODELS[$((_ML-1))]}" 
-          else
-            _MODEL="$_ML"
-          fi
-        else
-          echo -e "  ${YELLOW}(ninguno instalado)${NC}  usa: ollama pull <modelo>"
-          echo -n "  Escribe el nombre del modelo: "
-          read -r _MODEL < /dev/tty
-        fi
-        [ -z "$_MODEL" ] && _MODEL="qwen2.5-coder:7b"
-        _ocl_write_provider "ollama" "http://localhost:11434/v1" "ollama" "$_MODEL"
-        echo ""; read -r _ < /dev/tty; break ;;
-      2)
-        clear; echo ""
-        echo -e "  ${CYAN}Anthropic — Claude API${NC}"; echo ""
-        echo -e "  ${DIM}Obtén tu key en: https://console.anthropic.com${NC}"; echo ""
-        echo -n "  API Key (sk-ant-...): "
-        read -r _KEY < /dev/tty
-        [ -z "$_KEY" ] && { echo -e "  ${YELLOW}[AVISO]${NC} Key vacía — cancelado"; echo ""; read -r _ < /dev/tty; continue; }
-        echo ""
-        echo "    [1] claude-sonnet-4-5       (recomendado)"
-        echo "    [2] claude-haiku-4-5        (rápido · bajo costo)"
-        echo "    [3] claude-opus-4-5         (más capaz)"
-        echo "    [4] otro (escribir nombre)"
-        echo ""; echo -n "  Modelo [Enter=1]: "
-        read -r _MO < /dev/tty
-        case "$_MO" in
-          2) _MODEL="claude-haiku-4-5" ;;
-          3) _MODEL="claude-opus-4-5" ;;
-          4) echo -n "  Nombre: "; read -r _MODEL < /dev/tty ;;
-          *) _MODEL="claude-sonnet-4-5" ;;
-        esac
-        _ocl_write_provider "anthropic" "https://api.anthropic.com/v1" "$_KEY" "$_MODEL"
-        echo ""; read -r _ < /dev/tty; break ;;
-      3)
-        clear; echo ""
-        echo -e "  ${CYAN}DeepSeek API${NC}"; echo ""
-        echo -e "  ${DIM}Obtén tu key en: https://platform.deepseek.com${NC}"; echo ""
-        echo -n "  API Key: "
-        read -r _KEY < /dev/tty
-        [ -z "$_KEY" ] && { echo -e "  ${YELLOW}[AVISO]${NC} Key vacía — cancelado"; echo ""; read -r _ < /dev/tty; continue; }
-        echo ""
-        echo "    [1] deepseek-chat           (recomendado)"
-        echo "    [2] deepseek-coder          (código)"
-        echo "    [3] deepseek-reasoner       (razonamiento)"
-        echo "    [4] otro (escribir nombre)"
-        echo ""; echo -n "  Modelo [Enter=1]: "
-        read -r _MO < /dev/tty
-        case "$_MO" in
-          2) _MODEL="deepseek-coder" ;;
-          3) _MODEL="deepseek-reasoner" ;;
-          4) echo -n "  Nombre: "; read -r _MODEL < /dev/tty ;;
-          *) _MODEL="deepseek-chat" ;;
-        esac
-        _ocl_write_provider "deepseek" "https://api.deepseek.com/v1" "$_KEY" "$_MODEL"
-        echo ""; read -r _ < /dev/tty; break ;;
-      4)
-        clear; echo ""
-        echo -e "  ${CYAN}OpenRouter${NC}"; echo ""
-        echo -e "  ${DIM}Crea cuenta gratis: https://openrouter.ai${NC}"; echo ""
-        echo -n "  API Key (sk-or-...): "
-        read -r _KEY < /dev/tty
-        [ -z "$_KEY" ] && { echo -e "  ${YELLOW}[AVISO]${NC} Key vacía — cancelado"; echo ""; read -r _ < /dev/tty; continue; }
-        echo ""
-        echo "    [1] qwen/qwen3-coder:free        (gratis · 262K ctx)"
-        echo "    [2] deepseek/deepseek-chat:free   (gratis)"
-        echo "    [3] meta-llama/llama-3.3-70b-instruct:free"
-        echo "    [4] otro (escribir nombre)"
-        echo ""; echo -n "  Modelo [Enter=1]: "
-        read -r _MO < /dev/tty
-        case "$_MO" in
-          2) _MODEL="deepseek/deepseek-chat:free" ;;
-          3) _MODEL="meta-llama/llama-3.3-70b-instruct:free" ;;
-          4) echo -n "  Nombre: "; read -r _MODEL < /dev/tty ;;
-          *) _MODEL="qwen/qwen3-coder:free" ;;
-        esac
-        _ocl_write_provider "openrouter" "https://openrouter.ai/api/v1" "$_KEY" "$_MODEL"
-        echo ""; read -r _ < /dev/tty; break ;;
-      5)
-        clear; echo ""
-        echo -e "  ${CYAN}Manual — endpoint OpenAI-compatible${NC}"; echo ""
-        echo -n "  Base URL (ej: http://localhost:11434/v1): "
-        read -r _URL < /dev/tty
-        [ -z "$_URL" ] && { echo -e "  ${YELLOW}Cancelado${NC}"; echo ""; read -r _ < /dev/tty; continue; }
-        echo -n "  API Key (Enter si no aplica): "
-        read -r _KEY < /dev/tty
-        echo -n "  Modelo: "
-        read -r _MODEL < /dev/tty
-        [ -z "$_MODEL" ] && { echo -e "  ${YELLOW}[AVISO]${NC} Modelo vacío — cancelado"; echo ""; read -r _ < /dev/tty; continue; }
-        _ocl_write_provider "manual" "$_URL" "$_KEY" "$_MODEL"
-        echo ""; read -r _ < /dev/tty; break ;;
-      b|B|"") break ;;
-    esac
-  done
-}
-
-# ── Helper: aplicar variables de entorno del .bashrc antes de lanzar ──
-_ocl_apply_env() {
-  local _URL _KEY _MODEL
-  _URL=$(grep   "^export OPENAI_BASE_URL=" "$HOME/.bashrc" 2>/dev/null | tail -1 | cut -d'=' -f2-)
-  _KEY=$(grep   "^export OPENAI_API_KEY="  "$HOME/.bashrc" 2>/dev/null | tail -1 | cut -d'=' -f2-)
-  _MODEL=$(grep "^export OPENAI_MODEL="    "$HOME/.bashrc" 2>/dev/null | tail -1 | cut -d'=' -f2-)
-  [ -n "$_URL"   ] && export OPENAI_BASE_URL="$_URL"
-  [ -n "$_KEY"   ] && export OPENAI_API_KEY="$_KEY"
-  [ -n "$_MODEL" ] && export OPENAI_MODEL="$_MODEL"
-  export CLAUDE_CODE_USE_OPENAI=1
 }
 
 # ════════════════════════════════════════════
@@ -2591,6 +2432,8 @@ submenu_expo() {
     echo -e "  ║  ${NC}[5] Info / estado general${CYAN}${BOLD}              ║"
     echo -e "  ║  ${NC}[6] Configurar proyecto activo${CYAN}${BOLD}         ║"
     echo -e "  ║  ${NC}[7] Git push (proyecto activo)${CYAN}${BOLD}         ║"
+    echo -e "  ║  ${NC}[u] Actualizar EAS CLI${CYAN}${BOLD}                 ║"
+    echo -e "  ║  ${DIM}    npm install -g eas-cli@latest       ${CYAN}${BOLD}║"
     echo -e "  ║  ${NC}[b] Volver${CYAN}${BOLD}                             ║"
     echo -e "  ╚══════════════════════════════════════════╝${NC}"
     echo ""; echo -n "  Opción: "
@@ -2723,6 +2566,13 @@ submenu_expo() {
             || echo -e "  ${RED}[ERROR]${NC} Push falló."
         } || echo -e "  ${YELLOW}[AVISO]${NC} Nada nuevo para commitear."
         echo ""; read -r _ < /dev/tty ;;
+      u|U)
+        clear; echo ""
+        # install_expo.sh ya tiene su propio menú "ya instalado" con
+        # [1] Actualizar (npm install -g eas-cli@latest) — antes esto se
+        # reimplementaba acá directo, sin checkpoints ni registry
+        install_module "Expo/EAS CLI" "expo"
+        ;;
       b|B|"") break ;;
     esac
   done
@@ -2742,7 +2592,9 @@ TRADING_DB="$HOME/trading/db/senales.db"
 SPORTS_DB="$HOME/sports/db/bot_deportivo.db"
 DB_QUERY="$HOME/sports/scripts/db_query.py"
 PRONOSTICO="$HOME/sports/scripts/pronostico.py"
-PROOT_SPORTS_DB="$TERMUX_PREFIX/var/lib/proot-distro/installed-rootfs/debian/root/sports/db/bot_deportivo.db"
+# _proot_rootfs_path (definida en menu.sh) revisa layout moderno y legacy
+# de proot-distro — ver docs/PROOT.md (2026-07-26)
+PROOT_SPORTS_DB="$(_proot_rootfs_path debian 2>/dev/null)/root/sports/db/bot_deportivo.db"
 SPORTS_ENV="$HOME/sports/.env"
 ACT_RES="$HOME/sports/scripts/actualizar_resultados.py"
 
@@ -3089,7 +2941,9 @@ submenu_sqlite() {
         echo ""; read -r _ < /dev/tty ;;
       4)
         clear; echo ""
-        N8N_DB="$TERMUX_PREFIX/var/lib/proot-distro/installed-rootfs/debian/root/.n8n/database.sqlite"
+        # _proot_rootfs_path (definida en menu.sh) revisa layout moderno y
+        # legacy de proot-distro — ver docs/PROOT.md (2026-07-26)
+        N8N_DB="$(_proot_rootfs_path debian 2>/dev/null)/root/.n8n/database.sqlite"
         [ ! -f "$N8N_DB" ] && N8N_DB=$(find "$TERMUX_PREFIX" -name "database.sqlite" 2>/dev/null | head -1)
         if [ -z "$N8N_DB" ] || [ ! -f "$N8N_DB" ]; then
           echo -e "  ${YELLOW}[AVISO]${NC} BD n8n no encontrada (n8n debe haber corrido al menos una vez)."
@@ -3976,21 +3830,17 @@ submenu_python() {
 submenu_remote() {
   while true; do
     clear; echo ""
-    local SSH_ACTIVE=false DB_ACTIVE=false CF_ACTIVE=false
+    local SSH_ACTIVE=false CF_ACTIVE=false
     pgrep -x sshd &>/dev/null && SSH_ACTIVE=true
-    pgrep -f "dashboard_server.py" &>/dev/null && DB_ACTIVE=true
     pgrep -f "cloudflared.*ssh\|cloudflared.*access" &>/dev/null && CF_ACTIVE=true
     local IP; IP=$(_get_ip)
 
     echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════════╗"
-    echo    "  ║  ◎ REMOTE / SSH / DASHBOARD              ║"
+    echo    "  ║  ◎ REMOTE / SSH / CF-SSH                 ║"
     echo    "  ╠══════════════════════════════════════════════╣"
     $SSH_ACTIVE \
       && printf "  ║  SSH    ${GREEN}● activo${NC}${CYAN}${BOLD}  :8022  %-16s║\n" "${IP}" \
       || printf "  ║  SSH    ${YELLOW}○ listo ${NC}${CYAN}${BOLD}  :8022  %-16s║\n" ""
-    $DB_ACTIVE \
-      && printf "  ║  Dash   ${GREEN}● activo${NC}${CYAN}${BOLD}  :8080  %-16s║\n" "http://${IP}:8080" \
-      || printf "  ║  Dash   ${YELLOW}○ listo ${NC}${CYAN}${BOLD}  :8080                  ║\n"
     $CF_ACTIVE \
       && printf "  ║  CF-SSH ${GREEN}● activo${NC}${CYAN}${BOLD}  tunnel              ║\n" \
       || printf "  ║  CF-SSH ${YELLOW}○ listo ${NC}${CYAN}${BOLD}  tunnel              ║\n"
@@ -3999,9 +3849,6 @@ submenu_remote() {
     echo -e "  ║  ${NC}[1] Iniciar  [2] Detener  [3] Info       ${CYAN}${BOLD}║"
     echo -e "  ║  ${NC}[4] Agregar clave pública (PC)           ${CYAN}${BOLD}║"
     echo -e "  ║  ${NC}[5] Conexiones activas  [6] Contraseña   ${CYAN}${BOLD}║"
-    echo    "  ╠══════════════════════════════════════════════╣"
-    echo -e "  ║  ${BOLD}── Dashboard ──${CYAN}${BOLD}                          ║"
-    echo -e "  ║  ${NC}[7] Iniciar  [8] Detener  [9] URL        ${CYAN}${BOLD}║"
     echo    "  ╠══════════════════════════════════════════════╣"
     echo -e "  ║  ${BOLD}── Cloudflared SSH ──${CYAN}${BOLD}                    ║"
     echo -e "  ║  ${NC}[c] Iniciar  [x] Detener  [t] Token      ${CYAN}${BOLD}║"
@@ -4074,75 +3921,6 @@ submenu_remote() {
         clear; echo ""
         echo -e "  ${BOLD}Contraseña Termux (para SSH sin clave)${NC}"; echo ""
         passwd; echo ""; read -r _ < /dev/tty ;;
-      7)
-        clear; echo ""
-        if pgrep -f "dashboard_server.py" &>/dev/null; then
-          IP=$(_get_ip)
-          echo -e "  ${YELLOW}[AVISO]${NC} Dashboard ya corriendo."
-          echo -e "  URL: ${GREEN}http://${IP}:8080${NC}"
-        else
-          # Auto-crear dashboard_start.sh si no existe
-          if [ ! -f "$REMOTE_SCRIPTS/dashboard_start.sh" ] || \
-             ! grep -q "dashboard_server.py" "$REMOTE_SCRIPTS/dashboard_start.sh" 2>/dev/null; then
-            cat > "$REMOTE_SCRIPTS/dashboard_start.sh" << 'DBSTART'
-#!/data/data/com.termux/files/usr/bin/bash
-DB_SCRIPT="$HOME/scripts/remote/dashboard_server.py"
-_get_ip() {
-  local ip
-  ip=$(ifconfig 2>/dev/null | grep -A1 "netmask 255\.255\." | grep "inet " | grep -v "127\." | awk '{print $2}' | head -1)
-  echo "${ip:-localhost}"
-}
-[ ! -f "$DB_SCRIPT" ] && { echo "[ERROR] dashboard_server.py no encontrado"; exit 1; }
-pgrep -f "dashboard_server.py" &>/dev/null && { echo "[INFO] Ya corriendo en http://$(_get_ip):8080"; exit 0; }
-cd "$(dirname "$DB_SCRIPT")"
-nohup python3 "$DB_SCRIPT" > "$HOME/.dashboard.log" 2>&1 &
-sleep 2
-pgrep -f "dashboard_server.py" &>/dev/null \
-  && echo "[OK] Dashboard → http://$(_get_ip):8080" \
-  || { echo "[ERROR] No se pudo iniciar. Log: cat ~/.dashboard.log"; exit 1; }
-DBSTART
-            chmod +x "$REMOTE_SCRIPTS/dashboard_start.sh"
-          fi
-          if [ ! -f "$REMOTE_SCRIPTS/dashboard_server.py" ]; then
-            echo -e "  ${RED}[ERROR]${NC} dashboard_server.py no encontrado"
-            echo "  Instala Remote: menú → [6] → Instalar"
-            echo ""; read -r _ < /dev/tty; continue
-          fi
-          bash "$REMOTE_SCRIPTS/dashboard_start.sh" < /dev/null
-          sleep 2
-          if pgrep -f "dashboard_server.py" &>/dev/null; then
-            IP=$(_get_ip)
-            echo -e "  ${GREEN}[OK]${NC} Dashboard iniciado"
-            echo -e "  URL: ${GREEN}http://${IP}:8080${NC}"
-          else
-            echo -e "  ${RED}[ERROR]${NC} No se pudo iniciar"
-            echo "  Log: cat ~/.dashboard.log"
-          fi
-        fi
-        echo ""; read -r _ < /dev/tty ;;
-      8)
-        clear; echo ""
-        if pgrep -f "dashboard_server.py" &>/dev/null; then
-          pkill -f "dashboard_server.py" 2>/dev/null; sleep 1
-          pgrep -f "dashboard_server.py" &>/dev/null && pkill -9 -f "dashboard_server.py" 2>/dev/null
-          sleep 1
-          pgrep -f "dashboard_server.py" &>/dev/null \
-            && echo -e "  ${RED}[ERROR]${NC} No se pudo detener" \
-            || echo -e "  ${GREEN}[OK]${NC} Dashboard detenido"
-        else
-          echo -e "  ${GREEN}[OK]${NC} Dashboard detenido"
-        fi
-        echo ""; read -r _ < /dev/tty ;;
-      9)
-        clear; echo ""
-        IP=$(_get_ip)
-        echo -e "  ${BOLD}URLs Dashboard${NC}"; echo ""
-        echo -e "  WiFi:    ${GREEN}http://${IP}:8080${NC}"
-        echo -e "  Local:   ${GREEN}http://localhost:8080${NC}"; echo ""
-        pgrep -f "dashboard_server.py" &>/dev/null \
-          && echo -e "  Estado: ${GREEN}● activo${NC}" \
-          || echo -e "  Estado: ${YELLOW}○ detenido${NC} — usa [7] para iniciar"
-        echo ""; read -r _ < /dev/tty ;;
       c|C)
         clear; echo ""
         local CF_SSH_TOKEN="$HOME/.cf_ssh_token"
@@ -4417,12 +4195,10 @@ uninstall_module() {
     remote)
       pkill sshd 2>/dev/null || true
       tmux kill-session -t "cf-ssh-tunnel" 2>/dev/null || true
-      pkill -f "dashboard_server.py" 2>/dev/null || true
       pkg uninstall openssh -y 2>/dev/null || true
       rm -f "$REMOTE_SCRIPTS/ssh_start.sh" "$REMOTE_SCRIPTS/ssh_stop.sh" 2>/dev/null
-      rm -f "$REMOTE_SCRIPTS/dashboard_start.sh" "$REMOTE_SCRIPTS/dashboard_stop.sh" "$REMOTE_SCRIPTS/dashboard_server.py" 2>/dev/null
       rm -f "$HOME/.cf_ssh_token" "$HOME/.install_ssh_checkpoint" 2>/dev/null
-      grep -v "^ssh\.\|^dashboard\." "$REGISTRY" > "$REGISTRY.tmp" 2>/dev/null && mv "$REGISTRY.tmp" "$REGISTRY"
+      grep -v "^ssh\." "$REGISTRY" > "$REGISTRY.tmp" 2>/dev/null && mv "$REGISTRY.tmp" "$REGISTRY"
       echo -e "  ${GREEN}[OK]${NC} Remote desinstalado"
       echo -e "  ${DIM}(~/.ssh/authorized_keys conservado)${NC}" ;;
     opencode)
@@ -4507,16 +4283,12 @@ uninstall_module() {
       rm -f "$OPENCLAW_SCRIPTS/openclaw_start.sh"             "$OPENCLAW_SCRIPTS/openclaw_stop.sh"              "$OPENCLAW_SCRIPTS/openclaw_token.sh" 2>/dev/null || true
       grep -v "^openclaw\." "$REGISTRY" > "$REGISTRY.tmp" 2>/dev/null && mv "$REGISTRY.tmp" "$REGISTRY"
       echo -e "  ${GREEN}[OK]${NC} OpenClaw desinstalado" ;;
-    openclaude)
-      npm uninstall -g @gitlawb/openclaude 2>/dev/null || true
-      npm cache clean --force 2>/dev/null || true
-      grep -v "# openclaude-provider\|# openclaude-alias\|CLAUDE_CODE_USE_OPENAI\|OPENAI_BASE_URL\|OPENAI_API_KEY\|OPENAI_MODEL\|alias oc=" \
-        "$HOME/.bashrc" > "$HOME/.bashrc.tmp" 2>/dev/null && mv "$HOME/.bashrc.tmp" "$HOME/.bashrc"
-      rm -f "$HOME/.install_openclaude_checkpoint" 2>/dev/null || true
-      grep -v "^openclaude\." "$REGISTRY" > "$REGISTRY.tmp" 2>/dev/null \
+    antigravity)
+      rm -f "$TERMUX_PREFIX/bin/agy" "$TERMUX_PREFIX/bin/agy.va39" 2>/dev/null || true
+      rm -f "$HOME/.install_antigravity_checkpoint" "$HOME/.agy_install" 2>/dev/null || true
+      grep -v "^antigravity\." "$REGISTRY" > "$REGISTRY.tmp" 2>/dev/null \
         && mv "$REGISTRY.tmp" "$REGISTRY"
-      echo -e "  ${GREEN}[OK]${NC} OpenClaude desinstalado"
-      echo -e "  ${DIM}(Ollama conservado)${NC}" ;;
+      echo -e "  ${GREEN}[OK]${NC} Antigravity CLI desinstalado" ;;
     hermes)
       # Detener gateway si corre
       tmux kill-session -t "hermes-gw" 2>/dev/null || true
@@ -4617,6 +4389,364 @@ except Exception:
 }
 
 # ════════════════════════════════════════════
+#  HELPERS — openclaw.json backup + escritura
+# ════════════════════════════════════════════
+
+_CL_CFG_PATH="$HOME/.openclaw/openclaw.json"
+
+_cl_cfg_backup() {
+  local tag="${1:-change}"
+  local date_str
+  date_str=$(python3 -c "from datetime import datetime; print(datetime.now().strftime('%Y%m%d_%H%M%S'))")
+  local cfg="$HOME/.openclaw/openclaw.json"
+  [ -f "$cfg" ] || return 1
+  cp "$cfg" "${cfg}.bak" 2>/dev/null
+  cp "$cfg" "${cfg}.pre-${tag}-${date_str}" 2>/dev/null
+}
+
+_cl_cfg_get_primary() {
+  python3 -c "
+import json,os
+try:
+  d=json.load(open(os.path.expanduser('~/.openclaw/openclaw.json')))
+  print(d.get('agents',{}).get('defaults',{}).get('model',{}).get('primary','no configurado'))
+except: print('error')
+" 2>/dev/null
+}
+
+_cl_cfg_get_providers() {
+  python3 -c "
+import json,os
+try:
+  d=json.load(open(os.path.expanduser('~/.openclaw/openclaw.json')))
+  provs=list(d.get('models',{}).get('providers',{}).keys())
+  print(', '.join(provs) if provs else 'ninguno')
+except: print('?')
+" 2>/dev/null
+}
+
+# ════════════════════════════════════════════
+#  SUBMENÚ PROVEEDOR IA / MODELO
+# ════════════════════════════════════════════
+_submenu_cl_proveedor() {
+  local _CL_CFG="$HOME/.openclaw/openclaw.json"
+
+  while true; do
+    clear; echo ""
+    local _PRI _PROV
+    _PRI=$(_cl_cfg_get_primary)
+    _PROV=$(_cl_cfg_get_providers)
+
+    echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
+    echo    "  ║  ⬡ PROVEEDOR IA / MODELO               ║"
+    echo    "  ╠══════════════════════════════════════════╣"
+    printf  "  ║  ${NC}${DIM}Modelo activo : %-25s${CYAN}${BOLD}║\n" "$_PRI"
+    printf  "  ║  ${NC}${DIM}Providers     : %-25s${CYAN}${BOLD}║\n" "$_PROV"
+    echo    "  ╠══════════════════════════════════════════╣"
+    echo -e "  ║  ${NC}[1] Ver configuración completa         ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[2] Configurar Ollama local            ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[3] Proveedor personalizado            ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[4] Restaurar backup                  ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[5] Abrir wizard                      ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[b] Volver                            ${CYAN}${BOLD}║"
+    echo -e "  ╚══════════════════════════════════════════╝${NC}"
+    echo ""; echo -n "  Opción: "
+    read -r _POPT < /dev/tty
+
+    case "$_POPT" in
+
+      1)
+        clear; echo ""
+        echo -e "  ${CYAN}${BOLD}═══ Configuración actual openclaw.json ═══${NC}"; echo ""
+        python3 - "$_CL_CFG" << 'PYEOF'
+import json, os, sys
+cfg_path = sys.argv[1]
+try:
+    cfg = json.load(open(cfg_path))
+except Exception as e:
+    print(f'  [ERROR] {e}'); exit(1)
+pri = cfg.get('agents',{}).get('defaults',{}).get('model',{}).get('primary','no configurado')
+models_wl = list(cfg.get('agents',{}).get('defaults',{}).get('models',{}).keys())
+providers = cfg.get('models',{}).get('providers',{})
+cfg_dir = os.path.dirname(cfg_path)
+backups = sorted([f for f in os.listdir(cfg_dir)
+    if f.startswith('openclaw.json.pre-') or f == 'openclaw.json.bak'], reverse=True)
+print(f'  Modelo principal  : {pri}')
+print(f'  Whitelist agente  : {", ".join(models_wl) if models_wl else "(vacía)"}')
+print()
+print(f'  Providers configurados ({len(providers)}):')
+for pname, pdata in providers.items():
+    url = pdata.get('baseUrl','?')
+    api = pdata.get('api','?')
+    mods = [m.get('id','?') for m in pdata.get('models',[])]
+    print(f'    {pname} [{api}]')
+    print(f'      URL: {url}')
+    for m in mods:
+        print(f'      · {m}')
+print()
+if backups:
+    print(f'  Backups disponibles ({min(len(backups),5)}):')
+    for b in backups[:5]:
+        sz = os.path.getsize(os.path.join(cfg_dir, b))
+        print(f'    {b}  ({sz}B)')
+else:
+    print('  Sin backups aún')
+PYEOF
+        echo ""; read -r _ < /dev/tty ;;
+
+      2)
+        clear; echo ""
+        echo -e "  ${CYAN}${BOLD}═══ Configurar Ollama local ═══${NC}"; echo ""
+        if ! curl -sf --max-time 2 http://127.0.0.1:11434 &>/dev/null; then
+          echo -e "  ${RED}[ERROR]${NC} Ollama no responde en :11434"
+          echo -e "  ${DIM}Inícialo primero desde el menú Servicios → Ollama${NC}"
+          echo ""; read -r _ < /dev/tty; continue
+        fi
+        echo -e "  ${GREEN}[OK]${NC} Ollama activo"; echo ""
+
+        mapfile -t _OL_MODS < <(
+          curl -sf http://127.0.0.1:11434/api/tags 2>/dev/null |
+          python3 -c "
+import sys,json
+try:
+  d=json.load(sys.stdin)
+  [print(m['name']) for m in d.get('models',[])]
+except: pass
+" 2>/dev/null)
+
+        if [ ${#_OL_MODS[@]} -eq 0 ]; then
+          echo -e "  ${YELLOW}[AVISO]${NC} Ningún modelo instalado"
+          echo -e "  ${DIM}Descarga uno: ollama pull qwen3:8b${NC}"
+          echo ""; read -r _ < /dev/tty; continue
+        fi
+
+        echo -e "  Modelos instalados:"; echo ""
+        for i in "${!_OL_MODS[@]}"; do
+          printf "    ${BOLD}[%d]${NC} %s\n" "$((i+1))" "${_OL_MODS[$i]}"
+        done
+        echo ""
+        echo -n "  Número o nombre exacto (ENTER cancela): "
+        read -r _OL_IN < /dev/tty
+        [ -z "$_OL_IN" ] && { echo "  Cancelado."; echo ""; read -r _ < /dev/tty; continue; }
+
+        local _OL_MOD=""
+        if [[ "$_OL_IN" =~ ^[0-9]+$ ]] && \
+           [ "$_OL_IN" -ge 1 ] && [ "$_OL_IN" -le "${#_OL_MODS[@]}" ]; then
+          _OL_MOD="${_OL_MODS[$((_OL_IN-1))]}"
+        else
+          _OL_MOD="$_OL_IN"
+        fi
+
+        local _CTX=32768
+        case "$_OL_MOD" in
+          qwen3*|qwen2.5*|llama3*|gemma3*|phi*) _CTX=131072 ;;
+          deepseek*) _CTX=65536 ;;
+        esac
+
+        echo ""
+        echo -e "  Modelo: ${BOLD}${_OL_MOD}${NC}  (ctx: ${_CTX})"; echo ""
+        echo -e "  ¿Cómo usar este modelo?"; echo ""
+        echo -e "  ${BOLD}[1]${NC} Principal  — agente lo usa por defecto"
+        echo -e "  ${BOLD}[2]${NC} Secundario — disponible, sin cambiar el actual"
+        echo -e "  ${BOLD}[b]${NC} Cancelar"
+        echo ""; echo -n "  Opción: "
+        read -r _PRIO < /dev/tty
+        local _OL_PRIMARIO=false
+        case "$_PRIO" in
+          1) _OL_PRIMARIO=true ;;
+          2) _OL_PRIMARIO=false ;;
+          *) echo "  Cancelado."; echo ""; read -r _ < /dev/tty; continue ;;
+        esac
+
+        echo ""
+        echo -e "  ${BOLD}Resumen de cambios:${NC}"
+        echo -e "  · Provider ollama → http://127.0.0.1:11434/v1"
+        echo -e "  · Modelo: ollama/${_OL_MOD}"
+        $_OL_PRIMARIO \
+          && echo -e "  · ${GREEN}Será el modelo PRINCIPAL${NC}" \
+          || echo -e "  · Secundario — modelo actual sin cambios"
+        echo ""; echo -n "  ¿Confirmar? (s/n): "
+        read -r _CONF < /dev/tty
+        [ "$_CONF" != "s" ] && [ "$_CONF" != "S" ] && {
+          echo "  Cancelado."; echo ""; read -r _ < /dev/tty; continue; }
+
+        echo ""
+        _cl_cfg_backup "ollama"
+        local _PRIM_PY="False"
+        $_OL_PRIMARIO && _PRIM_PY="True"
+        python3 - "$_CL_CFG" "$_OL_MOD" "$_CTX" "$_PRIM_PY" << 'PYEOF'
+import json, os, sys
+from datetime import datetime
+cfg_path, model_id, ctx, primario = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4]=='True'
+model_full = f'ollama/{model_id}'
+with open(cfg_path) as f: cfg = json.load(f)
+cfg.setdefault('models',{}).setdefault('providers',{})['ollama'] = {
+    'baseUrl':'http://127.0.0.1:11434/v1','api':'openai-completions','apiKey':'ollama-local',
+    'models':[{'id':model_id,'name':model_id,'reasoning':False,'input':['text'],
+               'cost':{'input':0,'output':0,'cacheRead':0,'cacheWrite':0},
+               'contextWindow':ctx,'maxTokens':8192}]}
+cfg.setdefault('agents',{}).setdefault('defaults',{}).setdefault('models',{})[model_full] = {}
+if primario:
+    cfg['agents']['defaults'].setdefault('model',{})['primary'] = model_full
+cfg.setdefault('meta',{})['lastTouchedAt'] = datetime.now().strftime('%Y-%m-%dT%H:%M:%S.000Z')
+tmp = cfg_path + '.tmp'
+with open(tmp,'w') as f: json.dump(cfg, f, indent=2)
+os.replace(tmp, cfg_path)
+print('ok')
+PYEOF
+        if [ $? -eq 0 ]; then
+          echo -e "  ${GREEN}[OK]${NC} Ollama/${_OL_MOD} configurado"
+          $_OL_PRIMARIO && echo -e "  ${GREEN}[OK]${NC} Modelo principal → ollama/${_OL_MOD}"
+          echo -e "  ${DIM}Reinicia el gateway con [1] para aplicar${NC}"
+        else
+          echo -e "  ${RED}[ERROR]${NC} Escritura fallida — backup en ${_CL_CFG}.bak"
+        fi
+        echo ""; read -r _ < /dev/tty ;;
+
+      3)
+        clear; echo ""
+        echo -e "  ${CYAN}${BOLD}═══ Proveedor personalizado ═══${NC}"; echo ""
+        echo -e "  ${DIM}Para APIs OpenAI-compatible: DeepSeek, LM Studio, etc.${NC}"
+        echo -e "  ${DIM}Para Gemini/Anthropic usa [5] wizard — requieren OAuth.${NC}"; echo ""
+        echo -n "  Nombre del provider (ej: deepseek): "
+        read -r _PROV_NAME < /dev/tty
+        [ -z "$_PROV_NAME" ] && { echo "  Cancelado."; echo ""; read -r _ < /dev/tty; continue; }
+        echo -n "  Base URL (ej: https://api.deepseek.com/v1): "
+        read -r _PROV_URL < /dev/tty
+        [ -z "$_PROV_URL" ] && { echo "  Cancelado."; echo ""; read -r _ < /dev/tty; continue; }
+        echo -n "  API Key: "
+        read -r _PROV_KEY < /dev/tty
+        [ -z "$_PROV_KEY" ] && { echo "  Cancelado."; echo ""; read -r _ < /dev/tty; continue; }
+        echo -n "  ID del modelo (ej: deepseek-coder-v2): "
+        read -r _PROV_MOD < /dev/tty
+        [ -z "$_PROV_MOD" ] && { echo "  Cancelado."; echo ""; read -r _ < /dev/tty; continue; }
+        echo -n "  Context window (ENTER = 32768): "
+        read -r _PROV_CTX < /dev/tty
+        [[ "$_PROV_CTX" =~ ^[0-9]+$ ]] || _PROV_CTX=32768
+        echo ""
+        echo -e "  ¿Cómo usar este modelo?"
+        echo -e "  ${BOLD}[1]${NC} Principal   ${BOLD}[2]${NC} Secundario   ${BOLD}[b]${NC} Cancelar"
+        echo -n "  Opción: "
+        read -r _PPRIO < /dev/tty
+        local _PPRIM=false
+        case "$_PPRIO" in
+          1) _PPRIM=true ;;
+          2) _PPRIM=false ;;
+          *) echo "  Cancelado."; echo ""; read -r _ < /dev/tty; continue ;;
+        esac
+        echo ""
+        echo -e "  ${BOLD}Resumen:${NC}"
+        echo -e "  · Provider: ${_PROV_NAME}  URL: ${_PROV_URL}"
+        echo -e "  · Modelo: ${_PROV_MOD}  ctx: ${_PROV_CTX}"
+        $_PPRIM \
+          && echo -e "  · ${GREEN}Será el modelo PRINCIPAL${NC}" \
+          || echo -e "  · Secundario"
+        echo ""; echo -n "  ¿Confirmar? (s/n): "
+        read -r _PCONF < /dev/tty
+        [ "$_PCONF" != "s" ] && [ "$_PCONF" != "S" ] && {
+          echo "  Cancelado."; echo ""; read -r _ < /dev/tty; continue; }
+        echo ""
+        _cl_cfg_backup "custom-${_PROV_NAME}"
+        local _PP="False"; $_PPRIM && _PP="True"
+        python3 - "$_CL_CFG" "$_PROV_NAME" "$_PROV_URL" "$_PROV_KEY" \
+                   "$_PROV_MOD" "$_PROV_CTX" "$_PP" << 'PYEOF'
+import json, os, sys
+from datetime import datetime
+cfg_path,pname,purl,pkey,mid,ctx,primario = sys.argv[1:]
+ctx=int(ctx); primario=(primario=='True'); mfull=f'{pname}/{mid}'
+with open(cfg_path) as f: cfg=json.load(f)
+cfg.setdefault('models',{}).setdefault('providers',{})[pname]={
+    'baseUrl':purl,'api':'openai-completions','apiKey':pkey,
+    'models':[{'id':mid,'name':mid,'reasoning':False,'input':['text'],
+               'cost':{'input':0,'output':0,'cacheRead':0,'cacheWrite':0},
+               'contextWindow':ctx,'maxTokens':8192}]}
+cfg.setdefault('agents',{}).setdefault('defaults',{}).setdefault('models',{})[mfull]={}
+if primario: cfg['agents']['defaults'].setdefault('model',{})['primary']=mfull
+cfg.setdefault('meta',{})['lastTouchedAt']=datetime.now().strftime('%Y-%m-%dT%H:%M:%S.000Z')
+tmp=cfg_path+'.tmp'
+with open(tmp,'w') as f: json.dump(cfg,f,indent=2)
+os.replace(tmp,cfg_path); print('ok')
+PYEOF
+        [ $? -eq 0 ] \
+          && { echo -e "  ${GREEN}[OK]${NC} Provider '${_PROV_NAME}' configurado"
+               $_PPRIM && echo -e "  ${GREEN}[OK]${NC} Modelo principal → ${_PROV_NAME}/${_PROV_MOD}"
+               echo -e "  ${DIM}Reinicia el gateway para aplicar${NC}"; } \
+          || echo -e "  ${RED}[ERROR]${NC} Escritura fallida — backup en ${_CL_CFG}.bak"
+        echo ""; read -r _ < /dev/tty ;;
+
+      4)
+        clear; echo ""
+        echo -e "  ${CYAN}${BOLD}═══ Restaurar backup ═══${NC}"; echo ""
+        local _CFG_DIR; _CFG_DIR=$(dirname "$_CL_CFG")
+        mapfile -t _BAKS < <(
+          ls -t "$_CFG_DIR"/openclaw.json.pre-* \
+                "$_CFG_DIR/openclaw.json.bak" 2>/dev/null | head -10)
+        if [ ${#_BAKS[@]} -eq 0 ]; then
+          echo -e "  ${YELLOW}[AVISO]${NC} No hay backups disponibles"
+          echo -e "  ${DIM}Se crean automáticamente al modificar el config${NC}"
+          echo ""; read -r _ < /dev/tty; continue
+        fi
+        echo -e "  Backups disponibles:"; echo ""
+        for i in "${!_BAKS[@]}"; do
+          local _BSZ; _BSZ=$(wc -c < "${_BAKS[$i]}" 2>/dev/null)
+          printf "    ${BOLD}[%d]${NC} %s  ${DIM}(%s bytes)${NC}\n" \
+            "$((i+1))" "$(basename "${_BAKS[$i]}")" "$_BSZ"
+        done
+        echo ""; echo -n "  Número a restaurar (ENTER cancela): "
+        read -r _BAK_IN < /dev/tty
+        [ -z "$_BAK_IN" ] && { echo "  Cancelado."; echo ""; read -r _ < /dev/tty; continue; }
+        if ! [[ "$_BAK_IN" =~ ^[0-9]+$ ]] || \
+           [ "$_BAK_IN" -lt 1 ] || [ "$_BAK_IN" -gt "${#_BAKS[@]}" ]; then
+          echo -e "  ${RED}[ERROR]${NC} Número inválido"
+          echo ""; read -r _ < /dev/tty; continue
+        fi
+        local _BAK_FILE="${_BAKS[$((_BAK_IN-1))]}"
+        echo ""
+        echo -e "  ${YELLOW}[AVISO]${NC} Se restaurará: $(basename $_BAK_FILE)"
+        echo -e "  ${YELLOW}[AVISO]${NC} Config actual → .bak antes de restaurar"
+        python3 -c "import json,sys; json.load(open(sys.argv[1]))" \
+          "$_BAK_FILE" 2>/dev/null || {
+          echo -e "  ${RED}[ERROR]${NC} Backup inválido (JSON roto) — no se restaura"
+          echo ""; read -r _ < /dev/tty; continue; }
+        echo ""; echo -n "  ¿Confirmar restauración? (s/n): "
+        read -r _RCONF < /dev/tty
+        [ "$_RCONF" != "s" ] && [ "$_RCONF" != "S" ] && {
+          echo "  Cancelado."; echo ""; read -r _ < /dev/tty; continue; }
+        cp "$_CL_CFG" "${_CL_CFG}.bak" 2>/dev/null
+        cp "$_BAK_FILE" "$_CL_CFG" \
+          && { echo -e "  ${GREEN}[OK]${NC} Config restaurada"
+               echo -e "  ${DIM}Reinicia el gateway para aplicar${NC}"; } \
+          || echo -e "  ${RED}[ERROR]${NC} No se pudo restaurar"
+        echo ""; read -r _ < /dev/tty ;;
+
+      5)
+        clear; echo ""
+        echo -e "  ${CYAN}${BOLD}═══ Wizard de OpenClaw ═══${NC}"; echo ""
+        echo -e "  ${YELLOW}${BOLD}⚠ El wizard puede sobreescribir tu config actual${NC}"; echo ""
+        local _PRI_W; _PRI_W=$(_cl_cfg_get_primary)
+        echo -e "  Config actual: ${BOLD}${_PRI_W:-no configurado}${NC}"
+        echo ""
+        _cl_cfg_backup "pre-wizard"
+        echo -e "  ${GREEN}[OK]${NC} Backup automático creado"
+        echo -e "  ${DIM}Si algo sale mal → usa [4] Restaurar backup${NC}"
+        echo ""; echo -n "  ¿Continuar? (s/n): "
+        read -r _WCONF < /dev/tty
+        [ "$_WCONF" != "s" ] && [ "$_WCONF" != "S" ] && {
+          echo "  Cancelado."; echo ""; read -r _ < /dev/tty; continue; }
+        echo ""
+        local _OLD_LD="${LD_PRELOAD:-}"; unset LD_PRELOAD
+        openclaw onboard < /dev/tty || \
+          echo -e "  ${YELLOW}[AVISO]${NC} Wizard terminó con error"
+        [ -n "$_OLD_LD" ] && export LD_PRELOAD="$_OLD_LD"
+        echo ""; read -r _ < /dev/tty ;;
+
+      b|B|"") break ;;
+    esac
+  done
+}
+
+
+# ════════════════════════════════════════════
 #  SUBMENÚ OPENCLAW NATIVO
 #  Para instalaciones con location=nativo_termux
 #  (glibc + npm — sin proot)
@@ -4646,6 +4776,16 @@ submenu_openclaw_native() {
 " "$_STATUS_LINE"
     [ -n "$_TOKEN" ] &&       printf "  ║  ${GREEN}${DIM}http://localhost:%-5s/#token=***${NC}${CYAN}${BOLD}   ║
 " "$PORT"
+    # Mostrar modelo activo en el panel
+    local _CL_PRIMARY; _CL_PRIMARY=$(python3 -c "
+import json,os
+try:
+  d=json.load(open(os.path.expanduser('~/.openclaw/openclaw.json')))
+  print(d.get('agents',{}).get('defaults',{}).get('model',{}).get('primary','?'))
+except: print('?')
+" 2>/dev/null)
+    echo    "  ╠══════════════════════════════════════════╣"
+    printf  "  ║  ${NC}${DIM}Modelo: %-32s${CYAN}${BOLD}║\n" "$_CL_PRIMARY"
     echo    "  ╠══════════════════════════════════════════╣"
     echo -e "  ║  ${NC}[1] Iniciar / reiniciar gateway        ${CYAN}${BOLD}║"
     echo -e "  ║  ${NC}[2] Detener gateway                    ${CYAN}${BOLD}║"
@@ -4653,7 +4793,7 @@ submenu_openclaw_native() {
     echo -e "  ║  ${NC}[4] Mostrar URL con token              ${CYAN}${BOLD}║"
     echo -e "  ║  ${NC}[5] Abrir TUI (terminal)               ${CYAN}${BOLD}║"
     echo -e "  ║  ${NC}[6] Ejecutar openclaw onboard          ${CYAN}${BOLD}║"
-    echo -e "  ║  ${NC}[7] Configurar Ollama local            ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[7] Proveedor IA / Modelo              ${CYAN}${BOLD}║"
     echo -e "  ║  ${NC}[8] Instalar / actualizar              ${CYAN}${BOLD}║"
     echo -e "  ║  ${NC}[b] Volver                             ${CYAN}${BOLD}║"
     echo -e "  ╚══════════════════════════════════════════╝${NC}"
@@ -4716,61 +4856,15 @@ submenu_openclaw_native() {
         openclaw onboard < /dev/tty ||           echo -e "  ${YELLOW}[AVISO]${NC} onboard terminó con error — vuelve a intentar"
         [ -n "$_OLD_LD" ] && export LD_PRELOAD="$_OLD_LD"
         echo ""; read -r _ < /dev/tty ;;
-      7)
-        clear; echo ""
-        echo -e "  ${CYAN}Configurar Ollama local en OpenClaw${NC}"; echo ""
-        if ! curl -sf http://127.0.0.1:11434 &>/dev/null; then
-          echo -e "  ${YELLOW}[AVISO]${NC} Ollama no responde — inícialo primero desde [3]"
-          echo ""; read -r _ < /dev/tty; continue
-        fi
-        mapfile -t _OL_MODELS < <(
-          curl -sf http://127.0.0.1:11434/api/tags 2>/dev/null |           python3 -c "
-import sys,json
-try:
-  d=json.load(sys.stdin)
-  [print(m['name']) for m in d.get('models',[])]
-except: pass
-" 2>/dev/null)
-        if [ ${#_OL_MODELS[@]} -eq 0 ]; then
-          echo -e "  ${YELLOW}(ningún modelo instalado — usa ollama pull)${NC}"
-          echo ""; read -r _ < /dev/tty; continue
-        fi
-        for i in "${!_OL_MODELS[@]}"; do
-          printf "    ${BOLD}[%d]${NC} %s
-" "$((i+1))" "${_OL_MODELS[$i]}"
-        done
-        echo ""; echo -n "  Número o nombre (ENTER cancela): "
-        read -r _OL_INPUT < /dev/tty
-        [ -z "$_OL_INPUT" ] && { echo "  Cancelado"; echo ""; read -r _ < /dev/tty; continue; }
-        local _OL_MODEL=""
-        if [[ "$_OL_INPUT" =~ ^[0-9]+$ ]] && [ "$_OL_INPUT" -ge 1 ] &&            [ "$_OL_INPUT" -le "${#_OL_MODELS[@]}" ]; then
-          _OL_MODEL="${_OL_MODELS[$((OL_INPUT-1))]}"
-        else
-          _OL_MODEL="$_OL_INPUT"
-        fi
-        # Escribir en openclaw.json
-        python3 -c "
-import json, os
-cfg_path = os.path.expanduser('~/.openclaw/openclaw.json')
-try:
-    cfg = json.load(open(cfg_path))
-except Exception:
-    cfg = {}
-cfg.setdefault('models',{}).setdefault('providers',{})['ollama'] = {
-    'baseUrl':'http://127.0.0.1:11434','api':'ollama','apiKey':'OLLAMA_API_KEY',
-    'models':[{'id':'$_OL_MODEL','name':'$_OL_MODEL','reasoning':False,
-               'input':['text'],'cost':{'input':0,'output':0,'cacheRead':0,'cacheWrite':0},
-               'contextWindow':32768,'maxTokens':8192}]}
-with open(cfg_path,'w') as f:
-    json.dump(cfg, f, indent=2)
-print('ok')
-" 2>/dev/null &&           echo -e "  ${GREEN}[OK]${NC} Ollama/${_OL_MODEL} configurado — reinicia con [1]" ||           echo -e "  ${RED}[ERROR]${NC} No se pudo escribir config"
-        echo ""; read -r _ < /dev/tty ;;
+      7) _submenu_cl_proveedor; continue ;;
       8)
         clear; echo ""
-        _ensure_install_script "install_openclaw.sh" || { read -r _ < /dev/tty; continue; }
-        bash "$HOME/install_openclaw.sh" < /dev/tty
-        echo ""; read -r _ < /dev/tty ;;
+        # install_openclaw.sh ya muestra su propio menú Actualizar/Reinstalar/
+        # Cancelar cuando detecta que ya está instalado — install_module()
+        # reusa ese mismo camino (igual que el menú principal), sin duplicar
+        # el submenú acá
+        install_module "OpenClaw" "openclaw"
+        ;;
       b|B|"") break ;;
     esac
   done
@@ -5114,7 +5208,7 @@ submenu_hermes() {
       9)
         clear; echo ""
         _ensure_install_script "install_hermes.sh" || { read -r _ < /dev/tty; continue; }
-        bash "$HOME/install_hermes.sh" < /dev/tty
+        _run_installer "install_hermes.sh" "Hermes Agent"
         echo ""; read -r _ < /dev/tty ;;
 
       b|B|"") break ;;
@@ -5122,33 +5216,245 @@ submenu_hermes() {
   done
 }
 
+# ════════════════════════════════════════════
+#  SUBMENÚ ANTIGRAVITY CLI
+#  Nativo Termux — CLI instalado en $PREFIX/bin/agy
+# ════════════════════════════════════════════
+submenu_antigravity() {
+  local AGY_PROJ_DIR="$HOME/proyectos"
+  while true; do
+    clear; echo ""
+    local _AGY_VER
+    _AGY_VER=$(grep "^antigravity\.version=" "$REGISTRY" 2>/dev/null | cut -d= -f2)
+    [ -z "$_AGY_VER" ] && _AGY_VER=$(agy --version 2>/dev/null | grep -oE '[0-9]+\.[0-9.]+' | head -1)
+    [ -z "$_AGY_VER" ] && _AGY_VER="?"
+
+    echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
+    echo    "  ║  ✦ ANTIGRAVITY CLI · nativo             ║"
+    printf  "  ║  ${NC}v%-38s${CYAN}${BOLD}║\n" "$_AGY_VER"
+    echo    "  ╠══════════════════════════════════════════╣"
+    echo -e "  ║  ${NC}[1]  Abrir agy en este directorio       ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[2]  Abrir agy en proyecto              ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[3]  Gestionar proyectos                ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[4]  Actualizar (agy update)           ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[5]  Ver versión / info                ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[6]  Reinstalar                         ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[b]  Volver                             ${CYAN}${BOLD}║"
+    echo -e "  ╚══════════════════════════════════════════╝${NC}"
+    echo ""; echo -n "  Opción: "
+    read -r OPT < /dev/tty
+
+    case "$OPT" in
+      1)
+        clear; echo ""
+        echo -e "  ${CYAN}Abriendo Antigravity CLI en HOME...${NC}"
+        echo -e "  ${DIM}Ctrl+C o 'exit' para salir${NC}"; echo ""
+        cd ~ && agy < /dev/tty
+        echo ""; read -r _ < /dev/tty ;;
+      2)
+        clear; echo ""
+        mkdir -p "$AGY_PROJ_DIR"
+        mapfile -t PROJS < <(ls -1 "$AGY_PROJ_DIR/" 2>/dev/null)
+        echo -e "  ${CYAN}Proyectos en ~/proyectos/:${NC}"; echo ""
+        if [ ${#PROJS[@]} -gt 0 ]; then
+          local IDX=1
+          for p in "${PROJS[@]}"; do
+            printf "    [%d] %s\n" "$IDX" "$p"
+            IDX=$((IDX+1))
+          done
+        else
+          echo "    (ninguno — usa [3] para agregar)"
+        fi
+        echo ""; echo "    [m] Ruta manual  [b] Volver"
+        echo ""; echo -n "  Elige: "
+        read -r PCHOICE < /dev/tty
+        local TARGET_DIR=""
+        case "$PCHOICE" in
+          m|M) echo -n "  Ruta: "; read -r TARGET_DIR < /dev/tty ;;
+          b|B|"") continue ;;
+          *) [[ "$PCHOICE" =~ ^[0-9]+$ ]] && [ "$PCHOICE" -ge 1 ] && \
+             [ "$PCHOICE" -le "${#PROJS[@]}" ] && \
+             TARGET_DIR="$AGY_PROJ_DIR/${PROJS[$((PCHOICE-1))]}" ;;
+        esac
+        [ -z "$TARGET_DIR" ] && { echo ""; read -r _ < /dev/tty; continue; }
+        [ ! -d "$TARGET_DIR" ] && {
+          TARGET_DIR=$(readlink -f "$TARGET_DIR" 2>/dev/null || echo "$TARGET_DIR")
+          [ ! -d "$TARGET_DIR" ] && {
+            echo -e "  ${RED}[ERROR]${NC} No existe: $TARGET_DIR"
+            echo ""; read -r _ < /dev/tty; continue
+          }
+        }
+        clear; echo ""
+        echo -e "  ${CYAN}Abriendo agy en: ${TARGET_DIR}${NC}"; echo ""
+        cd "$TARGET_DIR" && agy < /dev/tty
+        echo ""; read -r _ < /dev/tty ;;
+      3)
+        while true; do
+          clear; echo ""
+          echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
+          echo    "  ║  ✦ ANTIGRAVITY — Proyectos             ║"
+          echo    "  ╠══════════════════════════════════════════╣"
+          echo -e "  ║  ${NC}[1] Listar  [2] Nuevo symlink  [3] Borrar${CYAN}${BOLD}║"
+          echo -e "  ║  ${NC}[b] Volver${CYAN}${BOLD}                             ║"
+          echo -e "  ╚══════════════════════════════════════════╝${NC}"
+          echo ""; echo -n "  Opción: "
+          read -r GOPT < /dev/tty
+          case "$GOPT" in
+            1)
+              clear; echo ""
+              mkdir -p "$AGY_PROJ_DIR"
+              mapfile -t LINKS < <(ls -1 "$AGY_PROJ_DIR/" 2>/dev/null)
+              if [ ${#LINKS[@]} -gt 0 ]; then
+                local _N=1
+                for _l in "${LINKS[@]}"; do
+                  local _TARGET
+                  _TARGET=$(readlink "$AGY_PROJ_DIR/$_l" 2>/dev/null || echo "?")
+                  printf "    [%d] %s → %s\n" "$_N" "$_l" "$_TARGET"
+                  _N=$((_N+1))
+                done
+              else
+                echo "    (vacío — usa [2] para agregar proyectos)"
+              fi
+              echo ""; read -r _ < /dev/tty ;;
+            2)
+              clear; echo ""
+              mkdir -p "$AGY_PROJ_DIR"
+              mapfile -t DL_DIRS < <(find /storage/emulated/0/Download \
+                -maxdepth 1 -mindepth 1 -type d 2>/dev/null | head -20)
+              if [ ${#DL_DIRS[@]} -gt 0 ]; then
+                echo -e "  ${CYAN}Directorios en Download:${NC}"; echo ""
+                local _N=1
+                for d in "${DL_DIRS[@]}"; do
+                  printf "    [%d] %s\n" "$_N" "$(basename "$d")"
+                  _N=$((_N+1))
+                done
+                echo ""
+              fi
+              echo -e "  ${DIM}[m] Ruta manual  [b] Volver${NC}"
+              echo ""; echo -n "  Elige: "
+              read -r CCHOICE < /dev/tty
+              local _SRC=""
+              case "$CCHOICE" in
+                m|M) echo -n "  Ruta: "; read -r _SRC < /dev/tty ;;
+                b|B|"") continue ;;
+                *) [[ "$CCHOICE" =~ ^[0-9]+$ ]] && [ "$CCHOICE" -ge 1 ] && \
+                   [ "$CCHOICE" -le "${#DL_DIRS[@]}" ] && \
+                   _SRC="${DL_DIRS[$((CCHOICE-1))]}" ;;
+              esac
+              [ -z "$_SRC" ] && continue
+              [ ! -d "$_SRC" ] && { echo -e "  ${RED}[ERROR]${NC} No existe"; echo ""; read -r _ < /dev/tty; continue; }
+              local _LNK="$AGY_PROJ_DIR/$(basename "$_SRC")"
+              [ -e "$_LNK" ] && { echo -e "  ${YELLOW}[AVISO]${NC} Ya existe: $_LNK"; echo ""; read -r _ < /dev/tty; continue; }
+              ln -s "$_SRC" "$_LNK"
+              echo -e "  ${GREEN}[OK]${NC} Symlink creado: $_LNK"
+              echo ""; read -r _ < /dev/tty ;;
+            3)
+              clear; echo ""
+              mapfile -t LINKS < <(ls -1 "$AGY_PROJ_DIR/" 2>/dev/null)
+              [ ${#LINKS[@]} -eq 0 ] && { echo -e "  ${DIM}Sin proyectos${NC}"; echo ""; read -r _ < /dev/tty; continue; }
+              local _N=1
+              for _l in "${LINKS[@]}"; do
+                printf "    [%d] %s\n" "$_N" "$_l"
+                _N=$((_N+1))
+              done
+              echo ""; echo -n "  Eliminar # (o ENTER): "
+              read -r DCHOICE < /dev/tty
+              [ -n "$DCHOICE" ] && [[ "$DCHOICE" =~ ^[0-9]+$ ]] && \
+                [ "$DCHOICE" -ge 1 ] && [ "$DCHOICE" -le "${#LINKS[@]}" ] && {
+                rm "$AGY_PROJ_DIR/${LINKS[$((DCHOICE-1))]}" 2>/dev/null \
+                  && echo -e "  ${GREEN}[OK]${NC} Eliminado" \
+                  || echo -e "  ${RED}[ERROR]${NC}"
+              }
+              echo ""; read -r _ < /dev/tty ;;
+            b|B|"") break ;;
+          esac
+        done ;;
+      4)
+        clear; echo ""
+        _ensure_install_script "install_antigravity.sh" || { read -r _ < /dev/tty; continue; }
+        AGY_MODE=update _run_installer "install_antigravity.sh" "Antigravity CLI (update)"
+        echo ""; read -r _ < /dev/tty ;;
+      5)
+        clear; echo ""
+        echo -e "  ${BOLD}Antigravity CLI${NC}"; echo ""
+        agy --version 2>/dev/null || echo -e "  ${YELLOW}No se pudo obtener versión${NC}"
+        echo ""
+        local _AGY_INFO
+        _AGY_INFO=$(grep "^antigravity\." "$REGISTRY" 2>/dev/null)
+        [ -n "$_AGY_INFO" ] && echo -e "  ${DIM}Registry:${NC}" && echo "$_AGY_INFO" | while IFS='=' read -r k v; do
+          printf "    %-20s = %s\n" "$k" "$v"
+        done
+        echo ""
+        echo -e "  Binario: $TERMUX_PREFIX/bin/agy"
+        [ -f "$TERMUX_PREFIX/bin/agy.va39" ] && echo -e "  Parche:  $TERMUX_PREFIX/bin/agy.va39 (VA39)"
+        echo ""; read -r _ < /dev/tty ;;
+      6)
+        clear; echo ""
+        echo -n "  ¿Reinstalar Antigravity CLI? (s/n): "
+        read -r _REINST < /dev/tty
+        if [ "$_REINST" = "s" ] || [ "$_REINST" = "S" ]; then
+          rm -f "$HOME/.install_antigravity_checkpoint"
+          _run_installer "install_antigravity.sh" "Antigravity CLI"
+        fi ;;
+      b|B|"") break ;;
+    esac
+  done
+}
+
+# Sufijo de variante para mostrar junto al nombre del módulo
+# (ej: " (proot)", " (udocker)", " (nativo)") — lee el registry,
+# probando primero el campo "mode" (usado por n8n) y luego
+# "location" (usado por opencode/openclaw/claude).
+_variant_suffix() {
+  local key="$1" v
+  v=$(get_reg "$key" "mode")
+  [ -z "$v" ] && v=$(get_reg "$key" "location")
+  case "$v" in
+    proot|proot_debian)   echo " (proot)" ;;
+    udocker)               echo " (udocker)" ;;
+    termux_native|native)  echo " (nativo)" ;;
+    "")                    echo "" ;;
+    *)                     echo " ($v)" ;;
+  esac
+}
+
 submenu_desinstalar() {
   while true; do
     clear; echo ""
+    echo -e "${DIM}  Estado actual (instalados):${NC}"
+    local _any_installed=false
+    for _m in n8n claude ollama expo python remote opencode openclaw antigravity hermes; do
+      if [ "$(get_reg "$_m" "installed")" = "true" ]; then
+        echo -e "    ${GREEN}✓${NC} ${_m}$(_variant_suffix "$_m")"
+        _any_installed=true
+      fi
+    done
+    $_any_installed || echo -e "    ${DIM}(sin datos en el registry — puede que igual esté instalado manualmente)${NC}"
+    echo ""
     echo -e "${RED}${BOLD}  ╔══════════════════════════════════════════╗"
     echo    "  ║  ⚠  Desinstalar módulo                  ║"
     echo    "  ╠══════════════════════════════════════════╣"
-    echo -e "  ║  ${NC}[1] n8n + proot    [2] Claude Code${RED}${BOLD}      ║"
+    echo -e "  ║  ${NC}[1] n8n             [2] Claude Code${RED}${BOLD}     ║"
     echo -e "  ║  ${NC}[3] Ollama         [4] Expo / EAS${RED}${BOLD}       ║"
     echo -e "  ║  ${NC}[5] Python         [6] Remote${RED}${BOLD}           ║"
     echo -e "  ║  ${NC}[7] OpenCode       [8] OpenClaw${RED}${BOLD}         ║"
-    echo -e "  ║  ${NC}[9] Distro Debian  [10] OpenClaude${RED}${BOLD}      ║"
+    echo -e "  ║  ${NC}[9] Distro Debian  [10] Antigravity${RED}${BOLD}     ║"
     echo -e "  ║  ${NC}[11] Hermes Agent${RED}${BOLD}                        ║"
     echo -e "  ║  ${NC}[b] Cancelar${RED}${BOLD}                            ║"
     echo -e "  ╚══════════════════════════════════════════╝${NC}"
     echo ""; echo -n "  Módulo: "; read -r OPT < /dev/tty
 
     case "$OPT" in
-      1)  uninstall_module "n8n"         "n8n + proot Debian"      ; break ;;
-      2)  uninstall_module "claude"      "Claude Code"              ; break ;;
+      1)  uninstall_module "n8n"         "n8n$(_variant_suffix "n8n")"          ; break ;;
+      2)  uninstall_module "claude"      "Claude Code$(_variant_suffix "claude")" ; break ;;
       3)  uninstall_module "ollama"      "Ollama"                   ; break ;;
       4)  uninstall_module "expo"        "Expo / EAS CLI"           ; break ;;
       5)  uninstall_module "python"      "Python + SQLite"          ; break ;;
       6)  uninstall_module "remote"      "Remote (SSH + Dashboard)" ; break ;;
-      7)  uninstall_module "opencode"    "OpenCode"                 ; break ;;
-      8)  uninstall_module "openclaw"    "OpenClaw"                 ; break ;;
+      7)  uninstall_module "opencode"    "OpenCode$(_variant_suffix "opencode")" ; break ;;
+      8)  uninstall_module "openclaw"    "OpenClaw$(_variant_suffix "openclaw")" ; break ;;
       9)  uninstall_module "proot"       "Distro Debian (rootfs)"   ; break ;;
-      10) uninstall_module "openclaude"  "OpenClaude"               ; break ;;
+      10) uninstall_module "antigravity" "Antigravity CLI"           ; break ;;
       11) uninstall_module "hermes"      "Hermes Agent"             ; break ;;
       b|B|"") break ;;
     esac

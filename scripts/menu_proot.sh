@@ -23,13 +23,22 @@
 # ============================================================
 
 # ════════════════════════════════════════════
+#  RUTAS
+# ════════════════════════════════════════════
+N8N_SCRIPTS="${SCRIPTS_DIR:-$HOME/scripts}/n8n"
+N8N_SCRIPTS_UDOCKER="${SCRIPTS_DIR:-$HOME/scripts}/n8n-udocker"
+
+# ════════════════════════════════════════════
 #  CHECK N8N
 # ════════════════════════════════════════════
 check_n8n() {
   [ "$(get_reg n8n installed)" = "true" ] || { echo "not_installed||"; return; }
   local ver; ver=$(get_reg n8n version)
-  tmux has-session -t "n8n-server" 2>/dev/null \
-    && echo "running|${ver}|" || echo "stopped|${ver}|"
+  local mode; mode=$(get_reg n8n mode)
+  local session="n8n-server"
+  [ "$mode" = "udocker" ] && session="n8n-udocker"
+  tmux has-session -t "$session" 2>/dev/null \
+    && echo "running|${ver}|${mode}" || echo "stopped|${ver}|${mode}"
 }
 
 # ════════════════════════════════════════════
@@ -317,17 +326,244 @@ check_openclaw_cached() {
 }
 
 # ════════════════════════════════════════════
+#  REPARAR SCRIPTS N8N — udocker
+# ════════════════════════════════════════════
+_repair_n8n_udocker() {
+  mkdir -p "$N8N_SCRIPTS_UDOCKER"
+
+  # --- start.sh (n8n + cloudflared nativo) ---
+  echo -n "  Creando start.sh... "
+  cat > "$N8N_SCRIPTS_UDOCKER/start.sh" << 'STARTSCRIPT'
+#!/data/data/com.termux/files/usr/bin/bash
+TERMUX_HOME="${HOME:-/data/data/com.termux/files/home}"
+TERMUX_PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
+N8N_DATA_ABS="${TERMUX_HOME}/n8n-udocker"
+SESSION="n8n-udocker"
+CF_LOG="$TERMUX_HOME/.cf_ud_url.log"
+
+export UDOCKER_USE_PROOT_EXECUTABLE="${TERMUX_PREFIX}/bin/proot"
+
+echo "[*] Iniciando n8n (udocker) + tunnel en sesión tmux..."
+echo "    HOME:   $TERMUX_HOME"
+echo "    Datos:  $N8N_DATA_ABS"
+echo "    Puerto: 5678"
+echo ""
+
+[ ! -d "$N8N_DATA_ABS" ] && mkdir -p "$N8N_DATA_ABS" && chmod 777 "$N8N_DATA_ABS"
+[ ! -w "$N8N_DATA_ABS" ] && { echo "[ERROR] No se puede escribir en $N8N_DATA_ABS"; exit 1; }
+
+if ! command -v udocker &>/dev/null; then echo "[ERROR] udocker no instalado."; exit 1; fi
+
+if ! udocker inspect n8n &>/dev/null; then
+  echo "[AVISO] Contenedor 'n8n' no existe — creando..."
+  if udocker images 2>/dev/null | grep -q "n8nio/n8n"; then
+    udocker create --name=n8n n8nio/n8n || { echo "[ERROR] No se pudo crear contenedor"; exit 1; }
+  else
+    echo "[ERROR] Imagen n8nio/n8n no encontrada."; exit 1
+  fi
+fi
+
+udocker setup --execmode=P2 n8n 2>/dev/null || true
+
+tmux kill-session -t "$SESSION" 2>/dev/null || true
+sleep 1
+tmux new-session -d -s "$SESSION" -n "n8n"
+
+tmux send-keys -t "$SESSION:n8n" \
+  "udocker run --publish=5678:5678 --volume=${N8N_DATA_ABS}:/home/node/.n8n --env=N8N_HOST=0.0.0.0 --env=N8N_PORT=5678 --env=N8N_SECURE_COOKIE=false --env=N8N_RUNNERS_ENABLED=true --env=NODE_FUNCTION_ALLOW_BUILTIN=child_process,fs,path,os --env=NODE_FUNCTION_ALLOW_EXTERNAL=* n8n" Enter
+
+echo "[*] Esperando que n8n arranque..."
+HEALTH_OK=false
+for i in $(seq 1 30); do
+  sleep 2
+  if curl -sf --max-time 2 http://localhost:5678/healthz >/dev/null 2>&1; then
+    HEALTH_OK=true; echo "[OK] n8n respondió en ${i} intentos (~$((i*2))s)"; break
+  fi
+  printf "  [%2d/30] Esperando n8n...\r" "$i"
+done
+[ "$HEALTH_OK" = false ] && echo "" && echo "[AVISO] n8n no respondió en 60s."
+
+echo "[*] Iniciando cloudflared nativo (Termux)..."
+if ! command -v cloudflared &>/dev/null; then
+  echo "[AVISO] cloudflared no instalado. n8n solo accesible en localhost:5678"
+else
+  tmux new-window -t "$SESSION" -n "tunnel"
+  if [ -f "$TERMUX_HOME/.cf_token" ] && [ -s "$TERMUX_HOME/.cf_token" ]; then
+    CF_TOK=$(cat "$TERMUX_HOME/.cf_token")
+    tmux send-keys -t "$SESSION:tunnel" \
+      "cloudflared tunnel --no-autoupdate run --token ${CF_TOK} 2>&1 | tee ${CF_LOG}" Enter
+    echo "    Modo: URL FIJA (token cloudflare)"
+  else
+    tmux send-keys -t "$SESSION:tunnel" \
+      "cloudflared tunnel --no-autoupdate --url http://localhost:5678 2>&1 | tee ${CF_LOG}" Enter
+    echo "    Modo: URL temporal"
+  fi
+  echo "[*] Obteniendo URL cloudflared (20 seg)..."; sleep 20
+fi
+
+IP=$(ip addr show wlan0 2>/dev/null | grep "inet " | awk '{print $2}' | cut -d'/' -f1)
+CF_URL=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' "$CF_LOG" 2>/dev/null | head -1)
+[ -n "$CF_URL" ] && echo "$CF_URL" > "$TERMUX_HOME/.last_cf_url"
+
+echo ""
+echo "╔════════════════════════════════════════╗"
+echo "║   n8n ACTIVO · udocker + tunnel       ║"
+echo "╠════════════════════════════════════════╣"
+echo "║  Local:    http://localhost:5678       ║"
+[ -n "$IP" ]     && echo "║  WiFi PC:  http://$IP:5678"
+[ -n "$CF_URL" ] && echo "║  Internet: $CF_URL" || echo "║  Internet: (tunnel iniciando...)"
+[ -f "$TERMUX_HOME/.cf_token" ] && echo "║  Modo:     URL FIJA ✓"
+echo "╚════════════════════════════════════════╝"
+STARTSCRIPT
+  chmod +x "$N8N_SCRIPTS_UDOCKER/start.sh"
+  echo -e "${GREEN}✓${NC}"
+
+  # --- start_local.sh (n8n sin tunnel) ---
+  echo -n "  Creando start_local.sh... "
+  cat > "$N8N_SCRIPTS_UDOCKER/start_local.sh" << 'LOCALSCRIPT'
+#!/data/data/com.termux/files/usr/bin/bash
+TERMUX_HOME="${HOME:-/data/data/com.termux/files/home}"
+TERMUX_PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
+N8N_DATA_ABS="${TERMUX_HOME}/n8n-udocker"
+SESSION="n8n-udocker"
+
+export UDOCKER_USE_PROOT_EXECUTABLE="${TERMUX_PREFIX}/bin/proot"
+
+echo "[*] Iniciando n8n (udocker, localhost sin tunnel)..."
+echo "    HOME:   $TERMUX_HOME"
+echo "    Datos:  $N8N_DATA_ABS"
+echo "    Puerto: 5678"
+echo ""
+
+[ ! -d "$N8N_DATA_ABS" ] && mkdir -p "$N8N_DATA_ABS" && chmod 777 "$N8N_DATA_ABS"
+[ ! -w "$N8N_DATA_ABS" ] && { echo "[ERROR] No se puede escribir en $N8N_DATA_ABS"; exit 1; }
+
+if ! command -v udocker &>/dev/null; then echo "[ERROR] udocker no instalado."; exit 1; fi
+
+if ! udocker inspect n8n &>/dev/null; then
+  echo "[AVISO] Contenedor 'n8n' no existe — creando..."
+  if udocker images 2>/dev/null | grep -q "n8nio/n8n"; then
+    udocker create --name=n8n n8nio/n8n || { echo "[ERROR] No se pudo crear contenedor"; exit 1; }
+  else
+    echo "[ERROR] Imagen n8nio/n8n no encontrada."; exit 1
+  fi
+fi
+
+udocker setup --execmode=P2 n8n 2>/dev/null || true
+
+tmux kill-session -t "$SESSION" 2>/dev/null || true
+sleep 1
+tmux new-session -d -s "$SESSION" -n "n8n"
+
+tmux send-keys -t "$SESSION:n8n" \
+  "udocker run --publish=5678:5678 --volume=${N8N_DATA_ABS}:/home/node/.n8n --env=N8N_HOST=0.0.0.0 --env=N8N_PORT=5678 --env=N8N_SECURE_COOKIE=false --env=N8N_RUNNERS_ENABLED=true --env=NODE_FUNCTION_ALLOW_BUILTIN=child_process,fs,path,os --env=NODE_FUNCTION_ALLOW_EXTERNAL=* n8n" Enter
+
+echo "[*] Esperando que n8n arranque..."
+HEALTH_OK=false
+for i in $(seq 1 30); do
+  sleep 2
+  if curl -sf --max-time 2 http://localhost:5678/healthz >/dev/null 2>&1; then
+    HEALTH_OK=true; echo "[OK] n8n respondió en ${i} intentos (~$((i*2))s)"; break
+  fi
+  printf "  [%2d/30] Esperando n8n...\r" "$i"
+done
+[ "$HEALTH_OK" = false ] && echo "" && echo "[AVISO] n8n no respondió en 60s."
+
+IP=$(ip addr show wlan0 2>/dev/null | grep "inet " | awk '{print $2}' | cut -d'/' -f1)
+
+echo ""
+echo "╔════════════════════════════════════════╗"
+echo "║   n8n ACTIVO · localhost (udocker)    ║"
+echo "╠════════════════════════════════════════╣"
+echo "║  Local:    http://localhost:5678       ║"
+[ -n "$IP" ]     && echo "║  WiFi PC:  http://$IP:5678"
+echo "║  Modo: LOCAL (sin cloudflare)         ║"
+echo "╚════════════════════════════════════════╝"
+LOCALSCRIPT
+  chmod +x "$N8N_SCRIPTS_UDOCKER/start_local.sh"
+  echo -e "${GREEN}✓${NC}"
+
+  # --- stop.sh ---
+  echo -n "  Creando stop.sh... "
+  cat > "$N8N_SCRIPTS_UDOCKER/stop.sh" << 'STOPSCRIPT'
+#!/data/data/com.termux/files/usr/bin/bash
+echo "[*] Deteniendo n8n (udocker) + cloudflared..."
+pkill -f "cloudflared tunnel" 2>/dev/null || true
+tmux kill-session -t "n8n-udocker" 2>/dev/null || true
+tmux kill-session -t "n8n-cf-tunnel" 2>/dev/null || true
+sleep 2
+rm -f "$HOME/.cf_ud_url.log" 2>/dev/null
+rm -f "$HOME/.last_cf_url" 2>/dev/null
+echo "[OK] n8n udocker detenido."
+STOPSCRIPT
+  chmod +x "$N8N_SCRIPTS_UDOCKER/stop.sh"
+  echo -e "${GREEN}✓${NC}"
+
+  # --- status.sh ---
+  echo -n "  Creando status.sh... "
+  cat > "$N8N_SCRIPTS_UDOCKER/status.sh" << 'STATUSSCRIPT'
+#!/data/data/com.termux/files/usr/bin/bash
+TERMUX_HOME="${HOME:-/data/data/com.termux/files/home}"
+echo ""
+echo "╔══════════════════════════════════════╗"
+echo "║   termux-ai-stack · n8n (udocker)   ║"
+echo "╠══════════════════════════════════════╣"
+tmux has-session -t "n8n-udocker" 2>/dev/null \
+  && echo "║  n8n:    ● ACTIVO                    ║" \
+  || echo "║  n8n:    ○ DETENIDO                  ║"
+echo "║  Puerto: 5678                        ║"
+echo "║  Datos:  $TERMUX_HOME/n8n-udocker"
+_CF_URL=$(cat "$TERMUX_HOME/.last_cf_url" 2>/dev/null)
+[ -z "$_CF_URL" ] && _CF_URL=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' "$TERMUX_HOME/.cf_ud_url.log" 2>/dev/null | head -1)
+[ -n "$_CF_URL" ] && echo "║  URL:    $_CF_URL"
+[ -f "$TERMUX_HOME/.cf_token" ] && echo "║  Tunnel: URL FIJA (token ✓)          ║"
+_IP=$(ip addr show wlan0 2>/dev/null | grep "inet " | awk '{print $2}' | cut -d'/' -f1)
+[ -n "$_IP" ] && echo "║  WiFi:   http://$_IP:5678"
+echo "╚══════════════════════════════════════╝"
+echo ""
+STATUSSCRIPT
+  chmod +x "$N8N_SCRIPTS_UDOCKER/status.sh"
+  echo -e "${GREEN}✓${NC}"
+
+  # --- log.sh ---
+  echo -n "  Creando log.sh... "
+  cat > "$N8N_SCRIPTS_UDOCKER/log.sh" << 'SCRIPT'
+#!/data/data/com.termux/files/usr/bin/bash
+tmux has-session -t "n8n-udocker" 2>/dev/null && \
+  tmux attach-session -t "n8n-udocker" || \
+  echo "[!] n8n udocker no está corriendo — ejecuta: n8n-ud-start"
+SCRIPT
+  chmod +x "$N8N_SCRIPTS_UDOCKER/log.sh"
+  echo -e "${GREEN}✓${NC}"
+
+  echo ""
+  echo -e "  ${GREEN}[OK]${NC} 5 scripts regenerados correctamente en ~/scripts/n8n-udocker/"
+  echo -e "  ${DIM}start · start_local · stop · status · log${NC}"
+}
+
+# ════════════════════════════════════════════
 #  REPARAR SCRIPTS N8N
-#  Regenera: start_servidor.sh, stop_servidor.sh,
-#  ver_url.sh, n8n_status.sh, n8n_log.sh,
-#  n8n_update.sh, n8n_backup.sh, cf_token.sh
-#  Destino: $N8N_SCRIPTS (~/scripts/n8n/)
+#  Uso: _n8n_repair_scripts [proot|udocker]
+#  proot → ~/scripts/n8n/
+#  udocker → ~/scripts/n8n-udocker/
 # ════════════════════════════════════════════
 _n8n_repair_scripts() {
+  local _mode="${1:-proot}"
+
   echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
-  echo    "  ║  ⬡ N8N — Reparar scripts de control    ║"
+  printf "  ║  ⬡ N8N — Reparar scripts [%-7s]║\n" "$_mode"
   echo -e "  ╚══════════════════════════════════════════╝${NC}"
   echo ""
+
+  if [ "$_mode" = "udocker" ]; then
+    _repair_n8n_udocker
+    return $?
+  fi
+
+  # Auto-detectar distro proot
+  if [ -z "$DISTRO_NAME" ]; then
+    DISTRO_NAME=$(proot-distro list 2>/dev/null | grep -E "^\s*\*?\s*(debian|ubuntu)" | awk '{print $NF}' | head -1)
+  fi
 
   echo -n "  Verificando n8n en proot Debian... "
   if ! proot-distro login "$DISTRO_NAME" -- bash -c 'command -v n8n' &>/dev/null 2>&1; then
@@ -430,6 +666,69 @@ echo "║  child_process: HABILITADO ✓           ║"
 echo "╚════════════════════════════════════════╝"
 SCRIPT
   chmod +x "$N8N_SCRIPTS/start_servidor.sh"
+  echo -e "${GREEN}✓${NC}"
+
+  # --- start_local.sh (n8n sin tunnel) ---
+  echo -n "  Creando start_local.sh... "
+  cat > "$N8N_SCRIPTS/start_local.sh" << SCRIPT
+#!/data/data/com.termux/files/usr/bin/bash
+# wake-lock auto — termux-ai-stack
+termux-wake-lock 2>/dev/null &
+
+SESSION="n8n-server"
+
+echo "[*] Iniciando n8n (localhost, sin tunnel)..."
+tmux kill-session -t "\$SESSION" 2>/dev/null || true
+sleep 1
+
+tmux new-session -d -s "\$SESSION" -n "n8n"
+
+N8N_CMD="export HOME=/root"
+N8N_CMD="\${N8N_CMD} && export NODE_FUNCTION_ALLOW_BUILTIN=child_process,fs,path,os"
+N8N_CMD="\${N8N_CMD} && export NODE_FUNCTION_ALLOW_EXTERNAL=*"
+N8N_CMD="\${N8N_CMD} && export N8N_HOST=0.0.0.0"
+N8N_CMD="\${N8N_CMD} && export N8N_PORT=5678"
+N8N_CMD="\${N8N_CMD} && export N8N_PROXY_HOPS=1"
+N8N_CMD="\${N8N_CMD} && export N8N_PROTOCOL=${_REPAIR_PROTO}"
+N8N_CMD="\${N8N_CMD} && export N8N_SECURE_COOKIE=false"
+N8N_CMD="\${N8N_CMD} && export N8N_RUNNERS_ENABLED=true"
+N8N_CMD="\${N8N_CMD} && export N8N_RUNNERS_HEARTBEAT_INTERVAL=300"
+N8N_CMD="\${N8N_CMD} && n8n start"
+
+tmux send-keys -t "\$SESSION:n8n" \
+  "proot-distro login "$DISTRO_NAME" -- bash -c '\${N8N_CMD}'" Enter
+
+echo "[*] Esperando que n8n inicie..."
+HEALTH_OK=false
+for i in \$(seq 1 30); do
+  sleep 2
+  if curl -sf --max-time 2 http://localhost:5678/healthz >/dev/null 2>&1; then
+    HEALTH_OK=true
+    echo "[OK] n8n respondió en \${i} intentos (~\$((i*2))s)"
+    break
+  fi
+  printf "  [%2d/30] Esperando n8n...\r" "\$i"
+done
+
+if [ "\$HEALTH_OK" = false ]; then
+  echo ""
+  echo "[AVISO] n8n no respondió en 60s."
+  echo "        Revisa logs: tmux attach -t \$SESSION"
+fi
+
+IP=\$(ifconfig 2>/dev/null | grep -A1 "netmask 255\.255\." | grep "inet " | grep -v "127\." | awk '{print \$2}' | head -1)
+[ -z "\$IP" ] && IP=\$(ifconfig 2>/dev/null | grep "inet " | grep -v "127\." | awk '{print \$2}' | head -1)
+
+echo ""
+echo "╔════════════════════════════════════════╗"
+echo "║   n8n ACTIVO · localhost (proot)       ║"
+echo "╠════════════════════════════════════════╣"
+echo "║  Teléfono: http://localhost:5678       ║"
+[ -n "\$IP" ]     && echo "║  WiFi PC:  http://\$IP:5678"
+echo "║  Modo: LOCAL (sin cloudflare)         ║"
+echo "╚════════════════════════════════════════╝"
+SCRIPT
+  chmod +x "$N8N_SCRIPTS/start_local.sh"
   echo -e "${GREEN}✓${NC}"
 
   # --- stop_servidor.sh ---
@@ -548,41 +847,126 @@ SCRIPT
   echo -e "${GREEN}✓${NC}"
 
   echo ""
-  echo -e "  ${GREEN}[OK]${NC} 8 scripts regenerados correctamente en ~/scripts/n8n/"
-  echo -e "  ${DIM}start · stop · url · status · log · update · backup · cf_token${NC}"
+  echo -e "  ${GREEN}[OK]${NC} 9 scripts regenerados correctamente en ~/scripts/n8n/"
+  echo -e "  ${DIM}start · start_local · stop · url · status · log · update · backup · cf_token${NC}"
 }
 
 # ════════════════════════════════════════════
 #  SUBMENÚ N8N
 # ════════════════════════════════════════════
+# _run_installer() usada en este archivo es la de menu_nativo.sh (silent+
+# spinner+log, corregida 2026-07-25) — antes había una copia duplicada acá
+# con el mismo nombre pero siempre foreground/sin log; se eliminó para que
+# no dependa del orden de carga entre menu_nativo.sh y menu_proot.sh.
+
+# ════════════════════════════════════════════
+#  SUBMENÚ N8N — UNIFICADO proot + udocker
+#  Detecta modo(s) instalado(s) automáticamente.
+#  Si ambos: mini-selector previo.
+#  Mismas opciones 1-9 para ambos modos.
+# ════════════════════════════════════════════
 submenu_n8n() {
-  local state="$1"
+  # Auto-detectar distro proot para scripts que lo necesiten
+  if [ -z "$DISTRO_NAME" ]; then
+    DISTRO_NAME=$(proot-distro list 2>/dev/null | grep -E "^\s*\*?\s*(debian|ubuntu)" | awk '{print $NF}' | head -1)
+  fi
   while true; do
     clear; echo ""
-    local _N8N_PROTO
-    _N8N_PROTO=$(cat "$HOME/.n8n_protocol" 2>/dev/null || echo "https")
+    local _MODE _VER _SESSION _IS_RUNNING
+    local _HAS_PROOT=false _HAS_UDOCKER=false
 
+    # ── Detectar modos instalados ───────────────────────────
+    _MODE=$(grep "^n8n\.mode=" "$REGISTRY" 2>/dev/null | cut -d= -f2)
+    _VER=$(grep "^n8n\.version=" "$REGISTRY" 2>/dev/null | cut -d= -f2)
+    [ -z "$_VER" ] && _VER="?"
+
+    [ "$_MODE" = "proot" ] && _HAS_PROOT=true
+    [ "$_MODE" = "udocker" ] && _HAS_UDOCKER=true
+    [ -f "$N8N_SCRIPTS/start_servidor.sh" ] && _HAS_PROOT=true
+    [ -f "$N8N_SCRIPTS_UDOCKER/start.sh" ] && _HAS_UDOCKER=true
+
+    # ── Nada instalado → instalar ──────────────────────────
+    if ! $_HAS_PROOT && ! $_HAS_UDOCKER; then
+      echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
+      echo    "  ║  ⬡ N8N — No instalado                  ║"
+      echo    "  ╠══════════════════════════════════════════╣"
+      echo -e "  ║  ${NC}[1]  Instalar n8n (proot Debian)       ${CYAN}${BOLD}║"
+      echo -e "  ║  ${NC}[2]  Instalar n8n (udocker)             ${CYAN}${BOLD}║"
+      echo -e "  ║  ${NC}[b]  Volver                             ${CYAN}${BOLD}║"
+      echo -e "  ╚══════════════════════════════════════════╝${NC}"
+      echo ""; echo -n "  Opción: "
+      read -r _NOPT < /dev/tty
+      case "$_NOPT" in
+        1) _run_installer "install_n8n.sh" "n8n proot" N8N_INSTALL_MODE=1
+           echo ""; read -r _ < /dev/tty ;;
+        2) _run_installer "install_n8n.sh" "n8n udocker" N8N_INSTALL_MODE=2
+           echo ""; read -r _ < /dev/tty ;;
+        b|B|"") break ;;
+      esac
+      continue
+    fi
+
+    # ── Ambos instalados → usar el modo activo del registry directo,
+    # sin preguntar cada vez (el usuario puede cambiar con [c] dentro
+    # del menú de control, o reinstalando en el otro modo) ─────────
+    if $_HAS_PROOT && $_HAS_UDOCKER; then
+      [ "$_MODE" != "proot" ] && [ "$_MODE" != "udocker" ] && _MODE="proot"
+    else
+      $_HAS_PROOT && _MODE="proot"
+      $_HAS_UDOCKER && _MODE="udocker"
+    fi
+
+    # ── Determinar estado ──────────────────────────────────
+    [ "$_MODE" = "udocker" ] && _SESSION="n8n-udocker" || _SESSION="n8n-server"
+    _IS_RUNNING=false
+    tmux has-session -t "$_SESSION" 2>/dev/null && _IS_RUNNING=true
+
+    # ── Ver datos del modo seleccionado ────────────────────
+    if [ "$_MODE" = "udocker" ]; then
+      _VER=$(grep "^n8n\.version=" "$REGISTRY" 2>/dev/null | cut -d= -f2)
+      [ -z "$_VER" ] && _VER="?"
+    fi
+    local _N8N_PROTO _CF_TOKEN
+    _N8N_PROTO=$(cat "$HOME/.n8n_protocol" 2>/dev/null || echo "https")
+    [ -f "$HOME/.cf_token" ] && [ -s "$HOME/.cf_token" ] && _CF_TOKEN=true || _CF_TOKEN=false
+
+    # ════════════════════════════════════════════
+    #  MENÚ DE CONTROL UNIFICADO (mismo para ambos)
+    # ════════════════════════════════════════════
     echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
-    [ "$state" = "running" ] \
-      && echo "  ║  ⬡ N8N  ● activo                        ║" \
-      || echo "  ║  ⬡ N8N  ● listo                         ║"
-    [ -f "$HOME/.cf_token" ] && [ -s "$HOME/.cf_token" ] \
-      && echo -e "  ║  ${NC}Tunnel: URL fija ${GREEN}●${NC}${CYAN}${BOLD}                   ║" \
-      || echo -e "  ║  ${NC}Tunnel: URL temporal ${YELLOW}○${NC}${CYAN}${BOLD}                 ║"
-    echo -e "  ║  ${NC}Protocolo: ${GREEN}${_N8N_PROTO}${NC}${CYAN}${BOLD}                       ║"
+    if $_IS_RUNNING; then
+      printf "  ║  ⬡ N8N · %-8s ${GREEN}● activo${CYAN}${BOLD}        :5678  ║\n" "$_MODE"
+    else
+      printf "  ║  ⬡ N8N · %-8s ${YELLOW}○ detenido${CYAN}${BOLD}      :5678  ║\n" "$_MODE"
+    fi
+    printf "  ║  ${NC}v%-38s${CYAN}${BOLD}║\n" "$_VER"
+    if $_CF_TOKEN; then
+      echo -e "  ║  ${NC}Tunnel: URL fija ${GREEN}●${NC}${CYAN}${BOLD}                   ║"
+    else
+      echo -e "  ║  ${NC}Tunnel: URL temporal ${YELLOW}○${NC}${CYAN}${BOLD}                 ║"
+    fi
+    if [ "$_MODE" = "proot" ]; then
+      echo -e "  ║  ${NC}Protocolo: ${GREEN}${_N8N_PROTO}${NC}${CYAN}${BOLD}                       ║"
+    fi
     echo    "  ╠══════════════════════════════════════════╣"
-    echo -e "  ║  ${NC}[1]  Iniciar n8n + cloudflared          ${CYAN}${BOLD}║"
-    echo -e "  ║  ${NC}[2]  Detener n8n + cloudflared          ${CYAN}${BOLD}║"
-    echo -e "  ║  ${NC}[3]  Ver URL pública                    ${CYAN}${BOLD}║"
-    echo -e "  ║  ${NC}[4]  Logs en vivo                       ${CYAN}${BOLD}║"
-    echo -e "  ║  ${NC}[5]  Consola Debian                     ${CYAN}${BOLD}║"
-    echo -e "  ║  ${NC}[6]  Ver estado del sistema             ${CYAN}${BOLD}║"
-    echo -e "  ║  ${NC}[7]  Token cloudflared                  ${CYAN}${BOLD}║"
-    echo -e "  ║  ${NC}[8]  Configurar URL webhook             ${CYAN}${BOLD}║"
-    echo -e "  ║  ${NC}[9]  Reparar scripts de control         ${CYAN}${BOLD}║"
-    echo -e "  ║  ${DIM}     regenera start/stop/url/status/log ${CYAN}${BOLD}║"
-    echo -e "  ║  ${NC}[10] Protocolo HTTP / HTTPS             ${CYAN}${BOLD}║"
-    echo -e "  ║  ${NC}[b]  Volver al menú principal           ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[1]  Iniciar n8n + tunnel              ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[2]  Detener n8n + tunnel              ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[3]  Iniciar n8n (localhost)           ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[4]  Ver URL pública (cloudflare)      ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[5]  Logs en vivo                      ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[6]  Ver estado del sistema            ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[7]  Actualizar n8n                    ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[8]  Backup workflows                  ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[9]  Token CF + Dominio webhook        ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[r]  Reparar scripts de control         ${CYAN}${BOLD}║"
+    if [ "$_MODE" = "proot" ]; then
+      echo -e "  ║  ${NC}[p]  Protocolo HTTP / HTTPS             ${CYAN}${BOLD}║"
+    fi
+    if $_HAS_PROOT && $_HAS_UDOCKER; then
+      echo -e "  ║  ${NC}[c]  Cambiar a modo $([ "$_MODE" = "proot" ] && echo "udocker" || echo "proot")${CYAN}${BOLD}                ║"
+    fi
+    echo -e "  ║  ${NC}[i]  Reinstalar n8n                     ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[b]  Volver                             ${CYAN}${BOLD}║"
     echo -e "  ╚══════════════════════════════════════════╝${NC}"
     echo ""; echo -n "  Opción: "
     read -r OPT < /dev/tty
@@ -590,109 +974,213 @@ submenu_n8n() {
     case "$OPT" in
       1)
         clear; echo ""
-        if [ ! -f "$N8N_SCRIPTS/start_servidor.sh" ]; then
-          echo -e "  ${YELLOW}[AVISO]${NC} start_servidor.sh no encontrado."
-          echo -n "  ¿Reparar scripts de control ahora? (s/n): "
-          read -r _REPAIR < /dev/tty
-          if [ "$_REPAIR" = "s" ] || [ "$_REPAIR" = "S" ]; then
-            _n8n_repair_scripts; echo ""
-          else
-            echo ""; read -r _ < /dev/tty; continue
-          fi
-        fi
-        if [ -f "$N8N_SCRIPTS/start_servidor.sh" ]; then
-          bash "$N8N_SCRIPTS/start_servidor.sh" < /dev/tty
+        if [ "$_MODE" = "udocker" ]; then
+          [ -f "$N8N_SCRIPTS_UDOCKER/start.sh" ] \
+            && bash "$N8N_SCRIPTS_UDOCKER/start.sh" \
+            || echo -e "  ${RED}[ERROR]${NC} Script no encontrado — reinstala n8n udocker"
         else
-          echo -e "  ${RED}[ERROR]${NC} No se pudo crear start_servidor.sh — verifica que n8n esté instalado en proot"
+          if [ ! -f "$N8N_SCRIPTS/start_servidor.sh" ]; then
+            echo -e "  ${YELLOW}[AVISO]${NC} start_servidor.sh no encontrado."
+            echo -n "  ¿Reparar scripts ahora? (s/n): "
+            read -r _REPAIR < /dev/tty
+            [ "$_REPAIR" = "s" ] || [ "$_REPAIR" = "S" ] \
+              && { _n8n_repair_scripts "$_MODE"; echo ""; } \
+              || { echo ""; read -r _ < /dev/tty; continue; }
+          fi
+          [ -f "$N8N_SCRIPTS/start_servidor.sh" ] \
+            && bash "$N8N_SCRIPTS/start_servidor.sh" < /dev/tty \
+            || echo -e "  ${RED}[ERROR]${NC} start_servidor.sh no disponible"
         fi
-        echo ""; read -r _ < /dev/tty
-        tmux has-session -t "n8n-server" 2>/dev/null && state="running" || state="stopped" ;;
+        echo ""; read -r _ < /dev/tty ;;
       2)
         clear; echo ""
-        bash "$N8N_SCRIPTS/stop_servidor.sh" 2>/dev/null || \
-          tmux kill-session -t "n8n-server" 2>/dev/null
+        if [ "$_MODE" = "udocker" ]; then
+          bash "$N8N_SCRIPTS_UDOCKER/stop.sh" 2>/dev/null
+        else
+          bash "$N8N_SCRIPTS/stop_servidor.sh" 2>/dev/null || \
+            tmux kill-session -t "n8n-server" 2>/dev/null
+        fi
         sleep 1; echo -e "  ${GREEN}[OK]${NC} n8n detenido"
-        echo ""; read -r _ < /dev/tty
-        state="stopped" ;;
-      3)
+        echo ""; read -r _ < /dev/tty ;;
+       3)
         clear; echo ""
-        bash "$N8N_SCRIPTS/ver_url.sh" 2>/dev/null || {
-          local URL; URL=$(cat "$HOME/.last_cf_url" 2>/dev/null)
-          [ -n "$URL" ] \
-            && echo -e "  ${GREEN}URL:${NC} $URL" \
-            || echo -e "  ${YELLOW}[AVISO]${NC} n8n no está corriendo o URL no disponible"
-        }
+        if $_IS_RUNNING; then
+          echo -e "  ${GREEN}[OK]${NC} n8n ya está activo. Abriendo localhost..."; echo ""
+        else
+          echo -e "  ${CYAN}[...]${NC} Iniciando n8n (localhost, sin tunnel)..."; echo ""
+          if [ "$_MODE" = "udocker" ]; then
+            if [ -f "$N8N_SCRIPTS_UDOCKER/start_local.sh" ]; then
+              bash "$N8N_SCRIPTS_UDOCKER/start_local.sh"
+            else
+              echo -e "  ${YELLOW}[AVISO]${NC} start_local.sh no encontrado."
+              echo -n "  ¿Reparar scripts ahora? (s/n): "
+              read -r _REPAIR < /dev/tty
+              if [ "$_REPAIR" = "s" ] || [ "$_REPAIR" = "S" ]; then
+                _n8n_repair_scripts "$_MODE"; echo ""
+              fi
+              [ -f "$N8N_SCRIPTS_UDOCKER/start_local.sh" ] && bash "$N8N_SCRIPTS_UDOCKER/start_local.sh"
+            fi
+          else
+            if [ -f "$N8N_SCRIPTS/start_local.sh" ]; then
+              bash "$N8N_SCRIPTS/start_local.sh"
+            else
+              echo -e "  ${YELLOW}[AVISO]${NC} start_local.sh no encontrado."
+              echo -n "  ¿Reparar scripts ahora? (s/n): "
+              read -r _REPAIR < /dev/tty
+              if [ "$_REPAIR" = "s" ] || [ "$_REPAIR" = "S" ]; then
+                _n8n_repair_scripts "$_MODE"; echo ""
+              fi
+              [ -f "$N8N_SCRIPTS/start_local.sh" ] && bash "$N8N_SCRIPTS/start_local.sh"
+            fi
+          fi
+        fi
+        local _LOC_IP; _LOC_IP=$(ip addr show wlan0 2>/dev/null | grep "inet " | awk '{print $2}' | cut -d'/' -f1)
+        echo -e "  ${BOLD}Acceso local (sin cloudflare):${NC}"; echo ""
+        echo -e "  ${GREEN}Teléfono:${NC} http://localhost:5678"
+        [ -n "$_LOC_IP" ] && echo -e "  ${GREEN}WiFi PC: ${NC} http://${_LOC_IP}:5678"
+        echo ""
+        termux-open-url "http://localhost:5678" 2>/dev/null || true
         echo ""; read -r _ < /dev/tty ;;
       4)
         clear; echo ""
-        echo -e "  ${CYAN}Logs n8n — Ctrl+B D para salir sin detener${NC}"; echo ""
-        tmux has-session -t "n8n-server" 2>/dev/null \
-          && tmux attach-session -t "n8n-server" \
-          || echo -e "  ${YELLOW}[AVISO]${NC} n8n no está corriendo"
+        local _CF_URL
+        _CF_URL=$(cat "$HOME/.last_cf_url" 2>/dev/null)
+        if [ -n "$_CF_URL" ]; then
+          echo -e "  ${GREEN}URL pública:${NC} ${_CF_URL}"
+        elif [ "$_MODE" = "udocker" ]; then
+          _CF_URL=$(grep -oE "https://[a-z0-9-]+\.trycloudflare\.com" "$HOME/.cf_ud_url.log" 2>/dev/null | head -1)
+          if [ -n "$_CF_URL" ]; then
+            echo -e "  ${GREEN}URL pública:${NC} ${_CF_URL}"
+          else
+            echo -e "  ${YELLOW}[AVISO]${NC} Tunnel no activo — inicia con [1]"
+          fi
+        else
+          bash "$N8N_SCRIPTS/ver_url.sh" 2>/dev/null || \
+            echo -e "  ${YELLOW}[AVISO]${NC} URL no disponible — inicia con [1]"
+        fi
         echo ""; read -r _ < /dev/tty ;;
       5)
         clear; echo ""
-        echo -e "  ${CYAN}Consola Debian — escribe 'exit' para volver${NC}"; echo ""
-        proot-distro login "$DISTRO_NAME" 2>/dev/null || \
-          echo -e "  ${RED}[ERROR]${NC} Proot Debian no encontrado"
+        echo -e "  ${CYAN}Logs n8n — Ctrl+B D para salir sin detener${NC}"; echo ""
+        tmux has-session -t "$_SESSION" 2>/dev/null \
+          && tmux attach-session -t "$_SESSION" \
+          || echo -e "  ${YELLOW}[AVISO]${NC} n8n no está corriendo"
         echo ""; read -r _ < /dev/tty ;;
       6)
         clear; echo ""
-        bash "$N8N_SCRIPTS/n8n_status.sh" 2>/dev/null || {
-          echo -e "  ${BOLD}Estado n8n:${NC}"
-          tmux has-session -t "n8n-server" 2>/dev/null \
-            && echo -e "  ${GREEN}● Corriendo${NC}" \
-            || echo -e "  ${YELLOW}○ Detenido${NC}"
-          local CF_URL; CF_URL=$(cat "$HOME/.last_cf_url" 2>/dev/null)
-          [ -n "$CF_URL" ] && echo -e "  URL: ${CF_URL}"
-        }
+        if [ "$_MODE" = "udocker" ]; then
+          bash "$N8N_SCRIPTS_UDOCKER/status.sh" 2>/dev/null || {
+            echo -e "  ${BOLD}Estado n8n (udocker):${NC}"; echo ""
+            $_IS_RUNNING \
+              && echo -e "  ${GREEN}● Corriendo${NC} — sesión: n8n-udocker" \
+              || echo -e "  ${YELLOW}○ Detenido${NC}"
+            local _SIP; _SIP=$(ip addr show wlan0 2>/dev/null | grep "inet " | awk '{print $2}' | cut -d'/' -f1)
+            echo -e "  Puerto: 5678"
+            [ -n "$_SIP" ] && echo -e "  WiFi:   http://${_SIP}:5678"
+          }
+        else
+          bash "$N8N_SCRIPTS/n8n_status.sh" 2>/dev/null || {
+            echo -e "  ${BOLD}Estado n8n (proot):${NC}"; echo ""
+            $_IS_RUNNING \
+              && echo -e "  ${GREEN}● Corriendo${NC} — sesión: n8n-server" \
+              || echo -e "  ${YELLOW}○ Detenido${NC}"
+          }
+        fi
         echo ""; read -r _ < /dev/tty ;;
       7)
         clear; echo ""
-        echo -e "  ${BOLD}Token cloudflared (URL fija)${NC}"; echo ""
-        local CF_CURRENT; CF_CURRENT=$(cat "$HOME/.cf_token" 2>/dev/null)
-        [ -n "$CF_CURRENT" ] \
-          && echo -e "  Token actual: ${GREEN}configurado${NC}" \
-          || echo -e "  Token actual: ${YELLOW}no configurado (URL temporal)${NC}"
-        echo ""; echo "  (ENTER para cancelar)"
-        echo -n "  Nuevo token (o ENTER para quitar): "
-        read -r NEW_CF < /dev/tty
-        if [ -n "$NEW_CF" ]; then
-          echo "$NEW_CF" > "$HOME/.cf_token"
-          echo -e "  ${GREEN}[OK]${NC} Token guardado — URL fija activada"
+        if [ "$_MODE" = "udocker" ]; then
+          bash "$N8N_SCRIPTS_UDOCKER/update.sh" 2>/dev/null || {
+            echo -e "  ${CYAN}Actualizando n8n (udocker)...${NC}"; echo ""
+            tmux kill-session -t "n8n-udocker" 2>/dev/null || true
+            udocker pull n8nio/n8n && {
+              udocker rm n8n 2>/dev/null || true
+              udocker create --name=n8n n8nio/n8n
+              echo -e "  ${GREEN}[OK]${NC} n8n actualizado — usa [1] para iniciar"
+            }
+          }
         else
-          echo -n "  ¿Quitar token actual? (s/n): "
-          read -r RM_CF < /dev/tty
-          [ "$RM_CF" = "s" ] || [ "$RM_CF" = "S" ] && {
-            rm -f "$HOME/.cf_token"
-            echo -e "  ${GREEN}[OK]${NC} Token eliminado — modo URL temporal"
+          bash "$N8N_SCRIPTS/n8n_update.sh" 2>/dev/null || {
+            echo -e "  ${CYAN}Actualizando n8n (proot)...${NC}"; echo ""
+            local _DN; _DN=$(proot-distro list 2>/dev/null | grep -E "^\s*\*?\s*(debian|ubuntu)" | awk '{print $NF}' | head -1)
+            [ -z "$_DN" ] && _DN="debian"
+            proot-distro login "$_DN" -- bash -c \
+              'export HOME=/root && npm update -g n8n && echo "n8n: $(n8n --version)"'
           }
         fi
         echo ""; read -r _ < /dev/tty ;;
       8)
         clear; echo ""
-        echo -e "  ${BOLD}Configurar URL webhook n8n${NC}"; echo ""
-        local CURRENT_WH; CURRENT_WH=$(grep "^N8N_WEBHOOK_URL=" "$HOME/.env_n8n" 2>/dev/null | cut -d'=' -f2)
-        [ -n "$CURRENT_WH" ] \
-          && echo -e "  URL actual: ${GREEN}${CURRENT_WH}${NC}" \
-          || echo -e "  URL actual: ${YELLOW}no configurada${NC}"
-        echo ""; echo "  (ENTER sin escribir = cancelar)"
-        echo -n "  Nueva URL webhook: "
-        read -r NEW_WH < /dev/tty
-        if [ -n "$NEW_WH" ]; then
-          grep -v "^N8N_WEBHOOK_URL=" "$HOME/.env_n8n" > "$HOME/.env_n8n.tmp" 2>/dev/null || \
-            touch "$HOME/.env_n8n.tmp"
-          echo "N8N_WEBHOOK_URL=${NEW_WH}" >> "$HOME/.env_n8n.tmp"
-          mv "$HOME/.env_n8n.tmp" "$HOME/.env_n8n"
-          echo "$NEW_WH" > "$HOME/.last_cf_url"
-          echo -e "  ${GREEN}[OK]${NC} URL guardada. Reinicia n8n para aplicar."
+        echo -e "  ${CYAN}Backup workflows${NC}"; echo ""
+        if [ "$_MODE" = "udocker" ]; then
+          bash "$N8N_SCRIPTS_UDOCKER/backup.sh" 2>/dev/null || \
+            echo -e "  ${YELLOW}[AVISO]${NC} Script backup no encontrado"
+        else
+          bash "$N8N_SCRIPTS/n8n_backup.sh" 2>/dev/null || \
+            echo -e "  ${YELLOW}[AVISO]${NC} Script backup no encontrado"
         fi
         echo ""; read -r _ < /dev/tty ;;
       9)
+        while true; do
+          clear; echo ""
+          echo -e "  ${CYAN}${BOLD}╔══════════════════════════════════════════╗"
+          echo    "  ║  Token CF + Dominio webhook            ║"
+          echo -e "  ╚══════════════════════════════════════════╝${NC}"
+          echo ""
+          local _CF_CUR _DOM_CUR
+          _CF_CUR=$(cat "$HOME/.cf_token" 2>/dev/null)
+          _DOM_CUR=$(grep "^N8N_WEBHOOK_URL=" "$HOME/.env_n8n" 2>/dev/null | cut -d'=' -f2)
+          [ -n "$_CF_CUR" ] \
+            && echo -e "  Token CF:   ${GREEN}configurado ✓${NC}" \
+            || echo -e "  Token CF:   ${YELLOW}no configurado (URL temporal)${NC}"
+          [ -n "$_DOM_CUR" ] \
+            && echo -e "  Dominio:    ${GREEN}${_DOM_CUR}${NC}" \
+            || echo -e "  Dominio:    ${YELLOW}no configurado${NC}"
+          echo ""
+          echo -e "  [t]  Cambiar token cloudflared"
+          echo -e "  [d]  Configurar dominio webhook"
+          echo -e "  [b]  Volver"
+          echo ""; echo -n "  Opción: "
+          read -r _C9OPT < /dev/tty
+          case "$_C9OPT" in
+            t|T)
+              echo ""
+              echo -e "  ${DIM}Obtén token en: dash.cloudflare.com → Zero Trust → Tunnels${NC}"
+              echo -n "  Nuevo token (ENTER = borrar): "
+              read -r _NEW_CF < /dev/tty
+              if [ -n "$_NEW_CF" ]; then
+                echo "$_NEW_CF" > "$HOME/.cf_token"
+                chmod 600 "$HOME/.cf_token"
+                echo -e "  ${GREEN}[OK]${NC} Token guardado — URL fija activada"
+              else
+                rm -f "$HOME/.cf_token"
+                echo -e "  ${YELLOW}[OK]${NC} Token eliminado — modo URL temporal"
+              fi
+              read -r _ < /dev/tty ;;
+            d|D)
+              echo ""
+              echo -e "  ${DIM}Ej: https://n8n.tudominio.com${NC}"
+              echo -n "  URL del dominio webhook (ENTER = cancelar): "
+              read -r _NEW_DOM < /dev/tty
+              if [ -n "$_NEW_DOM" ]; then
+                grep -v "^N8N_WEBHOOK_URL=" "$HOME/.env_n8n" > "$HOME/.env_n8n.tmp" 2>/dev/null || \
+                  touch "$HOME/.env_n8n.tmp"
+                echo "N8N_WEBHOOK_URL=${_NEW_DOM}" >> "$HOME/.env_n8n.tmp"
+                mv "$HOME/.env_n8n.tmp" "$HOME/.env_n8n"
+                echo "$_NEW_DOM" > "$HOME/.last_cf_url"
+                echo -e "  ${GREEN}[OK]${NC} Dominio guardado: ${_NEW_DOM}"
+                echo -e "  ${DIM}Reinicia n8n para aplicar.${NC}"
+              fi
+              read -r _ < /dev/tty ;;
+            b|B|"") break ;;
+          esac
+        done ;;
+      r|R)
         clear; echo ""
-        _n8n_repair_scripts
+        _n8n_repair_scripts "$_MODE"
         echo ""; read -r _ < /dev/tty ;;
-      10)
+      p|P)
+        [ "$_MODE" != "proot" ] && continue
         clear; echo ""
         echo -e "  ${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
         echo    "  ║  ⬡ N8N — Protocolo                      ║"
@@ -705,17 +1193,32 @@ submenu_n8n() {
         echo -n "  Opción (ENTER = cancelar): "
         read -r _PROTO_OPT < /dev/tty
         case "$_PROTO_OPT" in
-          1)
-            echo "https" > "$HOME/.n8n_protocol"
-            echo -e "  ${GREEN}[OK]${NC} Protocolo → HTTPS guardado."
-            echo -e "  ${CYAN}[INFO]${NC} Usa [9] Reparar scripts y reinicia n8n." ;;
-          2)
-            echo "http" > "$HOME/.n8n_protocol"
-            echo -e "  ${GREEN}[OK]${NC} Protocolo → HTTP guardado."
-            echo -e "  ${CYAN}[INFO]${NC} Usa [9] Reparar scripts y reinicia n8n." ;;
+          1) echo "https" > "$HOME/.n8n_protocol"; echo -e "  ${GREEN}[OK]${NC} Protocolo → HTTPS. Repara scripts y reinicia." ;;
+          2) echo "http" > "$HOME/.n8n_protocol"; echo -e "  ${GREEN}[OK]${NC} Protocolo → HTTP. Repara scripts y reinicia." ;;
           *) echo -e "  ${YELLOW}[AVISO]${NC} Sin cambios." ;;
         esac
         echo ""; read -r _ < /dev/tty ;;
+      c|C)
+        if $_HAS_PROOT && $_HAS_UDOCKER; then
+          [ "$_MODE" = "proot" ] && _MODE="udocker" || _MODE="proot"
+          # Persistir el modo activo — si no, al volver a entrar al
+          # submenú siempre se recae en el que diga el registry
+          grep -v "^n8n\.mode=" "$REGISTRY" > "$REGISTRY.tmp" 2>/dev/null && mv "$REGISTRY.tmp" "$REGISTRY"
+          echo "n8n.mode=$_MODE" >> "$REGISTRY"
+          continue
+        fi ;;
+      i|I)
+        clear; echo ""
+        echo -e "  ${CYAN}Reinstalar n8n${NC}"; echo ""
+        echo -e "  Modo actual: ${GREEN}$_MODE${NC}"; echo ""
+        echo -n "  ¿Reinstalar? (s/n): "
+        read -r _REINST < /dev/tty
+        if [ "$_REINST" = "s" ] || [ "$_REINST" = "S" ]; then
+          [ "$_MODE" = "udocker" ] \
+            && _run_installer "install_n8n.sh" "n8n udocker" N8N_INSTALL_MODE=2 \
+            || _run_installer "install_n8n.sh" "n8n proot" N8N_INSTALL_MODE=1
+          echo ""; read -r _ < /dev/tty
+        fi ;;
       b|B|"") break ;;
     esac
   done
@@ -794,8 +1297,7 @@ submenu_openclaw() {
     echo -e "  ║  ${NC}[5] Gestionar proyectos                ${CYAN}${BOLD}║"
     echo -e "  ║  ${NC}[6] Detener gateway                    ${CYAN}${BOLD}║"
     echo -e "  ║  ${NC}[7] Cambiar proveedor IA               ${CYAN}${BOLD}║"
-    echo -e "  ║  ${NC}[8] Instalar / actualizar (proot)      ${CYAN}${BOLD}║"
-    echo -e "  ║  ${NC}[i] Instalar versión nativa             ${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[i] Migrar a nativo                     ${CYAN}${BOLD}║"
     echo -e "  ║  ${DIM}    glibc+npm · recomendada             ${CYAN}${BOLD}║"
     echo -e "  ║  ${NC}[b] Volver                             ${CYAN}${BOLD}║"
     echo -e "  ╚══════════════════════════════════════════╝${NC}"
@@ -1047,20 +1549,13 @@ print('OK')
             fi ;;
         esac
         echo ""; read -r _ < /dev/tty ;;
-      8)
-        clear; echo ""
-        _ensure_install_script "install_openclaw.sh" || { read -r _ < /dev/tty; continue; }
-        bash "$HOME/install_openclaw.sh" < /dev/tty
-        echo ""; read -r _ < /dev/tty ;;
       i|I)
-        # Instalar versión nativa desde el menú proot
-        # Lanza install_openclaw.sh y pre-selecciona modo nativo
+        # Migrar a nativo — install_openclaw.sh ya es solo nativo,
+        # no pregunta modo (2026-07-26, antes sí lo hacía)
         clear; echo ""
         echo -e "  ${CYAN}[+] Instalando OpenClaw nativo (glibc + npm)...${NC}"; echo ""
-        echo -e "  ${DIM}El instalador preguntará el modo — selecciona [1] Nativo${NC}"; echo ""
         _ensure_install_script "install_openclaw.sh" || { read -r _ < /dev/tty; continue; }
-        # Pasar "1" como primera entrada para pre-seleccionar modo nativo
-        { echo "1"; cat /dev/tty; } | bash "$HOME/install_openclaw.sh"
+        _run_installer "install_openclaw.sh" "OpenClaw (nativo)"
         echo ""; read -r _ < /dev/tty ;;
       b|B|"") break ;;
     esac
@@ -1283,49 +1778,191 @@ PYEOF
           echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
           echo    "  ║  ◆ OPENCODE — Proyectos                 ║"
           echo    "  ╠══════════════════════════════════════════╣"
-          echo -e "  ║  ${NC}[1] Listar  [2] Symlink  [3] Crear  [4] Borrar${CYAN}${BOLD}║"
+          echo -e "  ║  ${NC}[1] Listar proyectos                  ${CYAN}${BOLD}║"
+          echo -e "  ║  ${NC}[2] Symlink → Android (proot/nativo)  ${CYAN}${BOLD}║"
+          echo -e "  ║  ${NC}[3] Copiar  → Android (glibc)         ${CYAN}${BOLD}║"
+          echo -e "  ║  ${NC}[4] Crear proyecto vacío              ${CYAN}${BOLD}║"
+          echo -e "  ║  ${NC}[5] Eliminar proyecto                 ${CYAN}${BOLD}║"
           echo -e "  ║  ${NC}[b] Volver${CYAN}${BOLD}                             ║"
           echo -e "  ╚══════════════════════════════════════════╝${NC}"
           echo ""; echo -n "  Opción: "
           read -r GOPT < /dev/tty
           case "$GOPT" in
             1)
+              # ── Listar proyectos ────────────────────────────────────────
               clear; echo ""
               echo -e "  ${BOLD}~/proyectos/:${NC}"; echo ""
               mkdir -p "$OC_PROJ_DIR"
-              ls "$OC_PROJ_DIR/" 2>/dev/null | grep -q . \
-                && ls -la "$OC_PROJ_DIR/" \
-                || echo -e "  ${DIM}(vacío)${NC}"
-              echo ""; read -r _ < /dev/tty ;;
-            2)
-              clear; echo ""
-              mapfile -t DL_DIRS < <(find /storage/emulated/0/Download \
-                -maxdepth 1 -mindepth 1 -type d 2>/dev/null | xargs -I{} basename {})
-              [ ${#DL_DIRS[@]} -eq 0 ] && {
-                echo -e "  ${YELLOW}Sin carpetas en Download${NC}"
-                read -r _ < /dev/tty; continue
-              }
-              mkdir -p "$OC_PROJ_DIR"
-              for i in "${!DL_DIRS[@]}"; do
-                local LDST="$OC_PROJ_DIR/${DL_DIRS[$i]}"
-                [ -L "$LDST" ] \
-                  && printf "    [%d] %s ${DIM}(ya vinculado)${NC}\n" "$((i+1))" "${DL_DIRS[$i]}" \
-                  || printf "    [%d] %s\n" "$((i+1))" "${DL_DIRS[$i]}"
-              done
-              echo ""; echo -n "  Número: "; read -r DCHOICE < /dev/tty
-              if [[ "$DCHOICE" =~ ^[0-9]+$ ]] && [ "$DCHOICE" -ge 1 ] && \
-                 [ "$DCHOICE" -le "${#DL_DIRS[@]}" ]; then
-                local DNAME="${DL_DIRS[$((DCHOICE-1))]}"
-                local LSRC="/storage/emulated/0/Download/${DNAME}"
-                local LDST="$OC_PROJ_DIR/${DNAME}"
-                [ -L "$LDST" ] \
-                  && echo -e "  ${YELLOW}[AVISO]${NC} Ya existe: ~/proyectos/${DNAME}" \
-                  || { ln -s "$LSRC" "$LDST" 2>/dev/null \
-                    && echo -e "  ${GREEN}[OK]${NC} Symlink: ~/proyectos/${DNAME}" \
-                    || echo -e "  ${RED}[ERROR]${NC}"; }
+              if ls "$OC_PROJ_DIR/" 2>/dev/null | grep -q .; then
+                while IFS= read -r entry; do
+                  local _name; _name=$(basename "$entry")
+                  if [ -L "$entry" ]; then
+                    local _target; _target=$(readlink -f "$entry" 2>/dev/null || readlink "$entry")
+                    printf "    ${CYAN}→${NC} %-28s ${DIM}symlink → %s${NC}\n" "$_name" "$_target"
+                  elif [ -d "$entry" ]; then
+                    printf "    ${GREEN}■${NC} %s\n" "$_name"
+                  fi
+                done < <(find "$OC_PROJ_DIR" -maxdepth 1 -mindepth 1 2>/dev/null | sort)
+              else
+                echo -e "  ${DIM}(vacío — usa [2] symlink o [3] copiar)${NC}"
               fi
               echo ""; read -r _ < /dev/tty ;;
+
+            2)
+              # ── Symlink desde Android → ~/proyectos/ ────────────────────
+              # Funciona con proot y nativo (proot puede seguir symlinks a /storage)
+              clear; echo ""
+              echo -e "  ${CYAN}${BOLD}Symlink desde Android${NC}"
+              echo -e "  ${DIM}Busca carpetas en /storage/emulated/0/ y las vincula${NC}"
+              echo ""
+              echo -e "  ${DIM}Rutas comunes:${NC}"
+              echo    "    [1] Download"
+              echo    "    [2] Documents"
+              echo    "    [3] Ruta manual"
+              echo ""; echo -n "  Elige: "
+              read -r _SRC_OPT < /dev/tty
+              local _SRC_BASE=""
+              case "$_SRC_OPT" in
+                1) _SRC_BASE="/storage/emulated/0/Download" ;;
+                2) _SRC_BASE="/storage/emulated/0/Documents" ;;
+                3)
+                  echo -n "  Ruta Android (ej: /storage/emulated/0/MiCarpeta): "
+                  read -r _SRC_BASE < /dev/tty
+                  _SRC_BASE="${_SRC_BASE%/}"
+                  ;;
+                *) echo -e "  ${YELLOW}Cancelado${NC}"; echo ""; read -r _ < /dev/tty; continue ;;
+              esac
+              [ ! -d "$_SRC_BASE" ] && {
+                echo -e "  ${RED}[ERROR]${NC} No existe o sin permiso: $_SRC_BASE"
+                echo ""; read -r _ < /dev/tty; continue
+              }
+              mapfile -t _SRC_DIRS < <(find "$_SRC_BASE" \
+                -maxdepth 1 -mindepth 1 -type d 2>/dev/null | sort | xargs -I{} basename {})
+              [ ${#_SRC_DIRS[@]} -eq 0 ] && {
+                echo -e "  ${YELLOW}Sin carpetas en $_SRC_BASE${NC}"
+                echo ""; read -r _ < /dev/tty; continue
+              }
+              mkdir -p "$OC_PROJ_DIR"
+              echo ""
+              for i in "${!_SRC_DIRS[@]}"; do
+                local _dst="$OC_PROJ_DIR/${_SRC_DIRS[$i]}"
+                if [ -L "$_dst" ]; then
+                  printf "    [%d] %s ${DIM}(ya vinculado)${NC}\n" "$((i+1))" "${_SRC_DIRS[$i]}"
+                elif [ -d "$_dst" ]; then
+                  printf "    [%d] %s ${YELLOW}(carpeta real — no reemplazar)${NC}\n" "$((i+1))" "${_SRC_DIRS[$i]}"
+                else
+                  printf "    [%d] %s\n" "$((i+1))" "${_SRC_DIRS[$i]}"
+                fi
+              done
+              echo ""; echo -n "  Número: "
+              read -r _DCHOICE < /dev/tty
+              if [[ "$_DCHOICE" =~ ^[0-9]+$ ]] && [ "$_DCHOICE" -ge 1 ] && \
+                 [ "$_DCHOICE" -le "${#_SRC_DIRS[@]}" ]; then
+                local _DNAME="${_SRC_DIRS[$((_DCHOICE-1))]}"
+                local _LSRC="$_SRC_BASE/${_DNAME}"
+                local _LDST="$OC_PROJ_DIR/${_DNAME}"
+                if [ -L "$_LDST" ]; then
+                  echo -e "  ${YELLOW}[AVISO]${NC} Ya existe symlink: ~/proyectos/${_DNAME}"
+                elif [ -d "$_LDST" ]; then
+                  echo -e "  ${YELLOW}[AVISO]${NC} Ya existe carpeta real: ~/proyectos/${_DNAME}"
+                  echo -e "  ${DIM}Usa [5] eliminar primero si quieres reemplazarla${NC}"
+                else
+                  ln -s "$_LSRC" "$_LDST" 2>/dev/null \
+                    && echo -e "  ${GREEN}[OK]${NC} Symlink: ~/proyectos/${_DNAME} → ${_LSRC}" \
+                    || echo -e "  ${RED}[ERROR]${NC} No se pudo crear el symlink"
+                fi
+              fi
+              echo ""; read -r _ < /dev/tty ;;
+
             3)
+              # ── Copiar desde Android → ~/proyectos/ (para glibc) ────────
+              # glibc OpenCode no puede seguir symlinks a /storage —
+              # necesita la carpeta físicamente en $HOME
+              clear; echo ""
+              echo -e "  ${CYAN}${BOLD}Copiar desde Android → ~/proyectos/${NC}"
+              echo -e "  ${YELLOW}Para OpenCode glibc${NC} ${DIM}(no sigue symlinks a /storage)${NC}"
+              echo ""
+              echo -e "  ${DIM}Rutas comunes:${NC}"
+              echo    "    [1] Download"
+              echo    "    [2] Documents"
+              echo    "    [3] Ruta manual"
+              echo ""; echo -n "  Elige: "
+              read -r _CP_OPT < /dev/tty
+              local _CP_BASE=""
+              case "$_CP_OPT" in
+                1) _CP_BASE="/storage/emulated/0/Download" ;;
+                2) _CP_BASE="/storage/emulated/0/Documents" ;;
+                3)
+                  echo -n "  Ruta Android (ej: /storage/emulated/0/MiCarpeta): "
+                  read -r _CP_BASE < /dev/tty
+                  _CP_BASE="${_CP_BASE%/}"
+                  ;;
+                *) echo -e "  ${YELLOW}Cancelado${NC}"; echo ""; read -r _ < /dev/tty; continue ;;
+              esac
+              [ ! -d "$_CP_BASE" ] && {
+                echo -e "  ${RED}[ERROR]${NC} No existe o sin permiso: $_CP_BASE"
+                echo ""; read -r _ < /dev/tty; continue
+              }
+              mapfile -t _CP_DIRS < <(find "$_CP_BASE" \
+                -maxdepth 1 -mindepth 1 -type d 2>/dev/null | sort | xargs -I{} basename {})
+              [ ${#_CP_DIRS[@]} -eq 0 ] && {
+                echo -e "  ${YELLOW}Sin carpetas en $_CP_BASE${NC}"
+                echo ""; read -r _ < /dev/tty; continue
+              }
+              mkdir -p "$OC_PROJ_DIR"
+              echo ""
+              for i in "${!_CP_DIRS[@]}"; do
+                local _cdst="$OC_PROJ_DIR/${_CP_DIRS[$i]}"
+                if [ -d "$_cdst" ] && [ ! -L "$_cdst" ]; then
+                  printf "    [%d] %s ${DIM}(ya copiado)${NC}\n" "$((i+1))" "${_CP_DIRS[$i]}"
+                elif [ -L "$_cdst" ]; then
+                  printf "    [%d] %s ${YELLOW}(symlink — copiar encima)${NC}\n" "$((i+1))" "${_CP_DIRS[$i]}"
+                else
+                  printf "    [%d] %s\n" "$((i+1))" "${_CP_DIRS[$i]}"
+                fi
+              done
+              echo ""; echo -n "  Número: "
+              read -r _CPCHOICE < /dev/tty
+              if [[ "$_CPCHOICE" =~ ^[0-9]+$ ]] && [ "$_CPCHOICE" -ge 1 ] && \
+                 [ "$_CPCHOICE" -le "${#_CP_DIRS[@]}" ]; then
+                local _CPNAME="${_CP_DIRS[$((_CPCHOICE-1))]}"
+                local _CPSRC="$_CP_BASE/${_CPNAME}"
+                local _CPDST="$OC_PROJ_DIR/${_CPNAME}"
+                # Si ya existe symlink, preguntar antes de reemplazar
+                if [ -L "$_CPDST" ]; then
+                  echo -e "  ${YELLOW}[AVISO]${NC} Existe symlink: ~/proyectos/${_CPNAME}"
+                  echo -n "  ¿Eliminar symlink y copiar carpeta real? (s/n): "
+                  read -r _CPREPL < /dev/tty
+                  [ "$_CPREPL" != "s" ] && [ "$_CPREPL" != "S" ] && {
+                    echo ""; read -r _ < /dev/tty; continue
+                  }
+                  rm "$_CPDST"
+                fi
+                # Si ya existe carpeta real, preguntar si actualizar
+                if [ -d "$_CPDST" ]; then
+                  echo -e "  ${YELLOW}[AVISO]${NC} Ya existe: ~/proyectos/${_CPNAME}"
+                  echo -n "  ¿Actualizar (rsync)? (s/n): "
+                  read -r _CPUPD < /dev/tty
+                  [ "$_CPUPD" != "s" ] && [ "$_CPUPD" != "S" ] && {
+                    echo ""; read -r _ < /dev/tty; continue
+                  }
+                fi
+                echo -e "  ${CYAN}Copiando...${NC} ${DIM}(puede tardar)${NC}"
+                # rsync si disponible, cp -r como fallback
+                if command -v rsync &>/dev/null; then
+                  rsync -a --info=progress2 "$_CPSRC/" "$_CPDST/" 2>/dev/null \
+                    && echo -e "  ${GREEN}[OK]${NC} Copiado/actualizado: ~/proyectos/${_CPNAME}" \
+                    || echo -e "  ${RED}[ERROR]${NC} rsync falló"
+                else
+                  cp -r "$_CPSRC" "$_CPDST" 2>/dev/null \
+                    && echo -e "  ${GREEN}[OK]${NC} Copiado: ~/proyectos/${_CPNAME}" \
+                    || echo -e "  ${RED}[ERROR]${NC} cp falló"
+                fi
+              fi
+              echo ""; read -r _ < /dev/tty ;;
+
+            4)
+              # ── Crear proyecto vacío ────────────────────────────────────
               clear; echo ""
               echo -n "  Nombre del proyecto: "; read -r NEW_NAME < /dev/tty
               NEW_NAME=$(echo "$NEW_NAME" | tr ' ' '-' | tr -cd '[:alnum:]-_')
@@ -1336,27 +1973,52 @@ PYEOF
                 && echo -e "  ${GREEN}[OK]${NC} Creado: ~/proyectos/$NEW_NAME" \
                 || echo -e "  ${RED}[ERROR]${NC}"
               echo ""; read -r _ < /dev/tty ;;
-            4)
+
+            5)
+              # ── Eliminar proyecto (symlink o carpeta real) ───────────────
               clear; echo ""
-              mapfile -t LINKS < <(find "$OC_PROJ_DIR" -maxdepth 1 -type l 2>/dev/null \
-                | xargs -I{} basename {})
-              [ ${#LINKS[@]} -eq 0 ] && {
-                echo -e "  ${DIM}Sin symlinks${NC}"; read -r _ < /dev/tty; continue
+              mapfile -t _ALL_PROJS < <(find "$OC_PROJ_DIR" -maxdepth 1 -mindepth 1 \
+                2>/dev/null | sort | xargs -I{} basename {})
+              [ ${#_ALL_PROJS[@]} -eq 0 ] && {
+                echo -e "  ${DIM}Sin proyectos en ~/proyectos/${NC}"
+                echo ""; read -r _ < /dev/tty; continue
               }
-              for i in "${!LINKS[@]}"; do printf "    [%d] %s\n" "$((i+1))" "${LINKS[$i]}"; done
-              echo ""; echo -n "  Número: "; read -r LCHOICE < /dev/tty
-              if [[ "$LCHOICE" =~ ^[0-9]+$ ]] && [ "$LCHOICE" -ge 1 ] && \
-                 [ "$LCHOICE" -le "${#LINKS[@]}" ]; then
-                local LNAME="${LINKS[$((LCHOICE-1))]}"
-                echo -n "  ¿Eliminar ~/proyectos/${LNAME}? (s/n): "
-                read -r LCONFIRM < /dev/tty
-                [ "$LCONFIRM" = "s" ] || [ "$LCONFIRM" = "S" ] && {
-                  rm "$OC_PROJ_DIR/$LNAME" \
-                    && echo -e "  ${GREEN}[OK]${NC} Eliminado" \
-                    || echo -e "  ${RED}[ERROR]${NC}"
-                }
+              echo -e "  ${BOLD}~/proyectos/:${NC}"; echo ""
+              for i in "${!_ALL_PROJS[@]}"; do
+                local _ep="$OC_PROJ_DIR/${_ALL_PROJS[$i]}"
+                if [ -L "$_ep" ]; then
+                  printf "    [%d] %s ${DIM}(symlink)${NC}\n" "$((i+1))" "${_ALL_PROJS[$i]}"
+                else
+                  printf "    [%d] %s ${DIM}(carpeta)${NC}\n" "$((i+1))" "${_ALL_PROJS[$i]}"
+                fi
+              done
+              echo ""; echo -n "  Número: "
+              read -r _ECHOICE < /dev/tty
+              if [[ "$_ECHOICE" =~ ^[0-9]+$ ]] && [ "$_ECHOICE" -ge 1 ] && \
+                 [ "$_ECHOICE" -le "${#_ALL_PROJS[@]}" ]; then
+                local _ENAME="${_ALL_PROJS[$((_ECHOICE-1))]}"
+                local _EPATH="$OC_PROJ_DIR/$_ENAME"
+                if [ -L "$_EPATH" ]; then
+                  echo -n "  ¿Eliminar symlink ~/proyectos/${_ENAME}? (s/n): "
+                  read -r _ECONF < /dev/tty
+                  [ "$_ECONF" = "s" ] || [ "$_ECONF" = "S" ] && {
+                    rm "$_EPATH" \
+                      && echo -e "  ${GREEN}[OK]${NC} Symlink eliminado" \
+                      || echo -e "  ${RED}[ERROR]${NC}"
+                  }
+                else
+                  echo -e "  ${YELLOW}[AVISO]${NC} Esto eliminará la carpeta y TODO su contenido"
+                  echo -n "  ¿Eliminar ~/proyectos/${_ENAME}? Escribe el nombre para confirmar: "
+                  read -r _ECONF2 < /dev/tty
+                  [ "$_ECONF2" = "$_ENAME" ] && {
+                    rm -rf "$_EPATH" \
+                      && echo -e "  ${GREEN}[OK]${NC} Carpeta eliminada" \
+                      || echo -e "  ${RED}[ERROR]${NC}"
+                  } || echo -e "  ${YELLOW}Cancelado${NC}"
+                fi
               fi
               echo ""; read -r _ < /dev/tty ;;
+
             b|B|"") break ;;
           esac
         done ;;
@@ -1371,29 +2033,30 @@ PYEOF
         echo ""; read -r _ < /dev/tty ;;
       6)
         clear; echo ""
-        echo -e "  ${CYAN}Instalando/actualizando OpenCode en Debian...${NC}"; echo ""
-        if [ -f "$HOME/install_opencode.sh" ]; then
-          bash "$HOME/install_opencode.sh" < /dev/tty
-        else
-          echo -e "  ${CYAN}Ejecutando instalación directa en Debian...${NC}"; echo ""
-          proot-distro login "$DISTRO_NAME" -- bash -c \
-            'export HOME=/root
-             apt-get update -qq -o Acquire::Check-Valid-Until=false 2>/dev/null || true
-             apt-get install -y --no-install-recommends curl ripgrep tmux 2>/dev/null || true
-             curl -fsSL https://opencode.ai/install | bash
-             grep -q "\.local/bin" /root/.bashrc 2>/dev/null || \
-               echo "export PATH=\"\$HOME/.local/bin:\$PATH\"" >> /root/.bashrc' < /dev/tty
-          echo ""
-          local OC_VER
-          OC_VER=$(proot-distro login "$DISTRO_NAME" -- bash -c \
-            'export HOME=/root
-             export PATH="/root/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
-             opencode --version 2>/dev/null' 2>/dev/null \
-            | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
-          [ -n "$OC_VER" ] \
-            && echo -e "  ${GREEN}[OK]${NC} OpenCode v${OC_VER} instalado" \
-            || echo -e "  ${YELLOW}[AVISO]${NC} Verificar: proot-distro login $DISTRO_NAME"
-        fi
+        echo -e "  ${CYAN}${BOLD}OpenCode — Debian proot${NC}"; echo ""
+        echo -e "  ${GREEN}[1]${NC} Actualizar   ${DIM}(curl opencode.ai/install en Debian)${NC}"
+        echo -e "  [2] Reinstalar  ${DIM}(instalación completa desde cero)${NC}"
+        echo -e "  [q] Cancelar"
+        echo ""; echo -n "  Opción: "
+        read -r _OC_UPD < /dev/tty
+        case "$_OC_UPD" in
+          1)
+            echo ""
+            echo -e "  ${CYAN}Actualizando OpenCode en Debian...${NC}"; echo ""
+            proot-distro login "$DISTRO_NAME" -- bash -c \
+              'export HOME=/root
+               export PATH="/root/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+               curl -fsSL https://opencode.ai/install | bash 2>&1 | tail -10
+               echo ""
+               echo "Versión: $(opencode --version 2>/dev/null | head -1)"' < /dev/tty
+            ;;
+          2)
+            echo ""
+            _ensure_install_script "install_opencode.sh" || { echo ""; read -r _ < /dev/tty; continue; }
+            _run_installer "install_opencode.sh" "OpenCode"
+            ;;
+          q|Q|"") ;;
+        esac
         echo ""; read -r _ < /dev/tty ;;
       7)
         clear; echo ""

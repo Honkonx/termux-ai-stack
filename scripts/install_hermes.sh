@@ -15,8 +15,6 @@
 #  REPO: https://github.com/Honkonx/termux-ai-stack
 # ============================================================
 
-set -e
-
 # ── Limpiar env heredado que rompe pip en sesiones anidadas ──
 [ -n "${PYTHONPATH:-}"  ] && unset PYTHONPATH
 [ -n "${PYTHONHOME:-}"  ] && unset PYTHONHOME
@@ -24,6 +22,10 @@ export UV_NO_CONFIG=1
 
 TERMUX_PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
 export PATH="$TERMUX_PREFIX/bin:$TERMUX_PREFIX/sbin:$PATH"
+
+# ── Modo silencioso (invocado desde menu.sh, confirmación ya hecha ahí) ──
+SILENT_MODE=false
+for _arg in "$@"; do [ "$_arg" = "--silent" ] && SILENT_MODE=true; done
 
 # ── Variables del stack ───────────────────────────────────
 REGISTRY="$HOME/.android_server_registry"
@@ -70,19 +72,37 @@ echo ""
 if command -v hermes &>/dev/null && [ -d "$INSTALL_DIR" ]; then
   EXISTING_VER=$(hermes version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
   echo -e "  ${YELLOW}[AVISO]${NC} Hermes ya está instalado${EXISTING_VER:+ (v${EXISTING_VER})}"
-  echo ""
-  echo -e "  ${BOLD}[1]${NC} Reinstalar (borra venv y clona de nuevo)"
-  echo -e "  ${BOLD}[2]${NC} Actualizar (hermes update)"
-  echo -e "  ${BOLD}[b]${NC} Cancelar"
-  echo ""; echo -n "  Opción: "
-  read -r REINST_OPT < /dev/tty
+  if $SILENT_MODE; then
+    log_info "Modo silencioso — actualizando instalación existente (no destructivo)"
+    REINST_OPT="2"
+  else
+    echo ""
+    echo -e "  ${BOLD}[1]${NC} Reinstalar (borra venv y clona de nuevo)"
+    echo -e "  ${BOLD}[2]${NC} Actualizar (hermes update)"
+    echo -e "  ${BOLD}[b]${NC} Cancelar"
+    echo ""; echo -n "  Opción: "
+    read -r REINST_OPT < /dev/tty
+  fi
   case "$REINST_OPT" in
     2)
       echo ""
+      _HM_VER_BEFORE=$(hermes version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+      log_info "Versión actual: ${_HM_VER_BEFORE:-desconocida}"
       log_info "Ejecutando hermes update..."
       hermes update < /dev/tty
       echo ""
+      # Capturar versión nueva y actualizar registry
+      _HM_VER_AFTER=$(hermes version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+      [ -n "$_HM_VER_AFTER" ] && {
+        _HM_DATE_U=$(python3 -c "from datetime import datetime; print(datetime.now().strftime('%Y-%m-%d'))" 2>/dev/null || date +%Y-%m-%d)
+        _TMP_R="$REGISTRY.tmp"
+        grep -v "^hermes\.version=\|^hermes\.install_date=" "$REGISTRY" > "$_TMP_R" 2>/dev/null || touch "$_TMP_R"
+        echo "hermes.version=$_HM_VER_AFTER" >> "$_TMP_R"
+        echo "hermes.install_date=$_HM_DATE_U" >> "$_TMP_R"
+        mv "$_TMP_R" "$REGISTRY"
+      }
       log_ok "Actualización completada"
+      echo -e "  Antes: ${_HM_VER_BEFORE:-?}  →  Ahora: ${_HM_VER_AFTER:-?}"
       echo ""; exit 0 ;;
     b|B|"") echo ""; exit 0 ;;
     1|*) # Continuar con reinstalación
@@ -94,6 +114,27 @@ if command -v hermes &>/dev/null && [ -d "$INSTALL_DIR" ]; then
       echo "" ;;
   esac
 fi
+
+# ════════════════════════════════════════════
+#  ELEGIR VERSIÓN DE PYTHON PARA EL VENV
+#  hermes-agent exige Python <3.14 (ver su pyproject.toml) — Termux
+#  ahora empaqueta 3.14.6 por defecto, lo que rompe la instalación
+#  oficial (ver docs/BUGS_PERSISTENTES_2026-07-26.md e issues
+#  NousResearch/hermes-agent #71331, #59877, #48723). No hay
+#  workaround oficial documentado para esto — es experimental.
+# ════════════════════════════════════════════
+HERMES_PYTHON_MODE="oficial"
+if $SILENT_MODE; then
+  HERMES_PYTHON_MODE="${HERMES_PYTHON_MODE_ENV:-oficial}"
+else
+  echo -e "  ${BOLD}¿Qué versión de Python usar para Hermes?${NC}"; echo ""
+  echo -e "  ${GREEN}[1]${NC} Oficial ${DIM}(Python del sistema — falla si Termux trae 3.14+)${NC}"
+  echo -e "  [2] Local/venv ${DIM}(intenta una versión <3.14 vía TUR — EXPERIMENTAL, sin soporte oficial)${NC}"
+  echo ""; echo -n "  Opción [1/2]: "
+  read -r _PY_MODE_OPT < /dev/tty
+  [ "$_PY_MODE_OPT" = "2" ] && HERMES_PYTHON_MODE="local"
+fi
+echo ""
 
 # ════════════════════════════════════════════
 #  PASO 1 — DEPENDENCIAS DEL SISTEMA
@@ -168,7 +209,35 @@ cd "$INSTALL_DIR"
 if check_done "venv" && [ -f "$INSTALL_DIR/venv/bin/python" ]; then
   log_ok "Virtualenv ya existe [checkpoint]"
 else
-  PYTHON_PATH=$(command -v python 2>/dev/null || command -v python3 2>/dev/null)
+  PYTHON_PATH=""
+  if [ "$HERMES_PYTHON_MODE" = "local" ]; then
+    log_info "Modo local/venv: buscando un Python <3.14 compatible (experimental, vía TUR)..."
+    for _cand in python3.13 python3.12 python3.11; do
+      if command -v "$_cand" >/dev/null 2>&1; then
+        PYTHON_PATH=$(command -v "$_cand")
+        log_ok "Encontrado ya instalado: $_cand"
+        break
+      fi
+    done
+    if [ -z "$PYTHON_PATH" ]; then
+      log_info "Ninguno instalado — habilitando TUR e intentando instalar uno..."
+      pkg install -y tur-repo >/dev/null 2>&1
+      pkg update -y >/dev/null 2>&1
+      for _cand in python3.13 python3.12 python3.11; do
+        if pkg install -y "$_cand" >/dev/null 2>&1 && command -v "$_cand" >/dev/null 2>&1; then
+          PYTHON_PATH=$(command -v "$_cand")
+          log_ok "Instalado desde TUR: $_cand"
+          break
+        fi
+      done
+    fi
+    if [ -z "$PYTHON_PATH" ]; then
+      log_warn "No se encontró ningún Python <3.14 vía TUR — usando la versión oficial del sistema como respaldo"
+    fi
+  fi
+  if [ -z "$PYTHON_PATH" ]; then
+    PYTHON_PATH=$(command -v python 2>/dev/null || command -v python3 2>/dev/null)
+  fi
   if [ -z "$PYTHON_PATH" ]; then
     log_error "Python no encontrado — instala con: pkg install python"
     exit 1
@@ -179,7 +248,7 @@ else
 
   # Recrear venv limpio
   [ -d "venv" ] && rm -rf venv
-  "$PYTHON_PATH" -m venv venv
+  "$PYTHON_PATH" -m venv venv || { log_error "No se pudo crear el virtualenv"; exit 1; }
   log_ok "Virtualenv listo ($(./venv/bin/python --version 2>/dev/null))"
   mark_done "venv"
 fi
@@ -206,11 +275,45 @@ else
   log_info "ANDROID_API_LEVEL=$ANDROID_API_LEVEL"
 
   log_info "Actualizando pip, setuptools, wheel..."
-  "$PIP_PYTHON" -m pip install --upgrade pip setuptools wheel -q
+  "$PIP_PYTHON" -m pip install --upgrade pip setuptools wheel -q \
+    || log_warn "No se pudo actualizar pip/setuptools/wheel — continuando con las versiones actuales"
+
+  # psutil y cryptography vía pkg (binarios ARM64 precompilados de Termux) — evita que
+  # pip intente compilarlos desde fuente dentro del venv (build nativo/Rust, lento o
+  # directamente falla en Android). Patrón confirmado en core-termux-main (proyecto de
+  # referencia): su install.sh de hermes-agent instala python-psutil/python-cryptography
+  # vía pkg ANTES de correr pip, exactamente por este motivo.
+  log_info "Verificando psutil/cryptography del sistema (evita compilar en el venv)..."
+  _HERMES_PKG_DEPS=()
+  python -c "import psutil" &>/dev/null || _HERMES_PKG_DEPS+=("python-psutil")
+  python -c "import cryptography" &>/dev/null || _HERMES_PKG_DEPS+=("python-cryptography")
+  if [ "${#_HERMES_PKG_DEPS[@]}" -gt 0 ]; then
+    pkg install -y "${_HERMES_PKG_DEPS[@]}" \
+      || log_warn "No se pudieron instalar algunos paquetes del sistema: ${_HERMES_PKG_DEPS[*]}"
+  fi
+
+  # Symlink de psutil/cryptography del sistema dentro del venv — el venv no ve el
+  # site-packages del sistema por defecto, así que sin esto pip los reconstruiría ahí
+  # de todas formas. Solo aplica si la versión de Python del venv coincide con la del
+  # sistema (si HERMES_PYTHON_MODE=local usa una versión distinta, el check de abajo
+  # simplemente no encuentra coincidencia y no hace nada — no rompe nada).
+  _PY_VER_SHORT=$("$PIP_PYTHON" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null)
+  if [ -n "$_PY_VER_SHORT" ]; then
+    _VENV_SITE="$INSTALL_DIR/venv/lib/python${_PY_VER_SHORT}/site-packages"
+    _SYS_SITE="$TERMUX_PREFIX/lib/python${_PY_VER_SHORT}/site-packages"
+    for _pkgname in psutil cryptography; do
+      if [ -d "$_SYS_SITE/$_pkgname" ] && [ -d "$_VENV_SITE" ] && [ ! -e "$_VENV_SITE/$_pkgname" ]; then
+        ln -s "$_SYS_SITE/$_pkgname" "$_VENV_SITE/$_pkgname" 2>/dev/null
+      fi
+    done
+  fi
 
   # psutil no funciona en Android — requiere parche previo
   # El script install_psutil_android.py está incluido en el repo oficial
-  if "$PIP_PYTHON" -c 'import sys; raise SystemExit(0 if sys.platform == "android" else 1)' 2>/dev/null; then
+  # NOTA: sys.platform en CPython de Termux siempre reporta "linux", nunca "android" —
+  # se detecta Termux directamente en vez de confiar en sys.platform (antes esta condición
+  # nunca era verdadera y el parche de psutil jamás se aplicaba)
+  if [ -d /data/data/com.termux ]; then
     log_info "Android Python detectado — pre-compilando psutil..."
     if [ -f "$INSTALL_DIR/scripts/install_psutil_android.py" ]; then
       "$PIP_PYTHON" "$INSTALL_DIR/scripts/install_psutil_android.py" \
@@ -219,17 +322,24 @@ else
     fi
   fi
 
+  # --ignore-requires-python: fuerza a pip a ignorar el gate de versión que hermes-agent
+  # declara en su pyproject.toml (<3.14,>=3.11) — necesario porque Termux ya empaqueta
+  # Python 3.14 por defecto. Mismo mecanismo usado como último recurso en core-termux-main
+  # (proyecto de referencia). Riesgo real, no ocultarlo: esto solo evita el chequeo de
+  # METADATA de pip — si el código de hermes-agent usa algo removido en 3.12+/3.14+
+  # (ej. distutils), la instalación puede pasar pero fallar en runtime. No hay forma de
+  # confirmar esto sin probarlo en un dispositivo real.
   # Intentar perfiles en orden: termux-all → termux → base
   log_info "Instalando paquete Hermes (perfil .[termux-all])..."
-  if "$PIP_PYTHON" -m pip install -e '.[termux-all]' -c constraints-termux.txt -q; then
+  if "$PIP_PYTHON" -m pip install --ignore-requires-python -e '.[termux-all]' -c constraints-termux.txt -q; then
     log_ok "Instalado con perfil .[termux-all]"
   else
     log_warn "Perfil termux-all falló, probando .[termux]..."
-    if "$PIP_PYTHON" -m pip install -e '.[termux]' -c constraints-termux.txt -q; then
+    if "$PIP_PYTHON" -m pip install --ignore-requires-python -e '.[termux]' -c constraints-termux.txt -q; then
       log_ok "Instalado con perfil .[termux]"
     else
       log_warn "Perfil termux falló, probando instalación base..."
-      if "$PIP_PYTHON" -m pip install -e '.' -c constraints-termux.txt -q; then
+      if "$PIP_PYTHON" -m pip install --ignore-requires-python -e '.' -c constraints-termux.txt -q; then
         log_ok "Instalado con perfil base"
       else
         log_error "La instalación de paquetes falló en los 3 perfiles"
@@ -338,11 +448,12 @@ HM_VER=$(hermes version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -
 [ -z "$HM_VER" ] && HM_VER="unknown"
 
 # Limpiar entradas anteriores y escribir nuevas
+_HM_DATE=$(python3 -c "from datetime import datetime; print(datetime.now().strftime('%Y-%m-%d'))" 2>/dev/null || date +%Y-%m-%d)
 grep -v "^hermes\." "$REGISTRY" > "$REGISTRY.tmp" 2>/dev/null || touch "$REGISTRY.tmp"
 {
   echo "hermes.installed=true"
   echo "hermes.version=$HM_VER"
-  echo "hermes.install_date=$(date +%Y-%m-%d)"
+  echo "hermes.install_date=$_HM_DATE"
   echo "hermes.install_dir=$INSTALL_DIR"
   echo "hermes.model=no configurado"
 } >> "$REGISTRY.tmp"
@@ -366,11 +477,16 @@ echo -e "${NC}"
 echo ""
 
 # ── Preguntar si lanzar wizard (igual que openclaw) ──────
-echo -e "  Necesitas configurar un proveedor de IA para usar Hermes."
-echo -e "  ${DIM}(OpenRouter, Anthropic, Ollama local, etc.)${NC}"
-echo ""
-echo -n "  ¿Configurar ahora con el wizard? (s/n): "
-read -r SETUP_NOW < /dev/tty
+if $SILENT_MODE; then
+  log_warn "Modo silencioso — omitiendo wizard, ejecuta 'hermes setup' manualmente después"
+  SETUP_NOW="n"
+else
+  echo -e "  Necesitas configurar un proveedor de IA para usar Hermes."
+  echo -e "  ${DIM}(OpenRouter, Anthropic, Ollama local, etc.)${NC}"
+  echo ""
+  echo -n "  ¿Configurar ahora con el wizard? (s/n): "
+  read -r SETUP_NOW < /dev/tty
+fi
 
 if [ "$SETUP_NOW" = "s" ] || [ "$SETUP_NOW" = "S" ]; then
   echo ""

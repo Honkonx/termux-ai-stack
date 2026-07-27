@@ -1,36 +1,36 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # ============================================================
 #  termux-ai-stack · install_remote.sh
-#  Módulo Remote completo: SSH + Dashboard + Cloudflared SSH
+#  Módulo Remote: SSH + Cloudflared
 #
 #  USO:
 #    bash install_remote.sh
 #
 #  QUÉ INSTALA:
 #    ✅ OpenSSH (puerto 8022) — configurado, no solo el binario
-#    ✅ dashboard_server.py + scripts de control
 #    ✅ python3 (si no está)
 #    ✅ tmux (si no está)
 #    ✅ cloudflared ARM64 nativo (tunnel SSH desde cualquier red)
-#    ✅ Scripts: ssh_start.sh, ssh_stop.sh,
-#               dashboard_start.sh, dashboard_stop.sh
-#    ✅ Registry actualizado para SSH y Dashboard
+#    ✅ Scripts: ssh_start.sh, ssh_stop.sh
+#    ✅ Registry actualizado para SSH
 #    ✅ Aliases en .bashrc
 #
 #  CLOUDFLARED: nativo en Termux (ARM64) — NO requiere proot
 #  Binario oficial de Cloudflare para linux/arm64
 #
 #  ACCESO SSH:     ssh -p 8022 usuario@IP_WiFi
-#  ACCESO DASHBOARD: http://IP_WiFi:8080
 #
 #  REPO: https://github.com/Honkonx/termux-ai-stack
-#  VERSIÓN: 1.1.0 | Abril 2026
+#  VERSIÓN: 2.0.0 | Julio 2026
 # ============================================================
 
-TERMUX_PREFIX="/data/data/com.termux/files/usr"
+TERMUX_PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
 export PATH="$TERMUX_PREFIX/bin:$TERMUX_PREFIX/sbin:$PATH"
 
-REPO_RAW_DASHBOARD="https://raw.githubusercontent.com/Honkonx/termux-ai-stack/main/python/dashboard"
+# ── Modo silencioso (invocado desde menu.sh, confirmación ya hecha ahí) ──
+SILENT_MODE=false
+for _arg in "$@"; do [ "$_arg" = "--silent" ] && SILENT_MODE=true; done
+
 # URL oficial cloudflared ARM64 — sin proot, binario nativo
 CLOUDFLARED_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64"
 
@@ -84,21 +84,6 @@ EOF
   mv "$tmp" "$REGISTRY"
 }
 
-update_registry_dashboard() {
-  local version="$1"; local date_now; date_now=$(date +%Y-%m-%d)
-  [ ! -f "$REGISTRY" ] && touch "$REGISTRY"
-  local tmp="$REGISTRY.tmp"
-  grep -v "^dashboard\." "$REGISTRY" > "$tmp" 2>/dev/null || touch "$tmp"
-  cat >> "$tmp" << EOF
-dashboard.installed=true
-dashboard.version=${version}
-dashboard.install_date=${date_now}
-dashboard.port=8080
-dashboard.location=termux_native
-EOF
-  mv "$tmp" "$REGISTRY"
-}
-
 # ════════════════════════════════════════════════════════════
 # CABECERA
 # ════════════════════════════════════════════════════════════
@@ -107,49 +92,54 @@ echo -e "${CYAN}${BOLD}"
 cat << 'HEADER'
   ╔══════════════════════════════════════════════╗
   ║   termux-ai-stack · Remote Installer        ║
-  ║   SSH + Dashboard + Cloudflared · v1.1.0   ║
+  ║   SSH + Cloudflared  ·  v2.0.0              ║
   ╚══════════════════════════════════════════════╝
 HEADER
 echo -e "${NC}"
 
 # Estado actual
 SSH_CONFIGURED=false
-DB_CONFIGURED=false
 CF_INSTALLED=false
 
-# SSH configurado = sshd_config con "Port 8022" (el nuestro) o registry
 { [ "$(grep -c 'Port 8022' "$SSHD_CONFIG" 2>/dev/null)" -gt 0 ] || \
   [ "$(grep '^ssh.installed' "$REGISTRY" 2>/dev/null | cut -d= -f2)" = "true" ]; } && \
   SSH_CONFIGURED=true
 
-{ [ -f "$REMOTE_SCRIPTS/dashboard_server.py" ] || \
-  [ "$(grep '^dashboard.installed' "$REGISTRY" 2>/dev/null | cut -d= -f2)" = "true" ]; } && \
-  DB_CONFIGURED=true
-
 command -v cloudflared &>/dev/null && CF_INSTALLED=true
 
-if $SSH_CONFIGURED && $DB_CONFIGURED && $CF_INSTALLED; then
-  echo -e "${GREEN}  ✓ Remote completamente instalado${NC}"
-  echo -e "  SSH, Dashboard y Cloudflared están configurados"
-  echo ""
-  echo -n "  ¿Reinstalar/reconfigurar? (s/n): "
-  read -r REINSTALL < /dev/tty
-  [ "$REINSTALL" != "s" ] && [ "$REINSTALL" != "S" ] && { info "Nada que hacer."; exit 0; }
-  rm -f "$CHECKPOINT"
+# _SKIP_FINAL_CONFIRM: confirmar reinstalar aquí YA es la confirmación —
+# no hace falta preguntar "¿Continuar?" de nuevo después (doble diálogo)
+_SKIP_FINAL_CONFIRM=false
+
+if $SSH_CONFIGURED && $CF_INSTALLED; then
+  if $SILENT_MODE; then
+    rm -f "$CHECKPOINT"
+    _SKIP_FINAL_CONFIRM=true
+  else
+    echo -e "${GREEN}  ✓ Remote instalado${NC}"
+    echo -e "  SSH y Cloudflared están configurados"
+    echo ""
+    echo -n "  ¿Reinstalar/reconfigurar? (s/n): "
+    read -r REINSTALL < /dev/tty
+    [ "$REINSTALL" != "s" ] && [ "$REINSTALL" != "S" ] && { info "Nada que hacer."; exit 0; }
+    rm -f "$CHECKPOINT"
+    _SKIP_FINAL_CONFIRM=true
+  fi
 fi
 
-echo ""
-echo "  Este script instalará:"
-echo "  ▸ OpenSSH configurado en puerto 8022"
-echo "  ▸ Dashboard web Python en puerto 8080"
-echo "  ▸ Cloudflared ARM64 nativo (tunnel SSH remoto)"
-echo "  ▸ Scripts de control para los 3 servicios"
-echo ""
-echo -e "  ${CYAN}Cloudflared:${NC} binario nativo ARM64 — NO requiere proot"
-echo ""
-echo -n "  ¿Continuar? (s/n): "
-read -r CONFIRM < /dev/tty
-[ "$CONFIRM" != "s" ] && [ "$CONFIRM" != "S" ] && { echo "Cancelado."; exit 0; }
+if ! $SILENT_MODE && ! $_SKIP_FINAL_CONFIRM; then
+  echo ""
+  echo "  Este script instalará:"
+  echo "  ▸ OpenSSH configurado en puerto 8022"
+  echo "  ▸ Cloudflared ARM64 nativo (tunnel SSH remoto)"
+  echo "  ▸ Scripts de control para SSH"
+  echo ""
+  echo -e "  ${CYAN}Cloudflared:${NC} binario nativo ARM64 — NO requiere proot"
+  echo ""
+  echo -n "  ¿Continuar? (s/n): "
+  read -r CONFIRM < /dev/tty
+  [ "$CONFIRM" != "s" ] && [ "$CONFIRM" != "S" ] && { echo "Cancelado."; exit 0; }
+fi
 
 # ============================================================
 # PASO 1 — Termux (solo standalone)
@@ -216,11 +206,10 @@ titulo "PASO 3 — Configurando SSH"
 if check_done "ssh_config"; then
   log "SSH ya configurado [checkpoint]"
 else
-  # Backup del config original si existe
   [ -f "$SSHD_CONFIG" ] && cp "$SSHD_CONFIG" "${SSHD_CONFIG}.bak" 2>/dev/null
 
   cat > "$SSHD_CONFIG" << 'SSHCONF'
-# termux-ai-stack · sshd_config v1.1.0
+# termux-ai-stack · sshd_config v2.0.0
 # Puerto 8022 — sin root no se puede usar < 1024
 
 Port 8022
@@ -249,7 +238,6 @@ SSHCONF
 
   log "sshd_config configurado (Puerto 8022)"
 
-  # Generar claves del servidor
   info "Generando claves del servidor SSH..."
   ssh-keygen -A 2>/dev/null || warn "ssh-keygen -A: puede ser normal si ya existen"
   ls "$TERMUX_PREFIX/etc/ssh/ssh_host_"*"_key" &>/dev/null && \
@@ -266,102 +254,9 @@ SSHCONF
 fi
 
 # ============================================================
-# PASO 4 — Instalar Dashboard
+# PASO 4 — Scripts de control SSH
 # ============================================================
-titulo "PASO 4 — Instalando Dashboard web"
-
-if check_done "dashboard_install"; then
-  log "Dashboard ya instalado [checkpoint]"
-else
-  mkdir -p "$REMOTE_SCRIPTS"
-  info "Descargando dashboard_server.py desde GitHub..."
-
-  DB_OK=true
-  for F in dashboard_server.py; do
-    echo -n "  Descargando $F... "
-    curl -fL --progress-bar "$REPO_RAW_DASHBOARD/$F" -o "$REMOTE_SCRIPTS/$F" 2>&1 | grep -v "^$" || \
-      wget --progress=bar:force -O "$REMOTE_SCRIPTS/$F" "$REPO_RAW_DASHBOARD/$F" 2>&1
-    if [ -f "$REMOTE_SCRIPTS/$F" ] && [ -s "$REMOTE_SCRIPTS/$F" ]; then
-      echo -e "${GREEN}✓${NC}"
-    else
-      echo -e "${RED}✗${NC}"
-      DB_OK=false
-    fi
-  done
-
-  if ! $DB_OK; then
-    warn "Descarga falló — el dashboard requiere dashboard_server.py del repo"
-    warn "Puedes descargarlo luego con: [u] Actualizar en el menú"
-  else
-    log "dashboard_server.py descargado en ~/scripts/remote/"
-  fi
-
-  # SIEMPRE crear dashboard_start.sh robusto (sin tmux, con nohup)
-  # No depende del repo — funciona desde el primer arranque
-  cat > "$REMOTE_SCRIPTS/dashboard_start.sh" << 'DBSTART'
-#!/data/data/com.termux/files/usr/bin/bash
-# dashboard_start.sh — robusto, sin tmux
-DB_SCRIPT="$HOME/scripts/remote/dashboard_server.py"
-
-_get_ip() {
-  local ip
-  ip=$(ifconfig 2>/dev/null | grep -A1 "netmask 255\.255\." | grep "inet " | grep -v "127\." | awk '{print $2}' | head -1)
-  [ -z "$ip" ] && ip=$(ifconfig 2>/dev/null | grep "inet " | grep -v "127\." | awk '{print $2}' | head -1)
-  echo "${ip:-localhost}"
-}
-
-if [ ! -f "$DB_SCRIPT" ]; then
-  echo "[ERROR] dashboard_server.py no encontrado"
-  echo "  Instala desde menú: [6] Remote → [7] Iniciar Dashboard"
-  exit 1
-fi
-
-if pgrep -f "dashboard_server.py" &>/dev/null; then
-  echo "[INFO] Dashboard ya corriendo → http://$(_get_ip):8080"
-  exit 0
-fi
-
-cd "$(dirname "$DB_SCRIPT")"
-nohup python3 "$DB_SCRIPT" > "$HOME/.dashboard.log" 2>&1 &
-DASH_PID=$!
-sleep 2
-
-if kill -0 "$DASH_PID" 2>/dev/null || pgrep -f "dashboard_server.py" &>/dev/null; then
-  echo "[OK] Dashboard → http://$(_get_ip):8080"
-  echo "     App Android: http://localhost:8080"
-else
-  echo "[ERROR] No se pudo iniciar"
-  echo "  Log: cat ~/.dashboard.log"
-  exit 1
-fi
-DBSTART
-  chmod +x "$REMOTE_SCRIPTS/dashboard_start.sh"
-  log "dashboard_start.sh creado en ~/scripts/remote/ (robusto, sin tmux)"
-
-  # dashboard_stop.sh con espera real
-  cat > "$REMOTE_SCRIPTS/dashboard_stop.sh" << 'DBSTOP'
-#!/data/data/com.termux/files/usr/bin/bash
-if pgrep -f "dashboard_server.py" &>/dev/null; then
-  pkill -f "dashboard_server.py" 2>/dev/null
-  sleep 1
-  pgrep -f "dashboard_server.py" &>/dev/null && \
-    pkill -9 -f "dashboard_server.py" 2>/dev/null && sleep 1
-  pgrep -f "dashboard_server.py" &>/dev/null && \
-    echo "[ERROR] No se pudo detener" || echo "[OK] Dashboard detenido"
-else
-  echo "[OK] Dashboard detenido"
-fi
-DBSTOP
-  chmod +x "$REMOTE_SCRIPTS/dashboard_stop.sh"
-  log "dashboard_stop.sh creado"
-
-  mark_done "dashboard_install"
-fi
-
-# ============================================================
-# PASO 5 — Scripts de control SSH
-# ============================================================
-titulo "PASO 5 — Scripts SSH"
+titulo "PASO 4 — Scripts SSH"
 
 if check_done "ssh_scripts"; then
   log "Scripts SSH ya creados [checkpoint]"
@@ -405,28 +300,35 @@ SCRIPT
 fi
 
 # ============================================================
-# PASO 6 — Cloudflared ARM64 nativo
+# PASO 5 — Cloudflared ARM64 nativo
 # ============================================================
-titulo "PASO 6 — Cloudflared (tunnel SSH remoto)"
+titulo "PASO 5 — Cloudflared (tunnel SSH remoto)"
 
 if check_done "cloudflared_install"; then
   log "Cloudflared ya instalado [checkpoint]"
 else
-  echo "  Cloudflared permite conectarte via SSH desde CUALQUIER red"
-  echo "  (no solo WiFi local). Binario nativo ARM64 — sin proot."
-  echo ""
-  echo -n "  ¿Instalar cloudflared? (s/n): "
-  read -r INSTALL_CF < /dev/tty
+  if $SILENT_MODE; then
+    INSTALL_CF="s"
+  else
+    echo "  Cloudflared permite conectarte via SSH desde CUALQUIER red"
+    echo "  (no solo WiFi local). Binario nativo ARM64 — sin proot."
+    echo ""
+    echo -n "  ¿Instalar cloudflared? (s/n): "
+    read -r INSTALL_CF < /dev/tty
+  fi
 
   if [ "$INSTALL_CF" = "s" ] || [ "$INSTALL_CF" = "S" ]; then
     CF_DEST="$TERMUX_PREFIX/bin/cloudflared"
 
-    info "Descargando cloudflared linux/arm64..."
-    curl -fL --progress-bar "$CLOUDFLARED_URL" -o "$CF_DEST"
+    if command -v cloudflared &>/dev/null; then
+      log "Cloudflared ya instalado ✓ — $(cloudflared --version 2>/dev/null | head -1)"
+    else
+      info "Descargando cloudflared linux/arm64..."
+      curl -fL --progress-bar "$CLOUDFLARED_URL" -o "$CF_DEST"
+    fi
 
     if [ -f "$CF_DEST" ] && [ -s "$CF_DEST" ]; then
       chmod +x "$CF_DEST"
-      # Verificar que es ejecutable en Termux/Bionic
       CF_VER=$(cloudflared --version 2>/dev/null | head -1)
       if [ -n "$CF_VER" ]; then
         log "Cloudflared instalado ✓ — $CF_VER"
@@ -453,9 +355,9 @@ else
 fi
 
 # ============================================================
-# PASO 7 — Aliases en .bashrc
+# PASO 6 — Aliases en .bashrc
 # ============================================================
-titulo "PASO 7 — Aliases"
+titulo "PASO 6 — Aliases"
 
 if check_done "remote_aliases"; then
   log "Aliases ya configurados [checkpoint]"
@@ -467,14 +369,11 @@ else
   cat >> "$BASHRC" << 'ALIASES'
 
 # ════════════════════════════════
-#  Remote (SSH + Dashboard) · aliases
+#  Remote (SSH) · aliases
 # ════════════════════════════════
 alias ssh-start='bash ~/scripts/remote/ssh_start.sh'
 alias ssh-stop='bash ~/scripts/remote/ssh_stop.sh'
 alias ssh-status='pgrep -x sshd &>/dev/null && echo "SSH: ● :8022" || echo "SSH: ○ detenido"'
-alias dashboard-start='bash ~/scripts/remote/dashboard_start.sh'
-alias dashboard-stop='bash ~/scripts/remote/dashboard_stop.sh'
-alias dashboard-status='pgrep -f "dashboard_server.py" &>/dev/null && echo "Dashboard: ● :8080" || echo "Dashboard: ○ detenido"'
 ALIASES
 
   log "Aliases agregados a ~/.bashrc"
@@ -482,19 +381,14 @@ ALIASES
 fi
 
 # ============================================================
-# PASO 8 — Actualizar registry
+# PASO 7 — Actualizar registry
 # ============================================================
-titulo "PASO 8 — Actualizando registry"
+titulo "PASO 7 — Actualizando registry"
 
 SSH_VER=$(ssh -V 2>&1 | grep -oE 'OpenSSH_[0-9]+\.[0-9p]+' | head -1)
 [ -z "$SSH_VER" ] && SSH_VER="unknown"
-DB_VER="1.1"
-[ -f "$REMOTE_SCRIPTS/dashboard_server.py" ] && \
-  DB_VER=$(grep -oE "v[0-9]+\.[0-9]+" "$REMOTE_SCRIPTS/dashboard_server.py" 2>/dev/null | head -1 | tr -d 'v')
-[ -z "$DB_VER" ] && DB_VER="1.1"
 
 update_registry_ssh "$SSH_VER"
-update_registry_dashboard "$DB_VER"
 
 # ============================================================
 # RESUMEN FINAL
@@ -507,7 +401,7 @@ USER_NAME=$(whoami)
 echo -e "${GREEN}${BOLD}"
 cat << 'RESUMEN'
   ╔══════════════════════════════════════════════╗
-  ║   Remote (SSH + Dashboard) instalado ✓      ║
+  ║   Remote (SSH) instalado ✓                  ║
   ╚══════════════════════════════════════════════╝
 RESUMEN
 echo -e "${NC}"
@@ -515,32 +409,28 @@ echo -e "${NC}"
 echo -e "  ${CYAN}SSH${NC} — OpenSSH configurado en puerto 8022"
 echo -e "  Conectar: ${GREEN}ssh -p 8022 ${USER_NAME}@${IP}${NC}"
 echo ""
-echo -e "  ${CYAN}Dashboard${NC} — servidor web Python en puerto 8080"
-echo -e "  URL WiFi: ${GREEN}http://${IP}:8080${NC}"
-echo -e "  URL App:  ${GREEN}http://localhost:8080${NC}"
-echo ""
 command -v cloudflared &>/dev/null && \
   echo -e "  ${CYAN}Cloudflared${NC} ✓ — configura el token en menú [6] → [t]" || \
   echo -e "  ${YELLOW}Cloudflared${NC} — no instalado (opcional, para acceso remoto)"
 echo ""
 echo "  ALIASES:"
 echo "  ssh-start / ssh-stop / ssh-status"
-echo "  dashboard-start / dashboard-stop / dashboard-status"
 echo ""
 echo -e "  ${YELLOW}NOTAS:${NC}"
 echo "  · Para SSH sin contraseña: menú [6] → [4] Agregar clave pública"
 echo "  · Para acceso remoto sin WiFi: menú [6] → [t] Configurar token CF-SSH"
 echo ""
 
-echo -n "  ¿Iniciar SSH y Dashboard ahora? (s/n): "
-read -r START_NOW < /dev/tty
+if $SILENT_MODE; then
+  START_NOW="s"
+else
+  echo -n "  ¿Iniciar SSH ahora? (s/n): "
+  read -r START_NOW < /dev/tty
+fi
 if [ "$START_NOW" = "s" ] || [ "$START_NOW" = "S" ]; then
   echo ""
   info "Iniciando SSH..."
   bash "$REMOTE_SCRIPTS/ssh_start.sh"
-  echo ""
-  info "Iniciando Dashboard..."
-  bash "$REMOTE_SCRIPTS/dashboard_start.sh"
 fi
 
 echo ""

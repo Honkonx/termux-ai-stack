@@ -55,7 +55,10 @@ TMP_DIR="$HOME/backup_tmp"
 OUT_DIR="/sdcard/Download/termux-ai-stack-releases"
 REGISTRY="$HOME/.android_server_registry"
 NPM_GLOBAL="${TERMUX_PREFIX}/lib/node_modules"
+# ROOTFS_BASE = layout legacy de proot-distro; CONTAINERS_BASE = layout
+# moderno (reescritura bash→Python) — ver docs/PROOT.md (2026-07-26)
 ROOTFS_BASE="${TERMUX_PREFIX}/var/lib/proot-distro/installed-rootfs"
+CONTAINERS_BASE="${TERMUX_PREFIX}/var/lib/proot-distro/containers"
 SSHD_CONFIG="${TERMUX_PREFIX}/etc/ssh/sshd_config"
 
 # ── Módulo objetivo (vacío = todos) ──────────────────────────
@@ -73,8 +76,8 @@ parse_args() {
 
   if [ -n "$TARGET_MODULE" ]; then
     case "$TARGET_MODULE" in
-      base|claude|claude-native|expo|ollama|n8n|proot-base|proot-n8n|remote|opencode|openclaw|full) ;;
-      *) error "Módulo inválido: '$TARGET_MODULE'\n  Válidos: base | claude | expo | ollama | n8n | proot-base | proot-n8n | remote | opencode | openclaw | full" ;;
+      base|claude|claude-native|expo|ollama|n8n|proot-base|proot-n8n|proot-full|remote|opencode|openclaw|full) ;;
+      *) error "Módulo inválido: '$TARGET_MODULE'\n  Válidos: base | claude | expo | ollama | n8n | proot-base | proot-n8n | proot-full | remote | opencode | openclaw | full" ;;
     esac
   fi
 }
@@ -83,7 +86,8 @@ parse_args "$@"
 should_run() {
   [ -z "$TARGET_MODULE" ] || [ "$TARGET_MODULE" = "$1" ] || [ "$TARGET_MODULE" = "full" ] || \
   { [ "$1" = "proot" ] && { [ "$TARGET_MODULE" = "proot-base" ] || \
-    [ "$TARGET_MODULE" = "proot-n8n" ] || [ "$TARGET_MODULE" = "proot-completo" ]; }; } || \
+    [ "$TARGET_MODULE" = "proot-n8n" ] || [ "$TARGET_MODULE" = "proot-completo" ] || \
+    [ "$TARGET_MODULE" = "proot-full" ]; }; } || \
   { [ "$1" = "claude-any" ] && { [ "$TARGET_MODULE" = "claude" ] || \
     [ "$TARGET_MODULE" = "claude-native" ]; }; }
 }
@@ -91,15 +95,31 @@ should_run() {
 # ── Detectar proot ────────────────────────────────────────────
 DISTRO_NAME=""
 ROOTFS_PATH=""
+ROOTFS_PARENT=""   # base dir a usar con `tar -C` — depende del layout detectado
 detect_distro() {
   DISTRO_NAME=""
   ROOTFS_PATH=""
+  ROOTFS_PARENT=""
+  # Layout moderno primero (containers/<n>/rootfs, con manifest.json)
+  if [ -d "$CONTAINERS_BASE" ]; then
+    for d in "$CONTAINERS_BASE"/*/; do
+      d="${d%/}"
+      if [ -f "${d}/rootfs/bin/bash" ]; then
+        DISTRO_NAME=$(basename "$d")
+        ROOTFS_PATH="${d}/rootfs"
+        ROOTFS_PARENT="$CONTAINERS_BASE"
+        return
+      fi
+    done
+  fi
+  # Layout legacy (installed-rootfs/<n>) — solo instalaciones viejas
   if [ -d "$ROOTFS_BASE" ]; then
     for d in "$ROOTFS_BASE"/*/; do
       d="${d%/}"   # quitar trailing slash
       if [ -f "${d}/bin/bash" ]; then
         DISTRO_NAME=$(basename "$d")
         ROOTFS_PATH="$d"
+        ROOTFS_PARENT="$ROOTFS_BASE"
         break
       fi
     done
@@ -559,6 +579,7 @@ if [ -z "$TARGET_MODULE" ]; then
   echo ""
   echo -e "  ${CYAN}[1]${NC} proot-base — Rootfs Debian limpio (sin módulos)"
   echo -e "  ${CYAN}[2]${NC} proot-n8n  — Rootfs Debian + n8n + cloudflared"
+  echo -e "  ${CYAN}[3]${NC} proot-full — Rootfs completo (n8n + OpenCode + OpenClaw) ${YELLOW}~2-3GB${NC}"
   echo -e "  ${CYAN}[b]${NC} Omitir proot"
   echo ""
   echo -n "  Opción: "
@@ -566,6 +587,7 @@ if [ -z "$TARGET_MODULE" ]; then
   case "$P6_OPT" in
     1) PROOT_VARIANT="proot-base" ;;
     2) PROOT_VARIANT="proot-n8n"  ;;
+    3) PROOT_VARIANT="proot-full" ;;
     b|B|"") PROOT_VARIANT="skip" ;;
     *) PROOT_VARIANT="skip" ;;
   esac
@@ -573,6 +595,8 @@ elif [ "$TARGET_MODULE" = "proot-base" ]; then
   PROOT_VARIANT="proot-base"
 elif [ "$TARGET_MODULE" = "proot-n8n" ]; then
   PROOT_VARIANT="proot-n8n"
+elif [ "$TARGET_MODULE" = "proot-full" ]; then
+  PROOT_VARIANT="proot-full"
 fi
 
 if [ "$PROOT_VARIANT" = "skip" ]; then
@@ -590,7 +614,13 @@ else
   echo "  Rootfs    : $ROOTFS_PATH"
   echo "  Variante  : $PROOT_VARIANT"
   echo "  Tamaño    : $ROOTFS_SIZE (sin comprimir)"
-  echo -e "  ${YELLOW}Tiempo estimado: 10-20 min — mantén la pantalla encendida${NC}"
+  if [ "$PROOT_VARIANT" = "proot-full" ]; then
+    echo -e "  ${YELLOW}${BOLD}⚠  proot-full incluye TODO el rootfs (n8n + OpenCode + OpenClaw)${NC}"
+    echo -e "  ${YELLOW}⚠  Tamaño comprimido esperado: ~2-3GB — subir manualmente a GitHub${NC}"
+    echo -e "  ${YELLOW}Tiempo estimado: 20-40 min — mantén la pantalla encendida${NC}"
+  else
+    echo -e "  ${YELLOW}Tiempo estimado: 10-20 min — mantén la pantalla encendida${NC}"
+  fi
   echo ""
   echo -n "  ¿Crear ${PROOT_VARIANT} ahora? (s/n): "
   read -r DO_PART6 < /dev/tty
@@ -598,7 +628,7 @@ else
   if [ "$DO_PART6" = "s" ] || [ "$DO_PART6" = "S" ]; then
     P6_OUT="$TMP_DIR/${PROOT_VARIANT}-${VERSION}.tar.xz"
     info "Comprimiendo rootfs Debian (${PROOT_VARIANT})..."
-    tar -cJf "$P6_OUT" -C "$ROOTFS_BASE" "$DISTRO_NAME" 2>/dev/null
+    tar -cJf "$P6_OUT" -C "$ROOTFS_PARENT" "$DISTRO_NAME" 2>/dev/null
     if [ -f "$P6_OUT" ] && [ -s "$P6_OUT" ]; then
       SIZE=$(du -h "$P6_OUT" | cut -f1)
       log "${PROOT_VARIANT} → $SIZE"
@@ -845,6 +875,7 @@ CHECKSUMS_TMP="$TMP_DIR/checksums-${VERSION}.txt"
   echo "# part5 = n8n-data            (n8n + cloudflared dentro de proot)"
   echo "# part6-proot-base            (rootfs Debian limpio)"
   echo "# part6-proot-n8n             (rootfs Debian + n8n + cloudflared)"
+  echo "# part6-proot-full            (rootfs Debian completo: n8n + OpenCode + OpenClaw ~2-3GB)"
   echo "# part7 = remote              (SSH configs + Dashboard)"
   echo "# part8 = opencode            (OpenCode en proot)"
   echo "# part9 = openclaw            (NVM + Node22 + OpenClaw en proot)"

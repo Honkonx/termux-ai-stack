@@ -26,6 +26,10 @@
 TERMUX_PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
 export PATH="$HOME/.local/bin:$TERMUX_PREFIX/bin:$TERMUX_PREFIX/sbin:$PATH"
 
+# ── Modo silencioso (invocado desde menu.sh, confirmación ya hecha ahí) ──
+SILENT_MODE=false
+for _arg in "$@"; do [ "$_arg" = "--silent" ] && SILENT_MODE=true; done
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -218,6 +222,7 @@ _check_conflict() {
   echo -e "  ║  ${NC}¿Desinstalar ${other_label} ahora?${YELLOW}${BOLD}       ║"
   echo -e "  ╚══════════════════════════════════════════╝${NC}"
   echo ""
+  $SILENT_MODE && error "Conflicto de versión detectado — no se puede resolver en modo silencioso, ejecuta sin --silent para decidir manualmente"
   echo -n "  Escribe SI para desinstalar y continuar: "
   read -r CONFIRM_UNINSTALL < /dev/tty
   if [ "$CONFIRM_UNINSTALL" = "SI" ]; then
@@ -234,36 +239,8 @@ _check_conflict() {
 # MENÚ NIVEL 2 — Fuente de instalación
 # ════════════════════════════════════════════════════════════
 _menu_fuente() {
-  local label
-  [ "$CHOSEN_METHOD" = "native" ] && label="Native v${CLAUDE_VERSION_NATIVE}+" \
-                                  || label="Legacy v${CLAUDE_VERSION_LEGACY}"
-
-  clear; echo ""
-  echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
-  printf  "  ║  %-40s║\n" "Método: ${label}"
-  echo    "  ╠══════════════════════════════════════════╣"
-  echo -e "  ║  ${NC}[1] Instalación limpia               ${CYAN}${BOLD}   ║"
-  echo -e "  ║  ${NC}    ${DIM}descarga e instala desde cero${NC}${CYAN}${BOLD}       ║"
-  echo -e "  ║  ${NC}[2] Desde GitHub Releases            ${CYAN}${BOLD}   ║"
-  echo -e "  ║  ${NC}    ${DIM}restaura backup part2/part2b${NC}${CYAN}${BOLD}        ║"
-  echo    "  ╠══════════════════════════════════════════╣"
-  echo -e "  ║  ${NC}[b] Volver  [q] Cancelar${CYAN}${BOLD}                ║"
-  echo -e "  ╚══════════════════════════════════════════╝${NC}"
-  echo ""; echo -n "  Opción: "
-  read -r OPT_FUENTE < /dev/tty
-
-  case "$OPT_FUENTE" in
-    1) CHOSEN_SOURCE="clean"  ;;
-    2) CHOSEN_SOURCE="github" ;;
-    b|B)
-      # Volver al nivel 1 — relanzar menú de método
-      _menu_metodo
-      _check_conflict
-      _menu_fuente  # recursivo: vuelve aquí con el nuevo método
-      return ;;
-    q|Q|"") echo "Cancelado."; exit 0 ;;
-    *) error "Opción inválida" ;;
-  esac
+  # Siempre instalación limpia — el usuario no necesita elegir fuente
+  CHOSEN_SOURCE="clean"
 }
 
 # ════════════════════════════════════════════════════════════
@@ -342,11 +319,17 @@ _install_native_clean() {
   local DL="https://downloads.claude.ai/claude-code-releases/${VERSION}"
 
   # Preguntar si usar versión fija o latest
-  echo -e "  ${CYAN}Versión a instalar:${NC}"
-  echo -e "  [1] v${CLAUDE_VERSION_NATIVE}  ${DIM}(estable, probada en POCO F5)${NC}"
-  echo -e "  [2] latest          ${DIM}(más reciente, puede ser inestable)${NC}"
-  echo ""; echo -n "  Opción [1/2]: "
-  read -r OPT_VER < /dev/tty
+  local OPT_VER
+  if $SILENT_MODE; then
+    info "Modo silencioso — usando versión estable v${CLAUDE_VERSION_NATIVE}"
+    OPT_VER="1"
+  else
+    echo -e "  ${CYAN}Versión a instalar:${NC}"
+    echo -e "  [1] v${CLAUDE_VERSION_NATIVE}  ${DIM}(estable, probada en POCO F5)${NC}"
+    echo -e "  [2] latest          ${DIM}(más reciente, puede ser inestable)${NC}"
+    echo ""; echo -n "  Opción [1/2]: "
+    read -r OPT_VER < /dev/tty
+  fi
   if [ "$OPT_VER" = "2" ]; then
     info "Consultando versión latest..."
     VERSION=$(curl -fsSL \
@@ -422,6 +405,128 @@ WRAPPER
   [ -n "$ver_check" ] \
     && log "Claude native v${ver_check} funcionando ✓" \
     || warn "Wrapper creado pero --version no respondió — verifica con: claude --version"
+}
+
+# ════════════════════════════════════════════════════════════
+# ACTUALIZACIÓN NATIVE — solo binario + patchelf + registry
+# No toca: glibc, wrapper, settings, aliases
+# ════════════════════════════════════════════════════════════
+_update_native() {
+  titulo "Actualización — Claude Code native"
+
+  local _VER_ANTES
+  _VER_ANTES=$(_detect_version "native")
+  [ -z "$_VER_ANTES" ] && \
+    _VER_ANTES=$(grep "^claude_code\.version=" "$REGISTRY" 2>/dev/null | cut -d'=' -f2)
+  echo -e "  Versión actual: ${CYAN}${_VER_ANTES:-desconocida}${NC}"; echo ""
+
+  # ── Elegir versión ────────────────────────────────────────
+  local _OPT_VER
+  if $SILENT_MODE; then
+    info "Modo silencioso — usando versión estable v${CLAUDE_VERSION_NATIVE}"
+    _OPT_VER="1"
+  else
+    echo -e "  ${BOLD}Versión a instalar:${NC}"
+    echo -e "  [1] v${CLAUDE_VERSION_NATIVE}  ${DIM}(estable, probada en POCO F5)${NC}"
+    echo -e "  [2] latest          ${DIM}(más reciente, puede ser inestable)${NC}"
+    echo -e "  [q] Cancelar"
+    echo ""; echo -n "  Opción [1]: "
+    read -r _OPT_VER < /dev/tty
+  fi
+
+  local _VERSION="$CLAUDE_VERSION_NATIVE"
+  case "${_OPT_VER:-1}" in
+    1) _VERSION="$CLAUDE_VERSION_NATIVE" ;;
+    2)
+      info "Consultando versión latest..."
+      _VERSION=$(curl -fsSL \
+        "https://downloads.claude.ai/claude-code-releases/latest/manifest.json" \
+        2>/dev/null | grep -o '"version":"[^"]*"' | grep -o '[0-9][^"]*' | head -1)
+      [ -z "$_VERSION" ] && {
+        warn "No se pudo obtener latest — usando v${CLAUDE_VERSION_NATIVE}"
+        _VERSION="$CLAUDE_VERSION_NATIVE"
+      }
+      info "Versión latest: v${_VERSION}" ;;
+    q|Q|"") echo "Cancelado."; return 0 ;;
+    *) _VERSION="$CLAUDE_VERSION_NATIVE" ;;
+  esac
+
+  # Si la versión es la misma, preguntar antes de continuar
+  if [ "$_VERSION" = "$_VER_ANTES" ]; then
+    echo -e "  ${YELLOW}[AVISO]${NC} Ya tienes v${_VERSION} instalada."
+    if $SILENT_MODE; then
+      info "Modo silencioso — misma versión ya instalada, no se reinstala"
+      return 0
+    fi
+    echo -n "  ¿Reinstalar el binario de todas formas? (s/n): "
+    read -r _FORCE < /dev/tty
+    [ "$_FORCE" != "s" ] && [ "$_FORCE" != "S" ] && { echo "Cancelado."; return 0; }
+  fi
+
+  local _DL="https://downloads.claude.ai/claude-code-releases/${_VERSION}"
+
+  # ── Descargar binario ─────────────────────────────────────
+  info "Descargando binario v${_VERSION}..."
+  mkdir -p "$(dirname "$NATIVE_BINARY")"
+  curl -fL --progress-bar "${_DL}/linux-arm64/claude" -o "$NATIVE_BINARY" || \
+    error "Descarga fallida — verifica tu conexión"
+  [ -s "$NATIVE_BINARY" ] || error "Binario descargado vacío"
+
+  # ── Verificar checksum ────────────────────────────────────
+  info "Verificando SHA256..."
+  local expected actual
+  expected=$(curl -fsSL "${_DL}/manifest.json" 2>/dev/null | \
+    python3 -c "import sys,json; d=json.load(sys.stdin); \
+    print(d['platforms']['linux-arm64']['checksum'])" 2>/dev/null)
+  if [ -n "$expected" ]; then
+    actual=$(sha256sum "$NATIVE_BINARY" | cut -d' ' -f1)
+    if [ "$actual" = "$expected" ]; then
+      log "SHA256 verificado ✓"
+    else
+      rm -f "$NATIVE_BINARY"
+      error "SHA256 no coincide — binario corrupto\n  Esperado: ${expected:0:20}...\n  Actual:   ${actual:0:20}..."
+    fi
+  else
+    warn "No se pudo verificar checksum — continuando"
+  fi
+
+  # ── Patchear ELF ──────────────────────────────────────────
+  chmod +x "$NATIVE_BINARY"
+  info "Parcheando intérprete ELF..."
+  [ -f "$PATCHELF" ] || error "patchelf no encontrado: $PATCHELF — ejecuta: pkg install patchelf-glibc"
+  [ -f "$GLIBC_LD" ] || error "ld.so no encontrado: $GLIBC_LD — ejecuta: pkg install glibc-runner"
+  LD_PRELOAD= "$PATCHELF" --set-interpreter "$GLIBC_LD" "$NATIVE_BINARY" || \
+    error "patchelf falló"
+  log "Intérprete ELF parcheado ✓"
+
+  # ── Verificar + registry ──────────────────────────────────
+  local _VER_NUEVA
+  # Wrapper puede no existir si es la primera instalación native desde legacy
+  # → recrear wrapper antes de verificar versión
+  if [ ! -x "$NATIVE_WRAPPER" ]; then
+    mkdir -p "$(dirname "$NATIVE_WRAPPER")"
+    cat > "$NATIVE_WRAPPER" << _WRAP
+#!/data/data/com.termux/files/usr/bin/bash
+unset LD_PRELOAD
+exec "$NATIVE_BINARY" "\$@"
+_WRAP
+    chmod +x "$NATIVE_WRAPPER"
+    log "Wrapper recreado: $NATIVE_WRAPPER"
+  fi
+  _VER_NUEVA=$("$NATIVE_WRAPPER" --version 2>/dev/null \
+    | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+  [ -z "$_VER_NUEVA" ] && _VER_NUEVA="$_VERSION"
+
+  _update_registry "$_VER_NUEVA" "native"
+
+  echo ""
+  echo -e "${GREEN}${BOLD}  ╔══════════════════════════════════════════╗"
+  echo    "  ║  [OK] Claude Code native actualizado   ║"
+  echo    "  ╠══════════════════════════════════════════╣"
+  printf  "  ║  ${NC}Antes:  %-34s${GREEN}${BOLD}║\n" "${_VER_ANTES:-?}"
+  printf  "  ║  ${NC}Ahora:  %-34s${GREEN}${BOLD}║\n" "${_VER_NUEVA:-?}"
+  echo -e "  ╚══════════════════════════════════════════╝${NC}"
+  echo ""
 }
 
 # ════════════════════════════════════════════════════════════
@@ -688,20 +793,61 @@ CHOSEN_METHOD=""
 CHOSEN_SOURCE=""
 
 _show_header
-_menu_metodo
+if [ "$CLAUDE_METHOD" = "native" ] || [ "$CLAUDE_METHOD" = "legacy" ]; then
+  CHOSEN_METHOD="$CLAUDE_METHOD"
+  info "Método preseleccionado: $CHOSEN_METHOD"
+else
+  _menu_metodo
+fi
 _check_conflict
 
-# Si ya está instalado el mismo método: confirmar reinstalación
+# Si ya está instalado el mismo método: ofrecer update vs reinstalación
 if [ "$INSTALLED_METHOD" = "$CHOSEN_METHOD" ] && \
    [ "$INSTALLED_METHOD" != "none" ] && [ "$INSTALLED_METHOD" != "broken" ]; then
   echo ""
   echo -e "  ${GREEN}Claude ${CHOSEN_METHOD} v${INSTALLED_VER} ya instalado.${NC}"
-  echo -n "  ¿Reinstalar/actualizar? (s/n): "
-  read -r CONFIRM_REINSTALL < /dev/tty
-  [ "$CONFIRM_REINSTALL" != "s" ] && [ "$CONFIRM_REINSTALL" != "S" ] && {
-    info "Nada que hacer. Saliendo."; exit 0
-  }
-  rm -f "$CHECKPOINT"
+  echo ""
+
+  if [ "$CHOSEN_METHOD" = "native" ]; then
+    $SILENT_MODE && error "Claude ${CHOSEN_METHOD} ya instalado — no se puede decidir actualizar/reinstalar en modo silencioso, ejecuta sin --silent para decidir manualmente"
+    # Native: ofrecer update rápido o reinstalación completa
+    echo -e "  ${BOLD}¿Qué deseas hacer?${NC}"
+    echo ""
+    echo -e "  ${GREEN}[1]${NC} Actualizar          ${DIM}(solo nuevo binario + patchelf)${NC}"
+    echo -e "  [2] Reinstalar  ${DIM}(descarga completa desde cero)${NC}"
+    echo -e "  [q] Cancelar"
+    echo ""; echo -n "  Opción: "
+    read -r _OPT_ACTION < /dev/tty
+    case "$_OPT_ACTION" in
+      1)
+        _update_native; exit 0 ;;
+      2)
+        rm -f "$CHECKPOINT"
+        CHOSEN_SOURCE="clean"
+        _ensure_termux
+        _ensure_glibc
+        _install_native_clean
+        FINAL_VER=$(_detect_version "native")
+        [ -z "$FINAL_VER" ] && FINAL_VER="instalado"
+        _show_result "native" "$FINAL_VER"
+        exit 0 ;;
+      q|Q|"") info "Nada que hacer. Saliendo."; exit 0 ;;
+      *) info "Nada que hacer. Saliendo."; exit 0 ;;
+    esac
+
+  else
+    # Legacy: no hay update — versión fijada en 2.1.111
+    $SILENT_MODE && error "Claude legacy ya instalado — no se puede decidir reinstalar en modo silencioso, ejecuta sin --silent para decidir manualmente"
+    echo -e "  ${YELLOW}[INFO]${NC} Claude legacy está fijado en v${CLAUDE_VERSION_LEGACY}"
+    echo -e "  ${DIM}No se actualiza — esta versión garantiza compatibilidad con Bionic libc.${NC}"
+    echo ""
+    echo -n "  ¿Reinstalar v${CLAUDE_VERSION_LEGACY} desde cero? (s/n): "
+    read -r CONFIRM_REINSTALL < /dev/tty
+    [ "$CONFIRM_REINSTALL" != "s" ] && [ "$CONFIRM_REINSTALL" != "S" ] && {
+      info "Nada que hacer. Saliendo."; exit 0
+    }
+    rm -f "$CHECKPOINT"
+  fi
 fi
 
 _menu_fuente

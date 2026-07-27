@@ -31,6 +31,10 @@
 TERMUX_PREFIX="/data/data/com.termux/files/usr"
 export PATH="$TERMUX_PREFIX/bin:$TERMUX_PREFIX/sbin:$PATH"
 
+# ── Modo silencioso (invocado desde menu.sh, confirmación ya hecha ahí) ──
+SILENT_MODE=false
+for _arg in "$@"; do [ "$_arg" = "--silent" ] && SILENT_MODE=true; done
+
 # ── Colores ──────────────────────────────────────────────────
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -88,18 +92,27 @@ HEADER
 echo -e "${NC}"
 
 # ── Verificar si ya está instalado ───────────────────────────
+# _SKIP_FINAL_CONFIRM: confirmar reinstalar aquí YA es la confirmación —
+# no hace falta preguntar "¿Continuar?" de nuevo después (doble diálogo)
+_SKIP_FINAL_CONFIRM=false
 if command -v python3 &>/dev/null; then
   CURRENT_VER=$(python3 --version 2>/dev/null | awk '{print $2}')
-  echo -e "${GREEN}  ✓ Python ya está instalado${NC}"
-  echo -e "  Versión actual: ${CYAN}${CURRENT_VER}${NC}"
-  echo ""
-  echo -n "  ¿Reinstalar/actualizar todos los componentes? (s/n): "
-  read -r REINSTALL < /dev/tty
-  if [ "$REINSTALL" != "s" ] && [ "$REINSTALL" != "S" ]; then
-    info "Nada que hacer. Saliendo."
-    exit 0
+  if $SILENT_MODE; then
+    rm -f "$CHECKPOINT"
+    _SKIP_FINAL_CONFIRM=true
+  else
+    echo -e "${GREEN}  ✓ Python ya está instalado${NC}"
+    echo -e "  Versión actual: ${CYAN}${CURRENT_VER}${NC}"
+    echo ""
+    echo -n "  ¿Reinstalar/actualizar todos los componentes? (s/n): "
+    read -r REINSTALL < /dev/tty
+    if [ "$REINSTALL" != "s" ] && [ "$REINSTALL" != "S" ]; then
+      info "Nada que hacer. Saliendo."
+      exit 0
+    fi
+    rm -f "$CHECKPOINT"
+    _SKIP_FINAL_CONFIRM=true
   fi
-  rm -f "$CHECKPOINT"
 fi
 
 # ── Lista completa de lo que se instalará ────────────────────
@@ -126,11 +139,13 @@ echo ""
 echo "  ESTRUCTURA DE DIRECTORIOS:"
 echo "  ▸ ~/sports/{scripts,db}   ~/trading/{scripts,db}   ~/bots/{scripts,db}"
 echo ""
-echo -n "  ¿Continuar? (s/n): "
-read -r CONFIRM < /dev/tty
-if [ "$CONFIRM" != "s" ] && [ "$CONFIRM" != "S" ]; then
-  echo "  Cancelado."
-  exit 0
+if ! $SILENT_MODE && ! $_SKIP_FINAL_CONFIRM; then
+  echo -n "  ¿Continuar? (s/n): "
+  read -r CONFIRM < /dev/tty
+  if [ "$CONFIRM" != "s" ] && [ "$CONFIRM" != "S" ]; then
+    echo "  Cancelado."
+    exit 0
+  fi
 fi
 
 # ============================================================

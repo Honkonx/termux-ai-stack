@@ -42,7 +42,10 @@ TMP_DIR="$HOME/restore_tmp"
 LOCAL_DIR="/sdcard/Download/termux-ai-stack-releases"
 REGISTRY="$HOME/.android_server_registry"
 NPM_GLOBAL="${TERMUX_PREFIX}/lib/node_modules"
+# ROOTFS_BASE = layout legacy de proot-distro; CONTAINERS_BASE = layout
+# moderno (reescritura bash→Python) — ver docs/PROOT.md (2026-07-26)
 ROOTFS_BASE="${TERMUX_PREFIX}/var/lib/proot-distro/installed-rootfs"
+CONTAINERS_BASE="${TERMUX_PREFIX}/var/lib/proot-distro/containers"
 GITHUB_API="https://api.github.com/repos/Honkonx/termux-ai-stack/releases/latest"
 SSHD_CONFIG="${TERMUX_PREFIX}/etc/ssh/sshd_config"
 
@@ -55,27 +58,38 @@ SOURCE=""
 # Fix S22: permisos 0700 en debian/ bloqueaban [ -f dir/bin/bash ]
 DISTRO_NAME=""
 ROOTFS_PATH=""
+_proot_rootfs_path() {
+  local _name="$1"
+  [ -d "$CONTAINERS_BASE/$_name/rootfs" ] && { echo "$CONTAINERS_BASE/$_name/rootfs"; return 0; }
+  [ -d "$ROOTFS_BASE/$_name" ] && { echo "$ROOTFS_BASE/$_name"; return 0; }
+  return 1
+}
 detect_distro() {
   DISTRO_NAME=""
   ROOTFS_PATH=""
   # Método 1: proot-distro list (no requiere entrar al directorio)
   if command -v proot-distro &>/dev/null; then
-    local _pd_out
+    local _pd_out _d _path
     _pd_out=$(proot-distro list 2>/dev/null)
-    local _d
     for _d in debian ubuntu fedora archlinux; do
       if echo "$_pd_out" | grep -qE "^\s*\*?\s*${_d}\b"; then
-        if [ -d "$ROOTFS_BASE/$_d" ]; then
+        _path=$(_proot_rootfs_path "$_d") && {
           DISTRO_NAME="$_d"
-          ROOTFS_PATH="$ROOTFS_BASE/$_d"
+          ROOTFS_PATH="$_path"
           return 0
-        fi
+        }
       fi
     done
   fi
-  # Método 2: fallback por directorio (solo verificar que el dir existe)
+  # Método 2: fallback por directorio — escanea ambos layouts
+  local _rd
+  if [ -d "$CONTAINERS_BASE" ]; then
+    for _rd in "$CONTAINERS_BASE"/*/; do
+      _rd="${_rd%/}"
+      [ -d "$_rd/rootfs" ] && { DISTRO_NAME=$(basename "$_rd"); ROOTFS_PATH="$_rd/rootfs"; return 0; }
+    done
+  fi
   if [ -d "$ROOTFS_BASE" ]; then
-    local _rd
     for _rd in "$ROOTFS_BASE"/*/; do
       _rd="${_rd%/}"
       if [ -d "$_rd" ]; then
@@ -127,8 +141,8 @@ parse_args() {
 
   if [ -n "$TARGET_MODULE" ]; then
     case "$TARGET_MODULE" in
-      base|claude|claude-native|expo|ollama|n8n|proot-base|proot-completo|remote|opencode|openclaw|all) ;;
-      *) error "Módulo inválido: '$TARGET_MODULE'\n  Válidos: base | claude | expo | ollama | n8n | proot-base | proot-completo | remote | opencode | openclaw | all" ;;
+      base|claude|claude-native|expo|ollama|n8n|proot-base|proot-full|proot-completo|remote|opencode|openclaw|all) ;;
+      *) error "Módulo inválido: '$TARGET_MODULE'\n  Válidos: base | claude | expo | ollama | n8n | proot-base | proot-full | proot-completo | remote | opencode | openclaw | all" ;;
     esac
   fi
 
@@ -239,6 +253,7 @@ menu_interactivo() {
   echo -e "  ║  ${NC}${DIM}── ROOTFS ────────────────────────────${NC}${CYAN}${BOLD}  ║"
   printf  "  ║  ${NC}[6b] Debian limpio            $(_pill "part6-proot-base") ${CYAN}${BOLD}     ║\n"
   printf  "  ║  ${NC}[6c] Debian completo          $(_pill "part6-proot-completo") ${CYAN}${BOLD}     ║\n"
+  printf  "  ║  ${NC}[6f] Debian FULL (~2-3GB)     $(_pill "part6-proot-full") ${CYAN}${BOLD}     ║\n"
 
   echo    "  ╠══════════════════════════════════════════╣"
   echo -e "  ║  ${NC}[a] Todo   [q] Salir${CYAN}${BOLD}                    ║"
@@ -260,6 +275,7 @@ menu_interactivo() {
     5)    TARGET_MODULE="n8n"            ;;
     6b)   TARGET_MODULE="proot-base"     ;;
     6c)   TARGET_MODULE="proot-completo" ;;
+    6f)   TARGET_MODULE="proot-full"    ;;
     7)    TARGET_MODULE="remote"         ;;
     8)    TARGET_MODULE="opencode"       ;;
     9)    TARGET_MODULE="openclaw"       ;;
@@ -289,6 +305,7 @@ declare -A PART_NAMES=(
   [5]="part5-n8n-data"
   [6b]="part6-proot-base"
   [6c]="part6-proot-completo"
+  [6f]="part6-proot-full"
   [7]="part7-remote"
   [8]="part8-opencode"
   [9]="part9-openclaw"
@@ -304,6 +321,7 @@ declare -A PART_LABELS=(
   [5]="n8n + cloudflared"
   [6b]="Proot Debian limpio"
   [6c]="Proot Debian completo (n8n + OpenCode + OpenClaw)"
+  [6f]="Proot Debian FULL (rootfs tal como está — ~2-3GB)"
   [7]="Remote (SSH + Dashboard)"
   [8]="OpenCode"
   [9]="OpenClaw (NVM + Node22)"
@@ -887,11 +905,18 @@ restore_part6() {
   [ -z "$DISTRO_IN_TAR" ] && error "No se pudo leer el contenido del archive ${PROOT_VARIANT}"
   info "Distro detectada: $DISTRO_IN_TAR"
 
-  [ -d "$ROOTFS_BASE/$DISTRO_IN_TAR" ] && {
-    warn "Eliminando rootfs anterior..."
-    rm -rf "$ROOTFS_BASE/$DISTRO_IN_TAR"
-  }
+  _OLD_RB=$(_proot_rootfs_path "$DISTRO_IN_TAR")
+  if [ -n "$_OLD_RB" ]; then
+    warn "Eliminando rootfs anterior ($_OLD_RB)..."
+    [ "$_OLD_RB" = "$CONTAINERS_BASE/$DISTRO_IN_TAR/rootfs" ] && rm -rf "$CONTAINERS_BASE/$DISTRO_IN_TAR" \
+      || rm -rf "$_OLD_RB"
+  fi
 
+  # NOTA 2026-07-26: esta extracción sigue apuntando al layout legacy
+  # (installed-rootfs/) porque los backups part6-* del repo se generaron
+  # con ese formato. No confirmado si proot-distro moderno (containers/)
+  # reconoce/usa un rootfs restaurado ahí sin un paso de migración —
+  # pendiente de verificar en dispositivo real antes de cambiar esto.
   echo -e "  ${YELLOW}Extrayendo rootfs — puede tardar 10-20 min...${NC}"
   tar -xJf "$DOWNLOADED_FILE" -C "$ROOTFS_BASE" 2>/dev/null || \
     error "Error al extraer ${PROOT_VARIANT}"
@@ -1123,6 +1148,7 @@ run_restore() {
     ollama)          restore_part4 ;;
     n8n)             restore_part5 ;;
     proot-base)      restore_part6 "part6-proot-base"      ;;
+    proot-full)      restore_part6 "part6-proot-full"      ;;
     proot-completo)  restore_part6 "part6-proot-completo"  ;;
     remote)          restore_part7 ;;
     opencode)        restore_part8 ;;

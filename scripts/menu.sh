@@ -4,7 +4,7 @@
 #  Orquestador principal — carga módulos bajo demanda
 #
 #  NAVEGACIÓN:
-#    [1-6]  → submenú del módulo
+#    [1-8]  → submenú del módulo
 #    [0]    → backup / restore
 #    [r]    → refrescar   [h] → ayuda
 #    [u]    → actualizar scripts desde GitHub
@@ -19,6 +19,7 @@
 #    [4] Expo/EAS/Git  — builds móviles    (nativo)
 #    [5] Python        — Python + SQLite + Trading (nativo)
 #    [6] Remote        — SSH + Dashboard   (nativo)
+#    [8] Entorno       — proot + desktop + VNC + GPU (nativo)
 #    [0] Backup / Restore
 #
 #  CARGA DE MÓDULOS:
@@ -32,7 +33,13 @@
 # ============================================================
 
 TERMUX_PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
-export PATH="$TERMUX_PREFIX/bin:$TERMUX_PREFIX/sbin:$PATH"
+# .npm-global/bin (openclaw, codex, otras CLIs npm) y .openclaw-android/bin
+# (wrapper node glibc) van acá para que el menú los encuentre aunque la
+# sesión interactiva actual haya sourceado .bashrc ANTES de que el
+# instalador escribiera esas rutas ahí — confirmado en dispositivo real
+# como causa de "openclaw: command not found" pese a figurar instalado
+# (2026-07-26)
+export PATH="$HOME/.npm-global/bin:$HOME/.openclaw-android/bin:$TERMUX_PREFIX/bin:$TERMUX_PREFIX/sbin:$PATH"
 
 REPO_RAW="https://raw.githubusercontent.com/Honkonx/termux-ai-stack/main/scripts"
 REPO_RAW_ROOT="https://raw.githubusercontent.com/Honkonx/termux-ai-stack/main"
@@ -53,7 +60,6 @@ _PROOT_LOADED=0
 #  carguen tarde.
 # ════════════════════════════════════════════
 _CC_CACHE=""     ; _CC_REFRESH=0
-_CLNATIVE_CACHE=""; _CLNATIVE_REFRESH=0
 _OC_CACHE=""     ; _OC_CACHE_TS=0
 _CLAW_CACHE=""   ; _CLAW_CACHE_TS=0
 _OCL_CACHE=""    ; _OCL_REFRESH=0
@@ -84,37 +90,56 @@ OPENCLAW_SCRIPTS="$SCRIPTS_DIR/openclaw"
 OPENCODE_SCRIPTS="$SCRIPTS_DIR/opencode"
 REMOTE_SCRIPTS="$SCRIPTS_DIR/remote"
 EXPO_SCRIPTS="$SCRIPTS_DIR/expo"
+ENTORNO_SCRIPTS="$SCRIPTS_DIR/entorno"
 
 # ════════════════════════════════════════════
-#  DETECCIÓN ROOTFS PROOT — Fix S22
+#  DETECCIÓN ROOTFS PROOT — Fix S22, corregido 2026-07-26
 #  PRIMARIO: proot-distro list (funciona con permisos 0700)
 #  FALLBACK:  enumeración de directorios (solo [ -d ], no [ -f ] interno)
+#  Soporta ambos layouts de proot-distro: el moderno ("containers/<n>/rootfs",
+#  reescritura bash→Python) y el legacy ("installed-rootfs/<n>", solo para
+#  migrar instalaciones viejas según el propio código fuente de proot-distro)
+#  — confiar solo en el legacy causaba falsos "no instalado" (2026-07-26)
 #  Variable global — heredada por menu_proot.sh via source
 # ════════════════════════════════════════════
 DISTRO_NAME=""
 ROOTFS_PATH=""
 _ROOTFS_BASE="${TERMUX_PREFIX}/var/lib/proot-distro/installed-rootfs"
+_CONTAINERS_BASE="${TERMUX_PREFIX}/var/lib/proot-distro/containers"
+
+_proot_rootfs_path() {
+  local _name="$1"
+  [ -d "$_CONTAINERS_BASE/$_name/rootfs" ] && { echo "$_CONTAINERS_BASE/$_name/rootfs"; return 0; }
+  [ -d "$_ROOTFS_BASE/$_name" ] && { echo "$_ROOTFS_BASE/$_name"; return 0; }
+  return 1
+}
 
 _refresh_distro() {
   DISTRO_NAME=""
   ROOTFS_PATH=""
   # Método 1: proot-distro list (no requiere entrar al dir 0700)
   if command -v proot-distro &>/dev/null; then
-    local _pd_out _d
+    local _pd_out _d _path
     _pd_out=$(proot-distro list 2>/dev/null)
     for _d in debian ubuntu fedora archlinux; do
       if echo "$_pd_out" | grep -qE "^\s*\*?\s*${_d}\b"; then
-        if [ -d "$_ROOTFS_BASE/$_d" ]; then
+        _path=$(_proot_rootfs_path "$_d") && {
           DISTRO_NAME="$_d"
-          ROOTFS_PATH="$_ROOTFS_BASE/$_d"
+          ROOTFS_PATH="$_path"
           return 0
-        fi
+        }
       fi
     done
   fi
-  # Método 2: fallback — solo verificar existencia del dir, no su interior
+  # Método 2: fallback — escanear ambos layouts directamente
+  local _rd
+  if [ -d "$_CONTAINERS_BASE" ]; then
+    for _rd in "$_CONTAINERS_BASE"/*/; do
+      _rd="${_rd%/}"
+      [ -d "$_rd/rootfs" ] && { DISTRO_NAME=$(basename "$_rd"); ROOTFS_PATH="$_rd/rootfs"; return 0; }
+    done
+  fi
   if [ -d "$_ROOTFS_BASE" ]; then
-    local _rd
     for _rd in "$_ROOTFS_BASE"/*/; do
       _rd="${_rd%/}"
       if [ -d "$_rd" ]; then
@@ -139,7 +164,8 @@ _ensure_dirs() {
     "$OPENCLAW_SCRIPTS" \
     "$OPENCODE_SCRIPTS" \
     "$REMOTE_SCRIPTS" \
-    "$EXPO_SCRIPTS"
+    "$EXPO_SCRIPTS" \
+    "$ENTORNO_SCRIPTS"
 }
 
 # ════════════════════════════════════════════
@@ -179,9 +205,6 @@ _migrate_legacy_scripts() {
   # remote
   _mv_legacy "ssh_start.sh"       "$REMOTE_SCRIPTS"
   _mv_legacy "ssh_stop.sh"        "$REMOTE_SCRIPTS"
-  _mv_legacy "dashboard_start.sh" "$REMOTE_SCRIPTS"
-  _mv_legacy "dashboard_stop.sh"  "$REMOTE_SCRIPTS"
-  _mv_legacy "dashboard_server.py" "$REMOTE_SCRIPTS"
 
   # openclaw
   _mv_legacy "openclaw_start.sh"  "$OPENCLAW_SCRIPTS"
@@ -288,7 +311,7 @@ _ensure_install_script() {
     # REPO_RAW apunta a scripts/ (solo para scripts Python/bot)
     local url
     case "$script" in
-      install_*.sh|menu_nativo.sh|menu_proot.sh|backup.sh|restore.sh|instalar.sh)
+      install_*.sh|menu_nativo.sh|menu_proot.sh|menu_entorno.sh|backup.sh|restore.sh|instalar.sh)
         url="$REPO_RAW_ROOT/$script" ;;
       *)
         url="$REPO_RAW/$script" ;;
@@ -345,6 +368,16 @@ _require_nativo() {
   fi
   # shellcheck source=/dev/null
   source "$f" || { echo -e "  ${RED}[ERROR]${NC} Fallo al cargar menu_nativo.sh"; return 1; }
+  # Cargar menu_entorno.sh (descargar si no existe)
+  local ef="$SCRIPTS_DIR/menu_entorno.sh"
+  if [ ! -f "$ef" ] || [ ! -s "$ef" ]; then
+    curl -fsSL "$REPO_RAW_ROOT/menu_entorno.sh" -o "$ef" 2>/dev/null || \
+      wget -q "$REPO_RAW_ROOT/menu_entorno.sh" -O "$ef" 2>/dev/null
+    [ -f "$ef" ] && chmod +x "$ef"
+  fi
+  if [ -f "$ef" ]; then
+    source "$ef" 2>/dev/null || true
+  fi
   _NATIVO_LOADED=1
   return 0
 }
@@ -400,7 +433,9 @@ check_n8n()             { _run_check_proot  check_n8n            "$@"; }
 check_opencode_cached() { _run_check_proot  check_opencode_cached "$@"; }
 check_openclaw_cached() { _run_check_proot  check_openclaw_cached "$@"; }
 check_openclaw_native() { _run_check_nativo check_openclaw_native "$@"; }
-check_openclaude()      { _run_check_nativo check_openclaude      "$@"; }
+check_antigravity()     { _run_check_nativo check_antigravity     "$@"; }
+check_codex()           { _run_check_nativo check_codex           "$@"; }
+check_entorno()          { _run_check_nativo check_entorno          "$@"; }
 
 # ════════════════════════════════════════════
 #  POST-INSTALL CLEANUP
@@ -445,6 +480,85 @@ _post_install_cleanup() {
 #  INSTALL_MODULE — lógica de instalación
 #  Disponible sin módulos cargados.
 # ════════════════════════════════════════════
+# ════════════════════════════════════════════
+#  HELPER: instalar con output limpio
+#  Uso: _run_installer_menu "install_hermes.sh" "Hermes Agent" [silent]
+#  silent="1" → corre en background con --silent + spinner, output
+#               solo al log (el install_*.sh debe soportar --silent)
+#  silent="0" o vacío (default) → foreground con tee, visible + log,
+#               igual que siempre (necesario para scripts con prompts
+#               reales que todavía no soportan --silent)
+# ════════════════════════════════════════════
+_run_installer_menu() {
+  local _script="$1"
+  local _label="$2"
+  local _silent="${3:-0}"
+  local _log_dir="$HOME/.termux-ai-stack/logs"
+  local _log="$_log_dir/install_$(python3 -c     "from datetime import datetime; print(datetime.now().strftime('%Y%m%d_%H%M%S'))"     2>/dev/null || date +%Y%m%d_%H%M%S).log"
+  mkdir -p "$_log_dir"
+
+  clear; echo ""
+  echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
+  printf  "  ║  %-40s║\n" "Instalando: ${_label}"
+  echo    "  ╠══════════════════════════════════════════╣"
+  echo -e "  ║  ${NC}Log: ~/.termux-ai-stack/logs/          ${CYAN}${BOLD}║"
+  echo -e "  ╚══════════════════════════════════════════╝${NC}"
+  echo ""
+
+  local _exit
+  if [ "$_silent" = "1" ]; then
+    echo -e "  ${DIM}Instalación silenciosa — el log completo queda en el archivo de arriba${NC}"
+    echo ""
+    bash "$HOME/$_script" --silent > "$_log" 2>&1 &
+    local _pid=$!
+    local _SC="⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏" _SI=0
+    while kill -0 "$_pid" 2>/dev/null; do
+      printf "\r  ${CYAN}%s${NC} ${DIM}Instalando ${_label}...${NC}" "${_SC:$((_SI%${#_SC})):1}"
+      _SI=$((_SI+1)); sleep 0.12
+    done
+    wait "$_pid"; _exit=$?
+    printf "\r\033[2K"
+  else
+    echo -e "  ${DIM}No cierres Termux durante la instalación${NC}"
+    echo ""
+    bash "$HOME/$_script" < /dev/tty 2>&1 | tee "$_log"
+    _exit=$?
+  fi
+
+  echo ""
+  if [ "$_exit" -eq 0 ]; then
+    echo -e "  ${GREEN}${BOLD}[OK]${NC} ${_label} instalado correctamente"
+  else
+    echo -e "  ${RED}[ERROR]${NC} Falló la instalación — código: ${_exit}"
+    echo -e "  ${DIM}Ver detalles: cat ${_log}${NC}"
+    if [ "$_silent" = "1" ]; then
+      echo ""
+      echo -e "  ${YELLOW}Últimas líneas del log:${NC}"
+      tail -15 "$_log" 2>/dev/null | sed 's/^/  /'
+    fi
+  fi
+  echo ""; read -r _ < /dev/tty
+}
+
+# ════════════════════════════════════════════
+#  HELPER: confirmación previa a instalar
+#  Solo se muestra si el módulo NO está instalado —
+#  si ya está instalado, el propio install_*.sh
+#  pregunta reinstalar/actualizar internamente.
+# ════════════════════════════════════════════
+_confirm_install() {
+  local _label="$1"
+  echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
+  printf  "  ║  %-40s║\n" "Instalar ${_label}"
+  echo    "  ╠══════════════════════════════════════════╣"
+  echo -e "  ║  ${NC}[1] Instalar${CYAN}${BOLD}                           ║"
+  echo -e "  ║  ${NC}[2] Cancelar${CYAN}${BOLD}                           ║"
+  echo -e "  ╚══════════════════════════════════════════╝${NC}"
+  echo ""; echo -n "  Opción: "
+  read -r _CI_OPT < /dev/tty
+  [ "$_CI_OPT" = "1" ]
+}
+
 install_module() {
   local name="$1" module_key="$2"
   local script="install_${module_key}.sh"
@@ -453,32 +567,32 @@ install_module() {
 
   if [ "$module_key" = "n8n" ]; then
     echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
-    echo    "  ║  ¿Cómo instalar n8n?                     ║"
+    echo    "  ║  ⬡ N8N — Instalar                        ║"
     echo    "  ╠══════════════════════════════════════════╣"
-    echo -e "  ║  ${NC}[1] Todo desde GitHub Releases${CYAN}${BOLD}          ║"
-    echo -e "  ║      ${DIM}rootfs + n8n precompilados · recomend${CYAN}${BOLD}║"
-    echo -e "  ║  ${NC}[2] Todo limpio${CYAN}${BOLD}                          ║"
-    echo -e "  ║      ${DIM}proot-distro + npm install · 25-40 min${CYAN}${BOLD}║"
-    echo -e "  ║  ${NC}[3] Rootfs GitHub + n8n limpio${CYAN}${BOLD}           ║"
-    echo -e "  ║  ${NC}[4] Rootfs limpio + n8n GitHub${CYAN}${BOLD}           ║"
+    echo -e "  ║  ${NC}[1] n8n en proot Debian${CYAN}${BOLD}                 ║"
+    echo -e "  ║      ${DIM}Node.js 20 LTS · ARM64 nativo · ~300MB${CYAN}${BOLD}║"
+    echo -e "  ║  ${NC}[2] n8n en udocker${CYAN}${BOLD}                       ║"
+    echo -e "  ║      ${DIM}Imagen oficial n8nio/n8n · ~800MB${CYAN}${BOLD}    ║"
     echo -e "  ║  ${NC}[b] Cancelar${CYAN}${BOLD}                             ║"
     echo -e "  ╚══════════════════════════════════════════╝${NC}"
     echo ""; echo -n "  Opción: "
     read -r INST_OPT < /dev/tty
     case "$INST_OPT" in
-      1|2|3|4)
-        _ensure_restore_for_install || return 1
+      1|2)
         _ensure_install_script "$script" || return 1
         export N8N_INSTALL_MODE="$INST_OPT"
-        bash "$dest" < /dev/tty
+        local _silent_ok=1
+        [ "$(get_reg "$module_key" "installed")" = "true" ] && _silent_ok=0
+        _run_installer_menu "$script" "n8n" "$_silent_ok"
         unset N8N_INSTALL_MODE
-        echo ""; read -r _ < /dev/tty
         _post_install_cleanup ;;
       b|B|"") return 0 ;;
     esac
     return 0
   fi
 
+  # python/ssh/remote: elegir "instalación limpia" YA es la confirmación —
+  # ahora pasan por _run_installer_menu (antes corrían crudo, sin log ni spinner)
   if [ "$module_key" = "python" ] || [ "$module_key" = "ssh" ] || \
      [ "$module_key" = "remote" ]; then
     echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
@@ -492,70 +606,119 @@ install_module() {
     case "$INST_OPT" in
       b|B|"") return 0 ;;
       1|*)
-        echo -e "\n${CYAN}${BOLD}  Instalando ${name}...${NC}\n"
         _ensure_install_script "$script" || return 1
-        bash "$dest" < /dev/tty
-        echo ""; read -r _ < /dev/tty
+        local _silent_ok=1
+        [ "$(get_reg "$module_key" "installed")" = "true" ] && _silent_ok=0
+        _run_installer_menu "$script" "${name}" "$_silent_ok"
         _post_install_cleanup ;;
     esac
     return 0
   fi
 
+  # Ollama: elegir versión YA es la confirmación (solo en instalación fresca —
+  # si ya está instalado, install_ollama.sh muestra su propio menú actualizar/reinstalar)
   if [ "$module_key" = "ollama" ]; then
-    echo -e "\n${CYAN}${BOLD}  Instalando Ollama...${NC}\n"
-    _ensure_install_script "$script" || return 1
-    bash "$dest" < /dev/tty
-    echo ""; read -r _ < /dev/tty
+    if [ "$(get_reg "$module_key" "installed")" = "true" ]; then
+      _ensure_install_script "$script" || return 1
+      _run_installer_menu "$script" "Ollama" "0"
+    else
+      echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
+      echo    "  ║  Ollama — elige versión                  ║"
+      echo    "  ╠══════════════════════════════════════════╣"
+      echo -e "  ║  ${NC}[1] Estándar  — versión oficial${CYAN}${BOLD}         ║"
+      echo -e "  ║  ${NC}[2] Termux    — GPU optimizada ★${CYAN}${BOLD}        ║"
+      echo -e "  ║  ${NC}[b] Cancelar${CYAN}${BOLD}                            ║"
+      echo -e "  ╚══════════════════════════════════════════╝${NC}"
+      echo ""; echo -n "  Opción [1/2]: "
+      read -r OLLAMA_OPT < /dev/tty
+      case "$OLLAMA_OPT" in
+        b|B|"") return 0 ;;
+        2) export OLLAMA_INSTALL_MODE="termux_npm" ;;
+        *) export OLLAMA_INSTALL_MODE="standard" ;;
+      esac
+      _ensure_install_script "$script" || return 1
+      _run_installer_menu "$script" "Ollama" "1"
+      unset OLLAMA_INSTALL_MODE
+    fi
     _post_install_cleanup
     return 0
   fi
 
-  # Claude: pass-through directo a install_claude.sh
-  # El nuevo instalador tiene su propio flujo de 2 niveles (método + fuente)
-  # NO duplicar lógica aquí
+  # Claude: elegir método YA es la confirmación (solo en instalación fresca —
+  # si ya está instalado, install_claude.sh muestra su propio menú
+  # actualizar/reinstalar/resolver conflicto, que necesita ser interactivo)
   if [ "$module_key" = "claude" ]; then
-    _ensure_install_script "install_claude.sh" || return 1
-    bash "$HOME/install_claude.sh" < /dev/tty
-    echo ""; read -r _ < /dev/tty
+    if [ "$(get_reg "$module_key" "installed")" = "true" ]; then
+      _ensure_install_script "install_claude.sh" || return 1
+      _run_installer_menu "install_claude.sh" "Claude Code" "0"
+    else
+      echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
+      echo    "  ║  Selecciona el método de instalación      ║"
+      echo    "  ╠══════════════════════════════════════════╣"
+      echo -e "  ║  ${NC}[1] Native  — binario ELF, recomendado${CYAN}${BOLD}  ║"
+      echo -e "  ║  ${NC}[2] Legacy  — npm, garantizado${CYAN}${BOLD}          ║"
+      echo -e "  ║  ${NC}[b] Cancelar${CYAN}${BOLD}                            ║"
+      echo -e "  ╚══════════════════════════════════════════╝${NC}"
+      echo ""; echo -n "  Opción: "
+      read -r CLAUDE_OPT < /dev/tty
+      case "$CLAUDE_OPT" in
+        b|B|"") return 0 ;;
+        2) export CLAUDE_METHOD="legacy" ;;
+        *) export CLAUDE_METHOD="native" ;;
+      esac
+      _ensure_install_script "install_claude.sh" || return 1
+      _run_installer_menu "install_claude.sh" "Claude Code" "1"
+      unset CLAUDE_METHOD
+    fi
     _post_install_cleanup
     return 0
   fi
 
-  # OpenClaude: pass-through directo a install_openclaude.sh
+  # Antigravity: instalar con output limpio
   # Instalación npm rápida — sin menú fuente, sin GitHub
-  if [ "$module_key" = "openclaude" ]; then
-    _ensure_install_script "install_openclaude.sh" || return 1
-    bash "$HOME/install_openclaude.sh" < /dev/tty
-    echo ""; read -r _ < /dev/tty
+  if [ "$module_key" = "antigravity" ]; then
+    local _silent_ok=1
+    if [ "$(get_reg "$module_key" "installed")" = "true" ]; then
+      _silent_ok=0
+    else
+      _confirm_install "Antigravity CLI" || return 0
+    fi
+    _ensure_install_script "install_antigravity.sh" || return 1
+    _run_installer_menu "install_antigravity.sh" "Antigravity CLI" "$_silent_ok"
     _post_install_cleanup
     return 0
   fi
 
-  # Hermes: pass-through a install_hermes.sh — lanza wizard interactivo igual que openclaw
+  # Hermes: output interno oculto — solo spinner + resultado
   if [ "$module_key" = "hermes" ]; then
+    local _silent_ok=1
+    if [ "$(get_reg "$module_key" "installed")" = "true" ]; then
+      _silent_ok=0
+    else
+      _confirm_install "Hermes Agent" || return 0
+    fi
     _ensure_install_script "install_hermes.sh" || return 1
-    bash "$HOME/install_hermes.sh" < /dev/tty
-    echo ""; read -r _ < /dev/tty
+    _run_installer_menu "install_hermes.sh" "Hermes Agent" "$_silent_ok"
     _post_install_cleanup
     return 0
   fi
 
-  # Expo, opencode, openclaw — menú fuente estándar
-  echo -e "${CYAN}${BOLD}  ╔══════════════════════════════════════════╗"
-  printf  "  ║  %-40s║\n" "¿Cómo instalar ${name}?"
-  echo    "  ╠══════════════════════════════════════════╣"
-  echo -e "  ║  ${NC}[1] Instalación limpia${CYAN}${BOLD}                  ║"
-  echo -e "  ║  ${NC}[2] Desde GitHub Releases${CYAN}${BOLD}               ║"
-  echo -e "  ║  ${NC}[b] Cancelar${CYAN}${BOLD}                            ║"
-  echo -e "  ╚══════════════════════════════════════════╝${NC}"
-  echo ""; echo -n "  Opción: "
-  read -r INST_OPT < /dev/tty
+  # Expo, opencode, openclaw — instalación directa sin menú de fuente.
+  # Soportan --silent → instalación fresca corre en silencio con spinner;
+  # si ya estaban instalados, van interactivos (su propio menú reinstalar/actualizar).
+  local _silent_ok=1
+  if [ "$(get_reg "$module_key" "installed")" = "true" ]; then
+    _silent_ok=0
+  else
+    _confirm_install "$name" || return 0
+  fi
+  _ensure_install_script "$script" || return 1
+  _run_installer_menu "$script" "${name}" "$_silent_ok"
+  _post_install_cleanup
+  return 0
+
+  # (bloque legacy — no se llega aquí)
   case "$INST_OPT" in
-    2)
-      _ensure_restore_for_install || return 1
-      bash "$HOME/restore.sh" --module "$module_key" < /dev/tty
-      echo ""; read -r _ < /dev/tty
-      _post_install_cleanup ;;
     b|B|"") return 0 ;;
     1|*)
       echo -e "\n${CYAN}${BOLD}  Instalando ${name}...${NC}\n"
@@ -589,7 +752,7 @@ show_help() {
   echo    "  ║  ollama-start  ollama-stop  ollama run [m]"
   echo -e "${CYAN}${BOLD}  ╠══════════════════════════════════════════╣"
   echo -e "  ║  OPENCLAUDE${NC}"
-  echo    "  ║  openclaude  oc  (alias corto)"
+  echo    "  ║  agy             (Antigravity CLI)"
   echo -e "${CYAN}${BOLD}  ╠══════════════════════════════════════════╣"
   echo -e "  ║  HERMES AGENT${NC}"
   echo    "  ║  hermes  hermes chat  hermes model"
@@ -622,7 +785,6 @@ _invalidate_cache() {
   _CC_REFRESH=1;       _CC_CACHE=""
   _OCL_REFRESH=1;      _OCL_CACHE=""
   _HERMES_REFRESH=1;   _HERMES_CACHE=""
-  _CLNATIVE_REFRESH=1; _CLNATIVE_CACHE=""
   _OC_CACHE="";        _OC_CACHE_TS=0
   _CLAW_CACHE="";      _CLAW_CACHE_TS=0
   # Borrar caché persistente — fuerza que el próximo render
@@ -660,8 +822,9 @@ while true; do
   { check_expo;   } > "${_TMP}_ex"  2>/dev/null &
   { check_python; } > "${_TMP}_py"  2>/dev/null &
   { check_remote; } > "${_TMP}_rm"  2>/dev/null &
+  { check_entorno; } > "${_TMP}_en" 2>/dev/null &
 
-  # Hermes: nativo — caché ligero como openclaude
+  # Hermes: nativo — caché ligero
   if [ -z "$_HERMES_CACHE" ] || [ "$_HERMES_REFRESH" = "1" ]; then
     { _HERMES_CACHE=$(check_hermes 2>/dev/null); _HERMES_REFRESH=0
       echo "$_HERMES_CACHE"; } > "${_TMP}_hm" 2>/dev/null &
@@ -670,9 +833,9 @@ while true; do
     _HERMES_FROM_FILE=0
   fi
 
-  # OpenClaude: usa caché si está vigente (nativo — rápido)
+  # Antigravity: usa caché si está vigente (nativo — rápido)
   if [ -z "$_OCL_CACHE" ] || [ "$_OCL_REFRESH" = "1" ]; then
-    { _OCL_CACHE=$(check_openclaude 2>/dev/null); _OCL_REFRESH=0
+    { _OCL_CACHE=$(check_antigravity 2>/dev/null); _OCL_REFRESH=0
       echo "$_OCL_CACHE"; } > "${_TMP}_ocl" 2>/dev/null &
     _OCL_FROM_FILE=1
   else
@@ -689,14 +852,8 @@ while true; do
   fi
 
   # OpenClaw nativo: rápido (~10ms), prioridad sobre proot
-  # Solo se revalúa si caché nativa expiró o está vacía
-  if [ -z "$_CLNATIVE_CACHE" ] || [ "$_CLNATIVE_REFRESH" = "1" ]; then
-    { _CLNATIVE_CACHE=$(check_openclaw_native 2>/dev/null); _CLNATIVE_REFRESH=0
-      echo "$_CLNATIVE_CACHE"; } > "${_TMP}_cln" 2>/dev/null &
-    _CLNATIVE_FROM_FILE=1
-  else
-    _CLNATIVE_FROM_FILE=0
-  fi
+  { check_openclaw_native; } > "${_TMP}_cln" 2>/dev/null &
+  _CLNATIVE_FROM_FILE=1
 
   # Proot combinado: refresca si caché expiró
   _now=$SECONDS
@@ -737,6 +894,7 @@ while true; do
   IFS='|' read -r EX_STATE    EX_VER    EX_EXTRA    < "${_TMP}_ex"   2>/dev/null
   IFS='|' read -r PY_STATE    PY_VER    PY_EXTRA    < "${_TMP}_py"   2>/dev/null
   IFS='|' read -r RM_STATE    RM_VER    RM_EXTRA    < "${_TMP}_rm"   2>/dev/null
+  IFS='|' read -r EN_STATE    EN_VER    EN_EXTRA    < "${_TMP}_en"   2>/dev/null
 
   if [ "$_OCL_FROM_FILE" = "1" ]; then
     _OCL_CACHE=$(cat "${_TMP}_ocl" 2>/dev/null)
@@ -760,10 +918,10 @@ while true; do
     _CLAW_CACHE_TS=$SECONDS
   fi
   if [ "$_CLNATIVE_FROM_FILE" = "1" ]; then
-    _CLNATIVE_CACHE=$(cat "${_TMP}_cln" 2>/dev/null)
-    _CLNATIVE_REFRESH=0
+    IFS='|' read -r CLN_STATE CLN_VER CLN_EXTRA < "${_TMP}_cln" 2>/dev/null || CLN_STATE="not_installed"
+  else
+    CLN_STATE="not_installed"
   fi
-  IFS='|' read -r CLN_STATE CLN_VER CLN_EXTRA <<< "$_CLNATIVE_CACHE"
 
   # Openclaw: nativo tiene prioridad si está instalado
   if [ "$CLN_STATE" != "not_installed" ] && [ -n "$CLN_STATE" ]; then
@@ -809,13 +967,13 @@ while true; do
   [ -z "$SVC_VER" ] && SVC_VER="──────────"
   draw_module "1" "⬡" "Servicios"    "$SVC_STATE" "$SVC_VER"        "→ submenú"
 
-  # [2] Code Tools — Claude Code + OpenCode + OpenClaude
+  # [2] Code Tools — Claude Code + OpenCode + Antigravity
   CT_STATE="ready"
   [ "$CC_STATE"  = "not_installed" ] && \
   [ "$OC_STATE"  = "not_installed" ] && \
   [ "$OCL_STATE" = "not_installed" ] && CT_STATE="not_installed"
   CT_VER="cc:${CC_VER:-?} oc:${OC_VER:-?}"
-  [ "$OCL_STATE" != "not_installed" ] && CT_VER="${CT_VER} ocl:${OCL_VER:-?}"
+  [ "$OCL_STATE" != "not_installed" ] && CT_VER="${CT_VER} agy:${OCL_VER:-?}"
   draw_module "2" "◆" "Code Tools"   "$CT_STATE"  "$CT_VER"         "→ submenú"
 
   case "$OL_STATE" in running|stopped) OL_CMD="→ submenú" ;; *) OL_CMD="" ;; esac
@@ -831,6 +989,9 @@ while true; do
   RM_DISPLAY_VER="$RM_VER"
   [ -n "$RM_EXTRA" ] && RM_DISPLAY_VER="${RM_VER} ${RM_EXTRA}"
   draw_module "6" "⬡" "Remote"       "$RM_STATE"  "$RM_DISPLAY_VER" "$RM_CMD"
+
+  case "$EN_STATE" in running|stopped|ready) EN_CMD="→ submenú" ;; *) EN_CMD="" ;; esac
+  draw_module "8" "⏣" "Entorno"      "$EN_STATE"  "$EN_VER"         "$EN_CMD"
 
   # ── Separador + Backup ────────────────────────────────────────
   echo -e "  ${DIM}──────────────────────────────────────────${NC}"
@@ -876,7 +1037,7 @@ while true; do
       else
         submenu_python "$PY_VER"
       fi ;;
-    6)
+     6)
       _require_nativo || continue
       if [ "$RM_STATE" = "not_installed" ]; then
         install_module "Remote/SSH/Dashboard" "remote"
@@ -884,7 +1045,15 @@ while true; do
       else
         submenu_remote
       fi ;;
-    0)
+     8)
+      _require_nativo || continue
+      if [ "$EN_STATE" = "not_installed" ]; then
+        install_module "Entorno" "entorno"
+        _invalidate_cache
+      else
+        submenu_entorno "$EN_STATE"
+      fi ;;
+     0)
       _require_nativo || continue
       submenu_backup ;;
     d|D)
@@ -912,13 +1081,14 @@ while true; do
         "install_n8n.sh" "install_claude.sh" "install_ollama.sh"
         "install_expo.sh" "install_python.sh" "install_ssh.sh"
         "install_remote.sh" "install_opencode.sh" "install_openclaw.sh"
-        "install_openclaude.sh" "install_hermes.sh"
+        "install_antigravity.sh" "install_hermes.sh" "install_entorno.sh"
         "backup.sh" "restore.sh"
       )
       # Scripts en raíz del repo → se descargan a ~/scripts/
       MENU_SCRIPTS=(
         "menu_nativo.sh"
         "menu_proot.sh"
+        "menu_entorno.sh"
       )
 
       UPDATE_OK=0; UPDATE_FAIL=0

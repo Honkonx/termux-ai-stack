@@ -35,6 +35,10 @@
 TERMUX_PREFIX="/data/data/com.termux/files/usr"
 export PATH="$TERMUX_PREFIX/bin:$TERMUX_PREFIX/sbin:$PATH"
 
+# ── Modo silencioso (invocado desde menu.sh, confirmación ya hecha ahí) ──
+SILENT_MODE=false
+for _arg in "$@"; do [ "$_arg" = "--silent" ] && SILENT_MODE=true; done
+
 # ── Colores ──────────────────────────────────────────────────
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -61,13 +65,14 @@ mark_done()  { echo "$1" >> "$CHECKPOINT"; }
 
 # ── Función: actualizar registry ─────────────────────────────
 update_registry() {
-  local version="$1"
+  local version="$1" mode="$2"
   local date_now
-  date_now=$(date +%Y-%m-%d)
+  # Regla técnica ARM64: NUNCA date +%Y-%m-%d directamente en SQLite
+  # Usar python3 datetime.now() explícito
+  date_now=$(python3 -c "from datetime import datetime; print(datetime.now().strftime('%Y-%m-%d'))")
+  [ -z "$date_now" ] && date_now=$(date +%Y-%m-%d)  # fallback si python3 falla
 
-  if [ ! -f "$REGISTRY" ]; then
-    touch "$REGISTRY"
-  fi
+  [ ! -f "$REGISTRY" ] && touch "$REGISTRY"
 
   local tmp="$REGISTRY.tmp"
   grep -v "^ollama\." "$REGISTRY" > "$tmp" 2>/dev/null || touch "$tmp"
@@ -75,13 +80,14 @@ update_registry() {
   cat >> "$tmp" << EOF
 ollama.installed=true
 ollama.version=$version
+ollama.mode=${mode:-standard}
 ollama.install_date=$date_now
 ollama.commands=ollama serve,ollama run,ollama list,ollama pull,ollama rm
 ollama.port=11434
 ollama.location=termux_native
 EOF
   mv "$tmp" "$REGISTRY"
-  log "Registry actualizado → $REGISTRY"
+  log "Registry actualizado → $REGISTRY (modo: ${mode:-standard})"
 }
 
 # ── Cabecera ─────────────────────────────────────────────────
@@ -95,19 +101,120 @@ cat << 'HEADER'
 HEADER
 echo -e "${NC}"
 
+# ── Detectar modo instalado desde registry ───────────────────
+_detect_ollama_mode() {
+  grep "^ollama\.mode=" "$REGISTRY" 2>/dev/null | cut -d= -f2
+}
+
+# ── Función: actualizar Ollama standard (pkg upgrade) ────────
+_update_standard() {
+  titulo "ACTUALIZACIÓN — Ollama standard (pkg)"
+
+  local _VER_ANTES
+  _VER_ANTES=$(ollama --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+[-a-z.0-9]*' | head -1)
+  [ -z "$_VER_ANTES" ] && _VER_ANTES=$(grep "^ollama\.version=" "$REGISTRY" 2>/dev/null | cut -d= -f2)
+  echo -e "  Versión actual: ${CYAN}${_VER_ANTES:-desconocida}${NC}"; echo ""
+
+  # Detener servidor si está corriendo
+  if tmux has-session -t "ollama-server" 2>/dev/null; then
+    info "Deteniendo Ollama..."
+    tmux kill-session -t "ollama-server" 2>/dev/null || true
+    sleep 2
+  fi
+
+  info "Actualizando vía pkg upgrade..."
+  pkg upgrade ollama -y     -o Dpkg::Options::="--force-confdef"     -o Dpkg::Options::="--force-confold" 2>&1 | tail -5 ||     error "pkg upgrade ollama falló"
+
+  local _VER_NUEVA
+  _VER_NUEVA=$(ollama --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+[-a-z.0-9]*' | head -1)
+  [ -z "$_VER_NUEVA" ] && _VER_NUEVA="$_VER_ANTES"
+
+  update_registry "$_VER_NUEVA" "standard"
+
+  echo ""
+  echo -e "${GREEN}${BOLD}  ╔══════════════════════════════════════════╗"
+  echo    "  ║  [OK] Ollama standard actualizado      ║"
+  echo    "  ╠══════════════════════════════════════════╣"
+  printf  "  ║  ${NC}Antes:  %-34s${GREEN}${BOLD}║\n" "${_VER_ANTES:-?}"
+  printf  "  ║  ${NC}Ahora:  %-34s${GREEN}${BOLD}║\n" "${_VER_NUEVA:-?}"
+  echo -e "  ╚══════════════════════════════════════════╝${NC}"
+  echo -e "  ${CYAN}→ Ejecuta: ollama-start para reiniciar${NC}"; echo ""
+}
+
+# ── Función: actualizar Ollama npm/Vulkan ─────────────────────
+_update_termux_npm() {
+  titulo "ACTUALIZACIÓN — Ollama Termux/Vulkan (npm)"
+
+  local _VER_ANTES
+  _VER_ANTES=$(ollama --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+[-a-z.0-9]*' | head -1)
+  [ -z "$_VER_ANTES" ] && _VER_ANTES=$(grep "^ollama\.version=" "$REGISTRY" 2>/dev/null | cut -d= -f2)
+  echo -e "  Versión actual: ${CYAN}${_VER_ANTES:-desconocida}${NC}"; echo ""
+
+  # Detener servidor
+  if tmux has-session -t "ollama-server" 2>/dev/null; then
+    info "Deteniendo Ollama..."
+    tmux kill-session -t "ollama-server" 2>/dev/null || true
+    sleep 2
+  fi
+
+  info "Actualizando @mmmbuto/ollama-termux vía npm..."
+  npm install -g @mmmbuto/ollama-termux@latest 2>&1 | tail -5 ||     error "npm install falló — verifica conexión"
+
+  local _VER_NUEVA
+  _VER_NUEVA=$(ollama --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+[-a-z.0-9]*' | head -1)
+  [ -z "$_VER_NUEVA" ] && _VER_NUEVA="$_VER_ANTES"
+
+  update_registry "$_VER_NUEVA" "termux_npm"
+
+  echo ""
+  echo -e "${GREEN}${BOLD}  ╔══════════════════════════════════════════╗"
+  echo    "  ║  [OK] Ollama Termux/Vulkan actualizado ║"
+  echo    "  ╠══════════════════════════════════════════╣"
+  printf  "  ║  ${NC}Antes:  %-34s${GREEN}${BOLD}║\n" "${_VER_ANTES:-?}"
+  printf  "  ║  ${NC}Ahora:  %-34s${GREEN}${BOLD}║\n" "${_VER_NUEVA:-?}"
+  echo -e "  ╚══════════════════════════════════════════╝${NC}"
+  echo -e "  ${CYAN}→ Ejecuta: ollama-start para reiniciar${NC}"; echo ""
+}
+
 # ── Verificar si ya está instalado ───────────────────────────
 if command -v ollama &>/dev/null; then
-  CURRENT_VER=$(ollama --version 2>/dev/null | head -1)
-  echo -e "${GREEN}  ✓ Ollama ya está instalado${NC}"
-  echo -e "  Versión actual: ${CYAN}${CURRENT_VER}${NC}"
+  _INSTALLED_MODE=$(_detect_ollama_mode)
+  _CURRENT_VER=$(ollama --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+[-a-z.0-9]*' | head -1)
+  [ -z "$_CURRENT_VER" ] && _CURRENT_VER=$(grep "^ollama\.version=" "$REGISTRY" 2>/dev/null | cut -d= -f2)
+
+  echo -e "  ${GREEN}✓ Ollama ya instalado${NC}"
+  echo -e "  Versión : ${CYAN}${_CURRENT_VER:-desconocida}${NC}"
+  echo -e "  Modo    : ${CYAN}${_INSTALLED_MODE:-desconocido}${NC}"
   echo ""
-  echo -n "  ¿Reinstalar/actualizar? (s/n): "
-  read -r REINSTALL < /dev/tty
-  [ "$REINSTALL" != "s" ] && [ "$REINSTALL" != "S" ] && {
-    info "Nada que hacer. Saliendo."
-    exit 0
-  }
-  rm -f "$CHECKPOINT"
+  echo -e "  ${BOLD}¿Qué deseas hacer?${NC}"; echo ""
+  echo -e "  ${GREEN}[1]${NC} Actualizar  ${DIM}(pkg upgrade o npm install según modo)${NC}"
+  echo -e "  [2] Reinstalar ${DIM}(instalación completa desde cero)${NC}"
+  echo -e "  [q] Cancelar"
+  echo ""; echo -n "  Opción: "
+  if $SILENT_MODE; then
+    # Invocado con --silent sobre un módulo ya instalado (caso defensivo,
+    # no debería pasar vía el wiring normal de menu.sh) — actualizar sin preguntar.
+    _OPT_REINSTALL="1"
+    echo "1 (modo silencioso — actualizar)"
+  else
+    read -r _OPT_REINSTALL < /dev/tty
+  fi
+
+  case "$_OPT_REINSTALL" in
+    1)
+      # Actualizar según modo detectado
+      case "${_INSTALLED_MODE:-standard}" in
+        termux_npm) _update_termux_npm ;;
+        *)          _update_standard   ;;
+      esac
+      exit 0 ;;
+    2)
+      rm -f "$CHECKPOINT" ;;
+    q|Q|"")
+      info "Nada que hacer. Saliendo."; exit 0 ;;
+    *)
+      info "Nada que hacer. Saliendo."; exit 0 ;;
+  esac
 fi
 
 # ============================================================
@@ -132,35 +239,38 @@ detect_cpu_features() {
 
 HW_CPU=$(detect_cpu_features)
 
-# ── Menú de versión ──────────────────────────────────────────
-clear; echo ""
-echo -e "${CYAN}${BOLD}"
-echo -e "  ╔════════════════════════════════════════╗"
-echo -e "  ║       Ollama — elige versión           ║"
-echo -e "  ╠════════════════════════════════════════╣"
-printf  "  ║  CPU: %-32s║\n" "${HW_CPU}"
-echo -e "  ╠════════════════════════════════════════╣"
-echo -e "  ║                                        ║"
-echo -e "  ║  ${NC}${CYAN}[1]${BOLD} Estándar  ${NC}— versión oficial.${CYAN}${BOLD}       ║"
-echo -e "  ║  ${NC}${GREEN}[2]${BOLD} Termux    ${NC}— GPU optimizada. ★${CYAN}${BOLD}     ║"
-echo -e "  ║                                        ║"
-echo -e "  ║  ${NC}${DIM}[b] Cancelar${CYAN}${BOLD}                           ║"
-echo -e "  ║                                        ║"
-echo -e "  ╚════════════════════════════════════════╝${NC}"
-echo ""
-echo -n "  Opción [1/2]: "
-read -r VERSION_CHOICE < /dev/tty
+# ── Selección de versión ──────────────────────────────────────
+# Si OLLAMA_INSTALL_MODE ya viene seteado (ej. desde menu.sh, elegido
+# ahí antes de invocar este script en modo --silent), no hace falta
+# preguntar de nuevo — elegir el modo YA es la confirmación.
+if [ -n "${OLLAMA_INSTALL_MODE:-}" ]; then
+  INSTALL_MODE="$OLLAMA_INSTALL_MODE"
+else
+  clear; echo ""
+  echo -e "${CYAN}${BOLD}"
+  echo -e "  ╔════════════════════════════════════════╗"
+  echo -e "  ║       Ollama — elige versión           ║"
+  echo -e "  ╠════════════════════════════════════════╣"
+  printf  "  ║  CPU: %-32s║\n" "${HW_CPU}"
+  echo -e "  ╠════════════════════════════════════════╣"
+  echo -e "  ║                                        ║"
+  echo -e "  ║  ${NC}${CYAN}[1]${BOLD} Estándar  ${NC}— versión oficial.${CYAN}${BOLD}       ║"
+  echo -e "  ║  ${NC}${GREEN}[2]${BOLD} Termux    ${NC}— GPU optimizada. ★${CYAN}${BOLD}     ║"
+  echo -e "  ║                                        ║"
+  echo -e "  ║  ${NC}${DIM}[b] Cancelar${CYAN}${BOLD}                           ║"
+  echo -e "  ║                                        ║"
+  echo -e "  ╚════════════════════════════════════════╝${NC}"
+  echo ""
+  echo -n "  Opción [1/2]: "
+  read -r VERSION_CHOICE < /dev/tty
 
-case "$VERSION_CHOICE" in
-  b|B) echo "Cancelado."; exit 0 ;;
-  2)   INSTALL_MODE="termux_npm" ;;
-  *)   INSTALL_MODE="standard"   ;;
-esac
-
-echo ""
-echo -n "  ¿Continuar? (s/n): "
-read -r CONFIRM < /dev/tty
-[ "$CONFIRM" != "s" ] && [ "$CONFIRM" != "S" ] && { echo "Cancelado."; exit 0; }
+  case "$VERSION_CHOICE" in
+    b|B) echo "Cancelado."; exit 0 ;;
+    2)   INSTALL_MODE="termux_npm" ;;
+    *)   INSTALL_MODE="standard"   ;;
+  esac
+  # Elegir la versión ya es la confirmación — no se vuelve a preguntar "¿Continuar?"
+fi
 
 # INSTALL_METHOD ya no distingue clean/github — se determina por INSTALL_MODE
 INSTALL_METHOD="clean"
@@ -419,7 +529,12 @@ echo ""
 echo "  [0] Omitir — lo haré después manualmente"
 echo ""
 echo -n "  Elige modelo [1-8/0]: "
-read -r MODEL_CHOICE < /dev/tty
+if $SILENT_MODE; then
+  MODEL_CHOICE="0"
+  warn "Modo silencioso — descarga de modelo omitida, hazlo después con: ollama pull <modelo>"
+else
+  read -r MODEL_CHOICE < /dev/tty
+fi
 
 SELECTED_MODEL=""
 case "$MODEL_CHOICE" in
@@ -468,7 +583,7 @@ OLLAMA_VER=$(ollama --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+[-a-
 [ -z "$OLLAMA_VER" ] && OLLAMA_VER=$(pkg show ollama 2>/dev/null | grep "^Version:" | awk '{print $2}')
 [ -z "$OLLAMA_VER" ] && OLLAMA_VER="unknown"
 
-update_registry "$OLLAMA_VER"
+update_registry "$OLLAMA_VER" "$INSTALL_MODE"
 
 # ============================================================
 # RESUMEN FINAL
@@ -799,8 +914,12 @@ if python3 -c "from PIL import Image" 2>/dev/null; then
   log "Pillow OK — redimensionado de imágenes activo"
 else
   warn "Pillow no instalado — imágenes no se redimensionarán (posible timeout)"
-  echo -n "  ¿Instalar Pillow y deps visión ahora? (s/n): "
-  read -r INSTALL_PILLOW < /dev/tty
+  if $SILENT_MODE; then
+    INSTALL_PILLOW="s"
+  else
+    echo -n "  ¿Instalar Pillow y deps visión ahora? (s/n): "
+    read -r INSTALL_PILLOW < /dev/tty
+  fi
   if [ "$INSTALL_PILLOW" = "s" ] || [ "$INSTALL_PILLOW" = "S" ]; then
     pkg install libjpeg-turbo libpng zlib -y \
       -o Dpkg::Options::="--force-confdef" \
