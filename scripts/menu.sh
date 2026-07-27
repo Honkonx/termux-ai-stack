@@ -306,12 +306,14 @@ _ensure_install_script() {
   if [ ! -f "$dest" ] || [ ! -s "$dest" ]; then
     echo -e "  ${YELLOW}[AVISO]${NC} ~/$script no encontrado — descargando..."
 
-    # Todos los install_*.sh, menu_nativo.sh, menu_proot.sh, backup.sh, restore.sh
-    # están en la RAÍZ del repo — NO en scripts/
-    # REPO_RAW apunta a scripts/ (solo para scripts Python/bot)
+    # Corregido 2026-07-27: install_*.sh, menu_nativo.sh, menu_proot.sh,
+    # menu_entorno.sh, backup.sh, restore.sh viven en scripts/ del repo
+    # (reestructuración 2026-07-27) — solo instalar.sh sigue en la raíz.
+    # El comentario anterior ("todos en la raíz") describía el layout
+    # viejo y causaba 404 silencioso en cada descarga de estos archivos.
     local url
     case "$script" in
-      install_*.sh|menu_nativo.sh|menu_proot.sh|menu_entorno.sh|backup.sh|restore.sh|instalar.sh)
+      instalar.sh)
         url="$REPO_RAW_ROOT/$script" ;;
       *)
         url="$REPO_RAW/$script" ;;
@@ -336,8 +338,8 @@ _ensure_install_script() {
 _ensure_restore_for_install() {
   if [ ! -f "$HOME/restore.sh" ] || [ ! -s "$HOME/restore.sh" ]; then
     echo -e "\n  ${YELLOW}[AVISO]${NC} restore.sh no encontrado — descargando..."
-    curl -fsSL "$REPO_RAW_ROOT/restore.sh" -o "$HOME/restore.sh" 2>/dev/null || \
-      wget -q "$REPO_RAW_ROOT/restore.sh" -O "$HOME/restore.sh" 2>/dev/null
+    curl -fsSL "$REPO_RAW/restore.sh" -o "$HOME/restore.sh" 2>/dev/null || \
+      wget -q "$REPO_RAW/restore.sh" -O "$HOME/restore.sh" 2>/dev/null
     [ ! -f "$HOME/restore.sh" ] || [ ! -s "$HOME/restore.sh" ] && {
       echo -e "  ${RED}[ERROR]${NC} No se pudo obtener restore.sh"
       read -r _ < /dev/tty; return 1
@@ -358,8 +360,8 @@ _require_nativo() {
   local f="$SCRIPTS_DIR/menu_nativo.sh"
   if [ ! -f "$f" ] || [ ! -s "$f" ]; then
     echo -e "\n  ${YELLOW}[AVISO]${NC} menu_nativo.sh no encontrado — descargando..."
-    curl -fsSL "$REPO_RAW_ROOT/menu_nativo.sh" -o "$f" 2>/dev/null || \
-      wget -q "$REPO_RAW_ROOT/menu_nativo.sh" -O "$f" 2>/dev/null
+    curl -fsSL "$REPO_RAW/menu_nativo.sh" -o "$f" 2>/dev/null || \
+      wget -q "$REPO_RAW/menu_nativo.sh" -O "$f" 2>/dev/null
     [ ! -f "$f" ] || [ ! -s "$f" ] && {
       echo -e "  ${RED}[ERROR]${NC} No se pudo obtener menu_nativo.sh"
       read -r _ < /dev/tty; return 1
@@ -371,8 +373,8 @@ _require_nativo() {
   # Cargar menu_entorno.sh (descargar si no existe)
   local ef="$SCRIPTS_DIR/menu_entorno.sh"
   if [ ! -f "$ef" ] || [ ! -s "$ef" ]; then
-    curl -fsSL "$REPO_RAW_ROOT/menu_entorno.sh" -o "$ef" 2>/dev/null || \
-      wget -q "$REPO_RAW_ROOT/menu_entorno.sh" -O "$ef" 2>/dev/null
+    curl -fsSL "$REPO_RAW/menu_entorno.sh" -o "$ef" 2>/dev/null || \
+      wget -q "$REPO_RAW/menu_entorno.sh" -O "$ef" 2>/dev/null
     [ -f "$ef" ] && chmod +x "$ef"
   fi
   if [ -f "$ef" ]; then
@@ -387,8 +389,8 @@ _require_proot() {
   local f="$SCRIPTS_DIR/menu_proot.sh"
   if [ ! -f "$f" ] || [ ! -s "$f" ]; then
     echo -e "\n  ${YELLOW}[AVISO]${NC} menu_proot.sh no encontrado — descargando..."
-    curl -fsSL "$REPO_RAW_ROOT/menu_proot.sh" -o "$f" 2>/dev/null || \
-      wget -q "$REPO_RAW_ROOT/menu_proot.sh" -O "$f" 2>/dev/null
+    curl -fsSL "$REPO_RAW/menu_proot.sh" -o "$f" 2>/dev/null || \
+      wget -q "$REPO_RAW/menu_proot.sh" -O "$f" 2>/dev/null
     [ ! -f "$f" ] || [ ! -s "$f" ] && {
       echo -e "  ${RED}[ERROR]${NC} No se pudo obtener menu_proot.sh"
       read -r _ < /dev/tty; return 1
@@ -1071,20 +1073,26 @@ while true; do
       echo    "  ║   Actualizando scripts desde GitHub...  ║"
       echo -e "  ╚══════════════════════════════════════════╝${NC}"; echo ""
 
-      # Scripts en raíz del repo → se descargan a ~/
-      ROOT_SCRIPTS=(
-        "menu.sh"
+      # instalar.sh es el único que de verdad vive en la raíz del repo
+      ROOT_ONLY_SCRIPTS=(
         "instalar.sh"
+      )
+      # menu.sh vive en scripts/ del repo pero se despliega en ~/ (destino
+      # fijo, no ruta del repo) — corregido 2026-07-27, antes usaba
+      # REPO_RAW_ROOT y daba 404 (menu.sh ya no está en la raíz del repo)
+      HOME_FROM_SCRIPTS=(
+        "menu.sh"
       )
       # Scripts en scripts/ del repo → se descargan a ~/
       INSTALL_SCRIPTS=(
         "install_n8n.sh" "install_claude.sh" "install_ollama.sh"
-        "install_expo.sh" "install_python.sh" "install_ssh.sh"
+        "install_expo.sh" "install_python.sh"
         "install_remote.sh" "install_opencode.sh" "install_openclaw.sh"
-        "install_antigravity.sh" "install_hermes.sh" "install_entorno.sh"
-        "backup.sh" "restore.sh"
+        "install_antigravity.sh" "install_hermes.sh" "install_codex.sh"
+        "install_entorno.sh" "backup.sh" "restore.sh"
       )
-      # Scripts en raíz del repo → se descargan a ~/scripts/
+      # Scripts en scripts/ del repo → se descargan a ~/scripts/
+      # (corregido 2026-07-27: usaban REPO_RAW_ROOT, daban 404)
       MENU_SCRIPTS=(
         "menu_nativo.sh"
         "menu_proot.sh"
@@ -1093,12 +1101,26 @@ while true; do
 
       UPDATE_OK=0; UPDATE_FAIL=0
 
-      # Descargar scripts de raíz del repo a ~/
-      for SCRIPT in "${ROOT_SCRIPTS[@]}"; do
+      # Descargar instalar.sh (raíz real del repo) a ~/
+      for SCRIPT in "${ROOT_ONLY_SCRIPTS[@]}"; do
         echo -n "  Descargando $SCRIPT... "
         TMP_DL="$HOME/${SCRIPT}.tmp"
         curl -fsSL "$REPO_RAW_ROOT/$SCRIPT" -o "$TMP_DL" 2>/dev/null || \
           wget -q "$REPO_RAW_ROOT/$SCRIPT" -O "$TMP_DL" 2>/dev/null
+        if [ -f "$TMP_DL" ] && [ -s "$TMP_DL" ]; then
+          mv "$TMP_DL" "$HOME/$SCRIPT"; chmod +x "$HOME/$SCRIPT"
+          echo -e "${GREEN}✓${NC}"; UPDATE_OK=$((UPDATE_OK + 1))
+        else
+          rm -f "$TMP_DL"; echo -e "${RED}✗${NC}"; UPDATE_FAIL=$((UPDATE_FAIL + 1))
+        fi
+      done
+
+      # Descargar menu.sh (scripts/ del repo) a ~/
+      for SCRIPT in "${HOME_FROM_SCRIPTS[@]}"; do
+        echo -n "  Descargando $SCRIPT... "
+        TMP_DL="$HOME/${SCRIPT}.tmp"
+        curl -fsSL "$REPO_RAW/$SCRIPT" -o "$TMP_DL" 2>/dev/null || \
+          wget -q "$REPO_RAW/$SCRIPT" -O "$TMP_DL" 2>/dev/null
         if [ -f "$TMP_DL" ] && [ -s "$TMP_DL" ]; then
           mv "$TMP_DL" "$HOME/$SCRIPT"; chmod +x "$HOME/$SCRIPT"
           echo -e "${GREEN}✓${NC}"; UPDATE_OK=$((UPDATE_OK + 1))
@@ -1121,13 +1143,14 @@ while true; do
         fi
       done
 
-      # Descargar menu_nativo.sh y menu_proot.sh desde raíz del repo a ~/scripts/
+      # Descargar menu_nativo.sh, menu_proot.sh, menu_entorno.sh desde
+      # scripts/ del repo a ~/scripts/
       mkdir -p "$SCRIPTS_DIR"
       for SCRIPT in "${MENU_SCRIPTS[@]}"; do
         echo -n "  Descargando $SCRIPT... "
         TMP_DL="$SCRIPTS_DIR/${SCRIPT}.tmp"
-        curl -fsSL "$REPO_RAW_ROOT/$SCRIPT" -o "$TMP_DL" 2>/dev/null || \
-          wget -q "$REPO_RAW_ROOT/$SCRIPT" -O "$TMP_DL" 2>/dev/null
+        curl -fsSL "$REPO_RAW/$SCRIPT" -o "$TMP_DL" 2>/dev/null || \
+          wget -q "$REPO_RAW/$SCRIPT" -O "$TMP_DL" 2>/dev/null
         if [ -f "$TMP_DL" ] && [ -s "$TMP_DL" ]; then
           mv "$TMP_DL" "$SCRIPTS_DIR/$SCRIPT"; chmod +x "$SCRIPTS_DIR/$SCRIPT"
           echo -e "${GREEN}✓${NC}"; UPDATE_OK=$((UPDATE_OK + 1))

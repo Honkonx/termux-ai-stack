@@ -290,11 +290,17 @@ fi
 titulo "PASO 3 — Instalando scripts base"
 
 # Lista de scripts descargados desde scripts/ del repo — install_ssh.sh
-# ya no existe (fusionado en install_remote.sh)
+# ya no existe (fusionado en install_remote.sh). Corregido 2026-07-27:
+# faltaban hermes/codex/antigravity/entorno — nunca se descargaban en
+# la instalación inicial, solo si el usuario los pedía manualmente
+# después desde el menú (y ahí dependían del fallback de menu.sh, que
+# también tenía la URL rota — ver docs/BUGS_PERSISTENTES_2026-07-26.md)
 BASE_SCRIPTS=(
   install_n8n.sh install_claude.sh install_ollama.sh
   install_expo.sh install_python.sh
   install_remote.sh install_opencode.sh install_openclaw.sh
+  install_hermes.sh install_codex.sh install_antigravity.sh
+  install_entorno.sh
 )
 
 download_file() {
@@ -335,7 +341,7 @@ _paso3_worker() {
   done
 
   mkdir -p "$HOME/scripts"
-  for script in menu_nativo.sh menu_proot.sh; do
+  for script in menu_nativo.sh menu_proot.sh menu_entorno.sh; do
     if download_file "$REPO_RAW_SCRIPT/$script" "$HOME/scripts/$script" "$script"; then
       ok=$((ok + 1))
     else
@@ -366,7 +372,7 @@ for script in menu.sh backup.sh restore.sh "${BASE_SCRIPTS[@]}"; do
   fi
 done
 info "Scripts en ~/scripts/:"
-for script in menu_nativo.sh menu_proot.sh; do
+for script in menu_nativo.sh menu_proot.sh menu_entorno.sh; do
   if [ -f "$HOME/scripts/$script" ] && [ -s "$HOME/scripts/$script" ]; then
     SIZE=$(wc -c < "$HOME/scripts/$script" 2>/dev/null)
     echo -e "  ${GREEN}✓${NC} ~/scripts/$script  (${SIZE} bytes)"
@@ -465,12 +471,18 @@ check_module "ollama"      && OL_V=$(get_reg ollama version)       && echo -e " 
 check_module "expo"        && EX_V=$(get_reg expo version)         && echo -e "  [4] Expo / EAS        ${GREEN}✓ v${EX_V}${NC}  (reinstalar: 4)"   || echo -e "  [4] Expo / EAS        ${YELLOW}○ no instalado${NC}"
 check_module "python"      && PY_V=$(get_reg python version)       && echo -e "  [5] Python            ${GREEN}✓ v${PY_V}${NC}  (reinstalar: 5)"   || echo -e "  [5] Python            ${YELLOW}○ no instalado${NC}"
 check_module "ssh"                                                 && echo -e "  [6] Remote (SSH)      ${GREEN}✓ instalado${NC}  (reinstalar: 6)"  || echo -e "  [6] Remote (SSH)      ${YELLOW}○ no instalado${NC}"
+check_module "opencode"    && OC_V=$(get_reg opencode version)     && echo -e "  [7] OpenCode          ${GREEN}✓ v${OC_V}${NC}  (reinstalar: 7)"   || echo -e "  [7] OpenCode          ${YELLOW}○ no instalado${NC}"
+check_module "openclaw"    && CL_V=$(get_reg openclaw version)     && echo -e "  [8] OpenClaw          ${GREEN}✓ v${CL_V}${NC}  (reinstalar: 8)"   || echo -e "  [8] OpenClaw          ${YELLOW}○ no instalado${NC}"
+check_module "hermes"      && HM_V=$(get_reg hermes version)       && echo -e "  [9] Hermes Agent      ${GREEN}✓ v${HM_V}${NC}  (reinstalar: 9)"   || echo -e "  [9] Hermes Agent      ${YELLOW}○ no instalado${NC}"
+check_module "codex"       && CX_V=$(get_reg codex version)        && echo -e "  [10] Codex CLI        ${GREEN}✓ v${CX_V}${NC}  (reinstalar: 10)"  || echo -e "  [10] Codex CLI        ${YELLOW}○ no instalado${NC}"
+check_module "antigravity" && AG_V=$(get_reg antigravity version)  && echo -e "  [11] Antigravity CLI  ${GREEN}✓ v${AG_V}${NC}  (reinstalar: 11)"  || echo -e "  [11] Antigravity CLI  ${YELLOW}○ no instalado${NC}"
+check_module "entorno"     && EN_V=$(get_reg entorno version)      && echo -e "  [12] Entorno          ${GREEN}✓ v${EN_V}${NC}  (reinstalar: 12)"  || echo -e "  [12] Entorno          ${YELLOW}○ no instalado${NC}"
 
 echo ""
 echo "  [a] Instalar todos"
 echo "  [s] Saltar — instalaré después desde el menú"
 echo ""
-read -r -p "  Elige [1/2/3/4/5/6/a/s]: " MODULE_CHOICE < /dev/tty
+read -r -p "  Elige [1-12/a/s]: " MODULE_CHOICE < /dev/tty
 
 case "$MODULE_CHOICE" in
   1) run_module "n8n"         "n8n"    ;;
@@ -479,6 +491,12 @@ case "$MODULE_CHOICE" in
   4) run_module "Expo/EAS"    "expo"   ;;
   5) run_module "Python"      "python" ;;
   6) run_module "Remote (SSH)" "remote" ;;
+  7) run_module "OpenCode"        "opencode"    ;;
+  8) run_module "OpenClaw"        "openclaw"    ;;
+  9) run_module "Hermes Agent"    "hermes"      ;;
+  10) run_module "Codex CLI"      "codex"       ;;
+  11) run_module "Antigravity CLI" "antigravity" ;;
+  12) run_module "Entorno"        "entorno"     ;;
   a|A)
     run_module "n8n"           "n8n"
     run_module "Claude Code"   "claude"
@@ -486,6 +504,12 @@ case "$MODULE_CHOICE" in
     run_module "Expo/EAS"      "expo"
     run_module "Python"        "python"
     run_module "Remote (SSH)"  "remote"
+    run_module "OpenCode"      "opencode"
+    run_module "OpenClaw"      "openclaw"
+    run_module "Hermes Agent"  "hermes"
+    run_module "Codex CLI"     "codex"
+    run_module "Antigravity CLI" "antigravity"
+    run_module "Entorno"       "entorno"
     ;;
   s|S|"") info "Módulos omitidos — instálalos después con: menu" ;;
   *)      warn "Opción no reconocida — instala módulos después con: menu" ;;
@@ -562,7 +586,7 @@ done
 
 echo ""
 echo "  SCRIPTS EN ~/scripts/:"
-for f in menu_nativo.sh menu_proot.sh; do
+for f in menu_nativo.sh menu_proot.sh menu_entorno.sh; do
   [ -f "$HOME/scripts/$f" ] && \
     echo -e "  ${GREEN}✓${NC} ~/scripts/$f" || \
     echo -e "  ${YELLOW}?${NC} ~/scripts/$f (no disponible)"
