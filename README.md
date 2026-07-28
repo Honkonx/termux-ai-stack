@@ -49,7 +49,7 @@ El script se encarga de todo: permisos, dependencias, tema visual, descarga de s
 ```
 Tu Android (sin root) — ARM64
   └─ Termux
-       ├─ menu.sh v5.1.0         → dashboard TUI — se abre al iniciar Termux
+       ├─ menu.sh                → dashboard TUI — se abre al iniciar Termux
        │
        ├─ Termux nativo
        │    ├─ Ollama :11434     → modelos de IA locales (GPU o estándar)
@@ -57,15 +57,19 @@ Tu Android (sin root) — ARM64
        │    │    └─ bot_utils.py      → helpers SQLite reutilizables
        │    ├─ Hermes Agent      → agente IA + gateway Telegram (Python nativo)
        │    ├─ Claude Code       → agente de IA en terminal
+       │    ├─ Codex CLI         → agente de IA en terminal (OpenAI)
+       │    ├─ Antigravity CLI   → agente de IA en terminal
+       │    ├─ OpenCode :3000    → IDE web con agente IA (nativo glibc)
+       │    ├─ OpenClaw :18789   → gateway multi-proveedor de IA (nativo glibc)
        │    ├─ EAS CLI           → compilación de apps Expo/React Native
        │    ├─ Python 3.13 + SQLite → scripting, automatización, BD
-       │    └─ SSH :8022         → acceso remoto desde PC
+       │    └─ Remote (SSH :8022 + Cloudflared) → acceso remoto desde PC
        │
-       ├─ proot Debian Bookworm ARM64
-       │    ├─ n8n :5678         → automatización y bots Telegram
-       │    ├─ cloudflared       → túnel público sin abrir puertos
-       │    ├─ OpenCode :3000    → IDE web con agente IA (nativo o proot)
-       │    └─ OpenClaw :18789   → gateway multi-proveedor de IA (nativo o proot)
+       ├─ proot Debian / udocker
+       │    ├─ n8n :5678         → automatización y bots Telegram (proot o udocker)
+       │    └─ cloudflared       → túnel público sin abrir puertos
+       │
+       ├─ Entorno [8]            → proot-distro genérico + Desktop + VNC + GPU
        │
        ├─ KairosApp v0.10.0      → app Android nativa (fork termux-app)
        │
@@ -94,6 +98,7 @@ Al abrir Termux aparece automáticamente el dashboard (menu.sh). Muestra el esta
   [4] Expo/EAS/Git   ● listo    v18.9.1
   [5] Python         ● listo    v3.13.13
   [6] Remote         SSH ● activo
+  [8] Entorno        ● listo
 
   ──────────────────────────────────────────
   [0] Backup / Restore
@@ -103,15 +108,16 @@ Al abrir Termux aparece automáticamente el dashboard (menu.sh). Muestra el esta
   [d] desinstalar  [p] rendimiento
 ```
 
-### Arquitectura v5.1.0 — 3 archivos
+### Arquitectura — 4 archivos
 
-El menú está dividido en 3 archivos con carga bajo demanda:
+El menú está dividido en 4 archivos con carga bajo demanda (`source` al primer uso):
 
 | Archivo | Ubicación | Responsabilidad |
 |---------|-----------|-----------------|
 | `menu.sh` | `~/` | Loop principal · variables globales · helpers base · constantes de rutas |
-| `menu_nativo.sh` | `~/scripts/` | Ollama · Expo · Python · Remote · Claude · Hermes · backup |
-| `menu_proot.sh` | `~/scripts/` | n8n · OpenCode · OpenClaw · caché persistente proot |
+| `menu_nativo.sh` | `~/scripts/` | Ollama · Expo · Python · Remote · Claude Code · Codex · Antigravity · OpenCode · OpenClaw (nativo) · Hermes · backup |
+| `menu_proot.sh` | `~/scripts/` | n8n (proot/udocker) · dashboard "Servicios" (n8n/OpenClaw/Hermes) · caché persistente proot |
+| `menu_entorno.sh` | `~/scripts/` | Módulo [8] Entorno — proot-distro genérico, Desktop, VNC, GPU |
 
 **Caché proot de 3 niveles:**
 
@@ -133,17 +139,89 @@ El menú está dividido en 3 archivos con carga bajo demanda:
 
 | Módulo | Versión | Script | Entorno | Puerto | Variantes |
 |--------|---------|--------|---------|--------|-----------|
-| n8n + cloudflared | 2.8.4 | `install_n8n.sh` | proot Debian | 5678 | — |
-| OpenCode | latest | `install_opencode.sh` | proot / nativo glibc | 3000 / 4096 | ⚡ Nativo · 📦 proot |
-| OpenClaw | latest | `install_openclaw.sh` | proot / nativo glibc | 18789 | ⚡ Nativo · 📦 proot NVM |
+| n8n + cloudflared | 2.8.4 | `install_n8n.sh` | proot Debian / udocker | 5678 | ⚡ proot · 📦 udocker |
+| OpenCode | latest | `install_opencode.sh` | Termux nativo glibc | 3000 | — |
+| OpenClaw | latest | `install_openclaw.sh` | Termux nativo glibc | 18789 | — |
 | Hermes Agent | 0.16.0 | `install_hermes.sh` | Termux nativo Python | 8642 (opt.) | — |
 | Claude Code | 2.1.111 | `install_claude.sh` | Termux nativo | — | ⚡ Native ELF · 📦 Legacy npm |
+| Codex CLI | latest | `install_codex.sh` | Termux nativo | — | — |
+| Antigravity CLI | latest | `install_antigravity.sh` | Termux nativo | — | — |
 | Ollama | 0.22.1 | `install_ollama.sh` | Termux nativo | 11434 | ⚡ GPU · 📦 Estándar |
 | Expo / EAS CLI | 18.9.1 | `install_expo.sh` | Termux nativo | — | — |
 | Python + SQLite | 3.13.13 | `install_python.sh` | Termux nativo | — | — |
-| SSH | OpenSSH 10.3 | `install_ssh.sh` | Termux nativo | 8022 | — |
+| Remote (SSH + Cloudflared) | OpenSSH 10.3 | `install_remote.sh` | Termux nativo | 8022 | — |
+| Entorno | 1.1.0 | `install_entorno.sh` | proot-distro genérico + GPU/X11/VNC | — | Ver sección [8] Entorno |
 
 Cada módulo es independiente — se instala solo o desde el menú maestro. Los scripts aceptan `--silent` (sin preguntas) y `--force` (reinstalar).
+
+---
+
+## ⏣ [BETA] Entorno — proot-distro + Desktop + VNC + GPU
+
+> ⚠️ **Módulo en desarrollo activo.** Probado en POCO F5 (HyperOS 2.0). Reporta issues en otras configuraciones.
+
+El módulo **[8] Entorno** proporciona un entorno gráfico Linux completo sobre Termux: acelaración GPU, escritorio XFCE4/LXQt/MATE/KDE Plasma, contenedores proot-distro o udocker, y acceso por VNC a monitor externo.
+
+### Instalación
+
+```bash
+# Desde el dashboard
+menu → [8] Entorno → [1] Instalar
+
+# O directo
+bash <(curl -fsSL https://raw.githubusercontent.com/Honkonx/termux-ai-stack/main/scripts/install_entorno.sh)
+```
+
+### Desktop Environments
+
+Puedes instalar los 4 DEs a la vez y cambiar el activo en runtime sin reinstalar.
+
+| DE | RAM aprox | Descripción |
+|----|-----------|-------------|
+| XFCE4 | ~250MB | Rápido, personalizable — recomendado |
+| LXQt | ~150MB | Ultra ligero — ideal sin monitor |
+| MATE | ~350MB | GNOME 2 clásico |
+| KDE Plasma | ~600MB | Moderno — ideal con monitor externo |
+
+### GPU Acceleration
+
+El instalador detecta tu SoC automáticamente y configura el driver correcto.
+
+| GPU | Driver | Dispositivos |
+|-----|--------|--------------|
+| Adreno 610+ | Turnip (Vulkan nativo) | Snapdragon 7xx / 8xx |
+| Adreno antiguo | Zink (OpenGL→Vulkan) | Snapdragon 6xx y anteriores |
+| Mali Bifrost/Valhall | Panfrost | Dimensity G31/G52/G57/G68/G78/G710 |
+| Mali otros | Virgl + Zink | Compatible con más dispositivos |
+| Desconocido | LLVMpipe (software) | Siempre funciona |
+
+### udocker
+
+Ejecuta imágenes Docker sin root. Útil para n8n (alternativa al proot) y otros servicios empaquetados como contenedores Docker.
+
+```bash
+# udocker se instala con el módulo Entorno
+udocker pull n8nio/n8n
+udocker run --name=n8n n8nio/n8n
+```
+
+### Monitor externo
+
+**Opción A — USB-C a HDMI directo** (si tu SoC soporta DisplayPort Alt Mode):
+
+```
+teléfono → USB-C a HDMI → monitor
+```
+
+**Opción B — VNC** (para teléfonos sin salida de video):
+
+```bash
+# En el teléfono, iniciar VNC
+menu → [8] Entorno → VNC → Iniciar
+
+# Conectar desde PC
+vncviewer 192.168.x.x:5901
+```
 
 ---
 
@@ -171,11 +249,11 @@ N8N_WEBHOOK_URL=https://tu-dominio.com
 
 ## Módulo: OpenCode
 
-IDE web con agente IA. Disponible en dos variantes: nativo glibc (recomendado) o proot Debian con Node.js 20 LTS.
+IDE web con agente IA. Nativo glibc (Termux) — la variante proot quedó archivada, ya no se ofrece como opción.
 
 ```
-✅ opencode latest (nativo glibc o proot Debian)
-✅ Servidor web en :3000 (proot) o :4096 (nativo)
+✅ opencode latest (nativo glibc)
+✅ Servidor web en :3000
 ✅ Integración con Ollama local (requiere modelo ≥1.5b + config apiKey)
 ✅ Integración con proveedores externos (Big Pickle gratis, APIs externas)
 ✅ Abrir proyectos con TUI o modo web desde el menú
@@ -188,10 +266,10 @@ IDE web con agente IA. Disponible en dos variantes: nativo glibc (recomendado) o
 
 ## Módulo: OpenClaw
 
-Gateway multi-proveedor de IA. Disponible en dos variantes: nativo glibc (recomendado) o proot Debian con Node.js 22 via NVM.
+Gateway multi-proveedor de IA. Nativo glibc (Termux) — la variante proot quedó archivada, ya no se ofrece como opción.
 
 ```
-✅ OpenClaw latest (nativo glibc o proot NVM)
+✅ OpenClaw latest (nativo glibc)
 ✅ Gateway en :18789
 ✅ Soporte múltiples proveedores (Anthropic, OpenAI, Ollama, etc.)
 ✅ No abre navegador automáticamente — URL se muestra en pantalla
@@ -337,9 +415,9 @@ Agente de IA de Anthropic. Requiere workaround en ARM64 porque el binario nativo
 
 ---
 
-## Módulo: SSH
+## Módulo: Remote
 
-Acceso remoto completo desde PC, VS Code o cualquier cliente SSH.
+Acceso remoto completo desde PC, VS Code o cualquier cliente SSH — instalado por `install_remote.sh` (SSH y Cloudflared en un solo módulo).
 
 ```
 ✅ OpenSSH 10.3 vía pkg (Termux nativo)
@@ -347,7 +425,7 @@ Acceso remoto completo desde PC, VS Code o cualquier cliente SSH.
 ✅ Autenticación por contraseña y clave pública
 ✅ Dashboard TUI accesible desde PC via SSH
 ✅ Claude Code con teclado físico desde PC
-✅ CF-SSH: túnel Cloudflare para acceso remoto sin IP fija
+✅ CF-SSH: túnel Cloudflare nativo para acceso remoto sin IP fija
 ```
 
 **Conectar desde PC:**
@@ -492,26 +570,31 @@ Hermes corre en Python con venv. Termux tiene Python 3.13 nativo. No hay depende
 
 ```
 termux-ai-stack/
-├── instalar.sh              ← entrada única — curl + bash   (v2.5.0)
-├── menu.sh                  ← dashboard TUI principal       (v5.1.0)
-├── menu_nativo.sh           ← módulos Termux nativos
-├── menu_proot.sh            ← módulos proot + caché        (v5.1.0)
-├── backup.sh                ← backup modular completo       (v2.5.0)
-├── restore.sh               ← restore modular               (v2.6.0)
-├── kairos_manager.py        ← controlador central JSON      (v3.0.0)
-├── dashboard_server.py      ← servidor de estado HTTP
-├── image_archive.py         ← archivo de imágenes + nube
+├── instalar.sh                    ← entrada única — curl + bash
 ├── README.md
-├── install_n8n.sh           (--source github|clean|rootfs-*)
-├── install_claude.sh        (--variant native|legacy)
-├── install_ollama.sh        (--variant gpu|standard)
-├── install_opencode.sh      (--variant native|proot)
-├── install_openclaw.sh      (--variant native|proot)
-├── install_hermes.sh
-├── install_expo.sh
-├── install_python.sh
-├── install_ssh.sh
-└── workflows/               ← WF2, WF3 JSON para importar en n8n
+├── LICENSE
+├── scripts/
+│   ├── menu.sh                    ← dashboard TUI principal
+│   ├── menu_nativo.sh             ← módulos Termux nativos
+│   ├── menu_proot.sh              ← n8n (proot/udocker) + dashboard Servicios
+│   ├── menu_entorno.sh            ← módulo [8] Entorno
+│   ├── backup.sh                  ← backup modular completo
+│   ├── restore.sh                 ← restore modular
+│   ├── install_n8n.sh             (N8N_INSTALL_MODE=1|2 → proot|udocker)
+│   ├── install_claude.sh          (CLAUDE_METHOD=native|legacy)
+│   ├── install_ollama.sh          (OLLAMA_INSTALL_MODE)
+│   ├── install_opencode.sh        (solo nativo glibc)
+│   ├── install_openclaw.sh        (solo nativo glibc)
+│   ├── install_hermes.sh
+│   ├── install_codex.sh
+│   ├── install_antigravity.sh
+│   ├── install_expo.sh
+│   ├── install_python.sh
+│   ├── install_remote.sh          (SSH + Cloudflared)
+│   └── install_entorno.sh
+├── python/
+│   └── bots/                      ← vision_bot.py, bot_utils.py, image_archive.py
+└── workflows/                     ← WF2, WF3 JSON para importar en n8n
 ```
 
 ---
@@ -521,41 +604,55 @@ termux-ai-stack/
 Si no quieres usar el instalador maestro, cada script funciona de forma independiente:
 
 ```bash
-# n8n + cloudflared
-curl -fsSL https://raw.githubusercontent.com/Honkonx/termux-ai-stack/main/scripts/install/install_n8n.sh \
+# n8n + cloudflared (pregunta proot o udocker si no se fija N8N_INSTALL_MODE)
+curl -fsSL https://raw.githubusercontent.com/Honkonx/termux-ai-stack/main/scripts/install_n8n.sh \
   -o install_n8n.sh && bash install_n8n.sh
+# o silencioso, eligiendo modo:  N8N_INSTALL_MODE=1 bash install_n8n.sh --silent  (1=proot, 2=udocker)
 
-# OpenCode (nativo glibc — recomendado)
-curl -fsSL https://raw.githubusercontent.com/Honkonx/termux-ai-stack/main/scripts/install/install_opencode.sh \
-  -o install_opencode.sh && bash install_opencode.sh --variant native
+# OpenCode (nativo glibc)
+curl -fsSL https://raw.githubusercontent.com/Honkonx/termux-ai-stack/main/scripts/install_opencode.sh \
+  -o install_opencode.sh && bash install_opencode.sh
 
-# OpenClaw (nativo glibc — recomendado)
-curl -fsSL https://raw.githubusercontent.com/Honkonx/termux-ai-stack/main/scripts/install/install_openclaw.sh \
-  -o install_openclaw.sh && bash install_openclaw.sh --variant native
+# OpenClaw (nativo glibc)
+curl -fsSL https://raw.githubusercontent.com/Honkonx/termux-ai-stack/main/scripts/install_openclaw.sh \
+  -o install_openclaw.sh && bash install_openclaw.sh
 
 # Hermes Agent
-curl -fsSL https://raw.githubusercontent.com/Honkonx/termux-ai-stack/main/scripts/install/install_hermes.sh \
+curl -fsSL https://raw.githubusercontent.com/Honkonx/termux-ai-stack/main/scripts/install_hermes.sh \
   -o install_hermes.sh && bash install_hermes.sh
 
-# Claude Code (native ELF — recomendado)
-curl -fsSL https://raw.githubusercontent.com/Honkonx/termux-ai-stack/main/scripts/install/install_claude.sh \
-  -o install_claude.sh && bash install_claude.sh --variant native
+# Claude Code (pregunta método native/legacy si no se fija CLAUDE_METHOD)
+curl -fsSL https://raw.githubusercontent.com/Honkonx/termux-ai-stack/main/scripts/install_claude.sh \
+  -o install_claude.sh && bash install_claude.sh
+# o silencioso, eligiendo método:  CLAUDE_METHOD=native bash install_claude.sh --silent
+
+# Codex CLI
+curl -fsSL https://raw.githubusercontent.com/Honkonx/termux-ai-stack/main/scripts/install_codex.sh \
+  -o install_codex.sh && bash install_codex.sh
+
+# Antigravity CLI
+curl -fsSL https://raw.githubusercontent.com/Honkonx/termux-ai-stack/main/scripts/install_antigravity.sh \
+  -o install_antigravity.sh && bash install_antigravity.sh
 
 # Ollama (estándar)
-curl -fsSL https://raw.githubusercontent.com/Honkonx/termux-ai-stack/main/scripts/install/install_ollama.sh \
+curl -fsSL https://raw.githubusercontent.com/Honkonx/termux-ai-stack/main/scripts/install_ollama.sh \
   -o install_ollama.sh && bash install_ollama.sh
 
 # Expo / EAS CLI
-curl -fsSL https://raw.githubusercontent.com/Honkonx/termux-ai-stack/main/scripts/install/install_expo.sh \
+curl -fsSL https://raw.githubusercontent.com/Honkonx/termux-ai-stack/main/scripts/install_expo.sh \
   -o install_expo.sh && bash install_expo.sh
 
 # Python + SQLite
-curl -fsSL https://raw.githubusercontent.com/Honkonx/termux-ai-stack/main/scripts/install/install_python.sh \
+curl -fsSL https://raw.githubusercontent.com/Honkonx/termux-ai-stack/main/scripts/install_python.sh \
   -o install_python.sh && bash install_python.sh
 
-# SSH
-curl -fsSL https://raw.githubusercontent.com/Honkonx/termux-ai-stack/main/scripts/install/install_ssh.sh \
-  -o install_ssh.sh && bash install_ssh.sh
+# Remote (SSH + Cloudflared)
+curl -fsSL https://raw.githubusercontent.com/Honkonx/termux-ai-stack/main/scripts/install_remote.sh \
+  -o install_remote.sh && bash install_remote.sh
+
+# Entorno (proot-distro + Desktop + VNC + GPU)
+curl -fsSL https://raw.githubusercontent.com/Honkonx/termux-ai-stack/main/scripts/install_entorno.sh \
+  -o install_entorno.sh && bash install_entorno.sh
 ```
 
 > Todos los scripts aceptan `--silent` (sin preguntas interactivas) y `--force` (reinstalar aunque ya esté). Tienen checkpoints automáticos — si falla a mitad, vuélvelo a ejecutar y continúa desde donde quedó.
@@ -568,7 +665,7 @@ Desde el dashboard, presiona `[u]`. Descarga la versión más reciente de todos 
 
 O manualmente:
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Honkonx/termux-ai-stack/main/menu.sh \
+curl -fsSL https://raw.githubusercontent.com/Honkonx/termux-ai-stack/main/scripts/menu.sh \
   -o ~/menu.sh && exec bash ~/menu.sh
 ```
 
@@ -651,8 +748,8 @@ Versiones probadas y confirmadas funcionales en ARM64 Termux. Cambiar sin valida
 | Componente | Versión | Notas |
 |------------|---------|-------|
 | Claude Code legacy | @2.1.111 | >2.1.111 usa binario nativo incompatible con Bionic libc |
-| Node.js proot (sistema) | v20.20.2 LTS | v22+ rompe `isolated-vm` en n8n |
-| Node.js proot OpenClaw | v22 via NVM | OpenClaw requiere Node 22 |
+| Node.js proot n8n (sistema) | v20.20.2 LTS | v22+ rompe `isolated-vm` en n8n |
+| Node.js OpenClaw (nativo glibc) | v22-24 | Rango probado — versiones más nuevas (ej. v26) rompen el ABI de módulos nativos que OpenClaw usa |
 | Expo SDK | ~52.0.0 | SDK 53+ obliga Nueva Arquitectura → crash ARM64 Bionic |
 | React Native | 0.76.9 | Par fijo con Expo SDK 52 |
 | newArchEnabled | false | Crash ARM64 sin root si se activa |

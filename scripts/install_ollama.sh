@@ -390,6 +390,7 @@ else
         -o Dpkg::Options::="--force-confdef" \
         -o Dpkg::Options::="--force-confold" || \
         error "Error instalando nodejs-lts."
+      npm install -g npm 2>&1 | tail -2
 
       info "Instalando Ollama Termux vía npm (@mmmbuto/ollama-termux@latest)..."
       npm install -g @mmmbuto/ollama-termux@latest || \

@@ -264,6 +264,7 @@ else
       pkg install nodejs -y \
         -o Dpkg::Options::="--force-confdef" \
         -o Dpkg::Options::="--force-confold"
+      npm install -g npm 2>&1 | tail -2
       log "Node.js actualizado: $(node --version)"
     fi
   else
@@ -272,6 +273,7 @@ else
       -o Dpkg::Options::="--force-confdef" \
       -o Dpkg::Options::="--force-confold" || \
       error "Falló instalación de Node.js"
+    npm install -g npm 2>&1 | tail -2
     log "Node.js $(node --version) instalado"
   fi
 

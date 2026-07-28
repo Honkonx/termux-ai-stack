@@ -191,6 +191,7 @@ else
     info "Instalando nodejs-lts..."
     pkg install nodejs-lts -y 2>/dev/null || error "No se pudo instalar Node.js"
     command -v node &>/dev/null || error "Node.js no disponible tras instalación"
+    npm install -g npm 2>&1 | tail -2
     log "Node.js instalado: $(node --version)"
     mark_done "node"
   fi

@@ -272,6 +272,7 @@ _ensure_nodejs() {
   pkg install nodejs-lts -y \
     -o Dpkg::Options::="--force-confdef" \
     -o Dpkg::Options::="--force-confold" || error "Error instalando nodejs-lts"
+  npm install -g npm 2>&1 | tail -2
   log "Node.js $(node --version) instalado"
   mark_done "nodejs"
 }
