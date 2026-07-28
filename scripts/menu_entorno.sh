@@ -229,11 +229,17 @@ submenu_terminal() {
     case "$OPT" in
       1)
         clear; echo ""
-        # Solo debian/ubuntu están confirmadas en ARM64 (ver docs/BUGS_PERSISTENTES_2026-07-26.md
-        # — fedora/archlinux no tienen confirmación de funcionar, y un proyecto de referencia
-        # más maduro en el mismo dominio (PocketDesk) encontró que kali falla en ARM64 y redujo
-        # su propia lista soportada a solo ubuntu+debian tras probarlo en dispositivos reales)
-        local _ENTORNO_DISTROS=(ubuntu debian)
+        # 2026-07-26: solo debian/ubuntu estaban confirmadas en ARM64 (ver
+        # docs/BUGS_PERSISTENTES_2026-07-26.md — fedora/archlinux sin
+        # confirmar, kali confirmado ROTO en ARM64 por un proyecto de
+        # referencia más maduro, PocketDesk). 2026-07-28: se agrega Alpine
+        # (uso extendido y bien establecido en proot-distro sobre Android,
+        # base musl liviana — riesgo bajo) a la lista confirmada, y un grupo
+        # "experimental" separado (archlinux/fedora/void) para quien quiera
+        # probar sabiendo que no están validadas en este proyecto todavía.
+        # kali NO se agrega — ya confirmado que falla, no es "sin probar".
+        local _ENTORNO_DISTROS=(ubuntu debian alpine)
+        local _ENTORNO_DISTROS_EXP=(archlinux fedora void)
         echo -e "${CYAN}${BOLD}  Distros disponibles (confirmadas en ARM64):${NC}"
         echo ""
         local _di=1 _dname
@@ -245,15 +251,32 @@ submenu_terminal() {
           fi
           _di=$((_di + 1))
         done
+        echo ""
+        echo -e "  ${YELLOW}${BOLD}Experimentales (sin confirmar en este proyecto):${NC}"
+        for _dname in "${_ENTORNO_DISTROS_EXP[@]}"; do
+          if _proot_rootfs_exists "$_dname"; then
+            echo -e "  ${BOLD}[$_di]${NC} $_dname ${DIM}(ya instalada)${NC}"
+          else
+            echo -e "  ${BOLD}[$_di]${NC} $_dname"
+          fi
+          _di=$((_di + 1))
+        done
         echo -e "  ${BOLD}[b]${NC} Cancelar"
         echo ""; echo -n "  Opción: "
         read -r _DIST_OPT < /dev/tty
         case "$_DIST_OPT" in b|B|"") continue ;; esac
-        if ! [[ "$_DIST_OPT" =~ ^[0-9]+$ ]] || [ "$_DIST_OPT" -lt 1 ] || [ "$_DIST_OPT" -gt "${#_ENTORNO_DISTROS[@]}" ]; then
+        local _ENTORNO_ALL=("${_ENTORNO_DISTROS[@]}" "${_ENTORNO_DISTROS_EXP[@]}")
+        if ! [[ "$_DIST_OPT" =~ ^[0-9]+$ ]] || [ "$_DIST_OPT" -lt 1 ] || [ "$_DIST_OPT" -gt "${#_ENTORNO_ALL[@]}" ]; then
           echo -e "  ${YELLOW}Opción inválida${NC}"
           echo ""; read -r _ < /dev/tty; continue
         fi
-        DISTRO="${_ENTORNO_DISTROS[$((_DIST_OPT - 1))]}"
+        DISTRO="${_ENTORNO_ALL[$((_DIST_OPT - 1))]}"
+        if [ "$_DIST_OPT" -gt "${#_ENTORNO_DISTROS[@]}" ]; then
+          echo -e "  ${YELLOW}[AVISO]${NC} $DISTRO es experimental — no confirmada en dispositivos reales de este proyecto."
+          echo -n "  ¿Continuar de todos modos? (s/n): "
+          read -r _EXP_OK < /dev/tty
+          [ "$_EXP_OK" != "s" ] && [ "$_EXP_OK" != "S" ] && continue
+        fi
         echo ""
         _EXISTING_RB=$(_proot_rootfs_path "$DISTRO")
         if [ -n "$_EXISTING_RB" ]; then

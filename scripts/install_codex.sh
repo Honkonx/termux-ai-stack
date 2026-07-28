@@ -7,12 +7,17 @@
 #    termux   → @mmmbuto/codex-cli-termux@next  (Termux fork)
 #    vl       → @mmmbuto/codex-vl@latest         (Codex VL fork)
 #    official → npm install -g codex@latest       (futuro)
+#    native   → binario ARM64 prebuilt, SIN Node.js (ver docs/REFERENCIA_TERMUX_AI_MASTER.md)
+#               github.com/WangChengYeh/codex_android — versión pinneada v0.25.0,
+#               NO "latest" (repo de un solo mantenedor, no oficial de OpenAI —
+#               riesgo asumido a propósito, ver esa doc para el detalle completo)
 #
 #  USO:
-#    bash install_codex.sh                   → instalar / reinstall
-#    CODEX_CHANNEL=vl bash install_codex.sh  → instalar canal específico
-#    CODEX_MODE=update bash install_codex.sh → actualizar
-#    CODEX_MODE=uninstall bash install_codex.sh → desinstalar
+#    bash install_codex.sh                       → instalar / reinstall
+#    CODEX_CHANNEL=vl bash install_codex.sh      → instalar canal específico
+#    CODEX_CHANNEL=native bash install_codex.sh  → binario nativo, sin Node.js
+#    CODEX_MODE=update bash install_codex.sh     → actualizar
+#    CODEX_MODE=uninstall bash install_codex.sh  → desinstalar
 # ============================================================
 
 TERMUX_PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
@@ -20,7 +25,11 @@ export PATH="$TERMUX_PREFIX/bin:$TERMUX_PREFIX/sbin:$PATH"
 
 # ── Modo silencioso (invocado desde menu.sh, confirmación ya hecha ahí) ──
 SILENT_MODE=false
-for _arg in "$@"; do [ "$_arg" = "--silent" ] && SILENT_MODE=true; done
+FORCE_MODE=false
+for _arg in "$@"; do
+  [ "$_arg" = "--silent" ] && SILENT_MODE=true
+  [ "$_arg" = "--force" ] && FORCE_MODE=true
+done
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 CYAN='\033[0;36m'; BOLD='\033[1m'; DIM='\033[2m'; NC='\033[0m'
@@ -54,8 +63,71 @@ CODEX_CHANNELS[termux]="@mmmbuto/codex-cli-termux@next"
 CODEX_CHANNELS[vl]="@mmmbuto/codex-vl@latest"
 CODEX_CHANNELS[official]="codex@latest"
 
+CODEX_NATIVE_VERSION="0.25.0"
+CODEX_NATIVE_URL="https://github.com/WangChengYeh/codex_android/releases/download/v${CODEX_NATIVE_VERSION}/android-codex-cli-binaries-${CODEX_NATIVE_VERSION}-aarch64.tar.gz"
+
+# 2026-07-28: canal "native" — binario ARM64 prebuilt, no pasa por npm/Node.js en
+# absoluto (ver docs/REFERENCIA_TERMUX_AI_MASTER.md). No hay checksum SHA256
+# publicado que se haya podido verificar al escribir esto — la mitigación real
+# es la misma que ya se usa en ssh.sh/n8n.sh/cloudflared: no confiar en que el
+# archivo se descargó bien solo porque curl devolvió 0, VERIFICAR que el binario
+# efectivamente corre sobre Bionic antes de darlo por instalado.
+_install_codex_native() {
+  titulo "Codex CLI — canal native (binario prebuilt, sin Node.js)"
+  if command -v codex &>/dev/null && [ "$(_read_reg channel)" = "native" ] && ! $FORCE_MODE; then
+    log "Codex CLI (native) ya instalado — $(codex --version 2>/dev/null | head -1)"
+    return 0
+  fi
+  info "Descargando binario v${CODEX_NATIVE_VERSION} de codex_android..."
+  local tmp="$HOME/tmp/codex_native_dl"
+  mkdir -p "$tmp"
+  local tarball="$tmp/codex-native.tar.gz"
+  if command -v curl &>/dev/null; then
+    curl -fsSL --max-time 60 "$CODEX_NATIVE_URL" -o "$tarball" || error "Descarga falló (curl)"
+  elif command -v wget &>/dev/null; then
+    wget -q --timeout=60 "$CODEX_NATIVE_URL" -O "$tarball" || error "Descarga falló (wget)"
+  else
+    error "Ni curl ni wget disponibles"
+  fi
+  [ -s "$tarball" ] || error "Descarga vacía o incompleta"
+
+  tar -xzf "$tarball" -C "$tmp" || error "No se pudo extraer el tarball"
+  local bin_src exec_src
+  bin_src=$(find "$tmp" -type f -name "codex-aarch64-linux-android" | head -1)
+  exec_src=$(find "$tmp" -type f -name "codex-exec-aarch64-linux-android" | head -1)
+  [ -z "$bin_src" ] && error "No se encontró el binario codex-aarch64-linux-android en el tarball"
+
+  mkdir -p "$TERMUX_PREFIX/opt/codex-native"
+  cp "$bin_src" "$TERMUX_PREFIX/opt/codex-native/codex"
+  chmod +x "$TERMUX_PREFIX/opt/codex-native/codex"
+  if [ -n "$exec_src" ]; then
+    cp "$exec_src" "$TERMUX_PREFIX/opt/codex-native/codex-exec"
+    chmod +x "$TERMUX_PREFIX/opt/codex-native/codex-exec"
+  fi
+  ln -sf "$TERMUX_PREFIX/opt/codex-native/codex" "$TERMUX_PREFIX/bin/codex"
+
+  # Verificación real de ejecución — no solo que el archivo exista (mismo patrón
+  # que cloudflared/ssh.sh: un binario ARM64 no siempre corre sobre Bionic).
+  if ! codex --version &>/dev/null; then
+    rm -f "$TERMUX_PREFIX/bin/codex"
+    rm -rf "$TERMUX_PREFIX/opt/codex-native"
+    error "Binario descargado pero no ejecuta (incompatible con Bionic) — probar otro canal (CODEX_CHANNEL=termux)"
+  fi
+  rm -rf "$tmp"
+
+  mkdir -p "$HOME/.config/codex"
+  _update_reg "installed=true" "version=${CODEX_NATIVE_VERSION}" "channel=native" "install_date=$(date +%Y-%m-%d)"
+  log "Codex CLI (native) instalado: $(codex --version 2>/dev/null | head -1)"
+  return 0
+}
+
 CODEX_CHANNEL="${CODEX_CHANNEL:-termux}"
 CODEX_PKG="${CODEX_CHANNELS[$CODEX_CHANNEL]}"
+
+if [ "$CODEX_CHANNEL" = "native" ]; then
+  _install_codex_native
+  exit $?
+fi
 
 detect_active_channel() {
   local _pkg
@@ -142,12 +214,14 @@ if [ -n "$_INSTALLED_VER" ]; then
         echo -e "  [1] termux   ${DIM}@mmmbuto/codex-cli-termux@next${NC}"
         echo -e "  [2] vl       ${DIM}@mmmbuto/codex-vl@latest${NC}"
         echo -e "  [3] official ${DIM}codex@latest (futuro)${NC}"
+        echo -e "  [4] native   ${DIM}binario prebuilt v${CODEX_NATIVE_VERSION}, sin Node.js${NC}"
         echo ""; echo -n "  Canal: "
         read -r _CH_OPT < /dev/tty
         case "$_CH_OPT" in
           1) CODEX_CHANNEL="termux"; CODEX_PKG="${CODEX_CHANNELS[termux]}" ;;
           2) CODEX_CHANNEL="vl";     CODEX_PKG="${CODEX_CHANNELS[vl]}" ;;
           3) warn "Canal official no disponible aún"; exit 0 ;;
+          4) _install_codex_native; exit $? ;;
           *) info "Sin cambios"; exit 0 ;;
         esac
         rm -f "$CHECKPOINT"; _SKIP_FINAL_CONFIRM=true ;;

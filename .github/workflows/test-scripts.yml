@@ -1,0 +1,63 @@
+name: Test install scripts (termux-docker)
+
+# 2026-07-28: propuesta "termux-docker en CI" (docs/QUIZAS.md §13 en el
+# monorepo Kairos) — corre cada install_*.sh dentro del contenedor oficial
+# de Termux (sin runtime Android) ANTES de que el usuario tenga que probarlo
+# en su dispositivo real. Alcance intencionalmente acotado a chequeos
+# rápidos y seguros (sintaxis + shellcheck + smoke test de --describe/--help
+# si el script lo soporta) — NO corre pkg install completo (lento, consume
+# minutos de CI, y el entorno del contenedor no es 100% idéntico a Termux
+# sobre Android real) — esto sube el piso de confianza, no reemplaza la
+# prueba en dispositivo.
+
+on:
+  push:
+    paths:
+      - "scripts/**"
+      - ".github/workflows/test-scripts.yml"
+  workflow_dispatch:
+
+jobs:
+  test-scripts:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/termux/termux-docker:x86_64
+      options: --user root
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Instalar shellcheck y bash
+        run: |
+          apt-get update -y || pkg update -y
+          apt-get install -y shellcheck bash || pkg install -y shellcheck bash
+
+      - name: bash -n (sintaxis) en todos los install_*.sh
+        run: |
+          fail=0
+          for f in scripts/install_*.sh scripts/menu*.sh scripts/backup.sh scripts/restore.sh; do
+            [ -f "$f" ] || continue
+            echo "::group::bash -n $f"
+            bash -n "$f" || fail=1
+            echo "::endgroup::"
+          done
+          exit $fail
+
+      - name: shellcheck (solo advertencias, no bloquea el build)
+        run: |
+          for f in scripts/install_*.sh; do
+            [ -f "$f" ] || continue
+            echo "::group::shellcheck $f"
+            shellcheck -x -S warning "$f" || true
+            echo "::endgroup::"
+          done
+
+      - name: Smoke test --describe (manifiesto declarativo, si el script lo soporta)
+        run: |
+          for f in scripts/install_*.sh; do
+            [ -f "$f" ] || continue
+            if grep -q -- '--describe' "$f"; then
+              echo "::group::--describe $f"
+              bash "$f" --describe || echo "AVISO: $f declara --describe pero falló al correrlo"
+              echo "::endgroup::"
+            fi
+          done
