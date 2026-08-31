@@ -16,6 +16,12 @@
 
 **Tu Android como servidor de desarrollo. Sin root. Sin VPS. Sin costos.**
 
+> ## ARCHIVADO
+> Este proyecto (scripts bash de terminal) fue reemplazado por **[Kairos](https://github.com/Honkonx/Kairos-Lab)** — un APK nativo de Android (fork de termux-app) con interfaz grafica completa, que hace todo lo que este stack hacia y mas, sin depender de escribir comandos a mano. Repo publico: **https://github.com/Honkonx/Kairos-Lab**
+> Este repo queda archivado (solo lectura) como referencia historica.
+
+
+
 [![Platform](https://img.shields.io/badge/Platform-Android%20ARM64-3DDC84?style=flat-square&logo=android&logoColor=white)](.)
 [![Termux](https://img.shields.io/badge/Termux-F--Droid-000000?style=flat-square&logo=terminal&logoColor=white)](https://f-droid.org/packages/com.termux/)
 [![Root](https://img.shields.io/badge/Root-No%20required-brightgreen?style=flat-square)](.)
